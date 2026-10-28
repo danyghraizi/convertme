@@ -43,7 +43,10 @@ pub fn run() -> i32 {
             // No files on the command line is the user asking for the window, not a
             // no-op: forwarding an empty list tells the running instance to show and
             // focus itself.
-            logln!("another instance owns the lock; forwarding {} path(s)", initial_paths.len());
+            logln!(
+                "another instance owns the lock; forwarding {} path(s)",
+                initial_paths.len()
+            );
             return match instance::forward(&initial_paths) {
                 Ok(()) => 0,
                 Err(e) => {
@@ -513,7 +516,10 @@ fn start_drag_watcher(app: tauri::AppHandle) {
 
 fn start_ipc(app: tauri::AppHandle) {
     let handle = app.clone();
-    logln!("ipc endpoint at {}", convertme_core::identity::socket_path().display());
+    logln!(
+        "ipc endpoint at {}",
+        convertme_core::identity::socket_path().display()
+    );
     let served = instance::serve(move |paths| {
         if let Some(state) = handle.try_state::<AppState>() {
             state.selection.lock().set(paths.clone());

@@ -89,7 +89,17 @@ mod imp {
     pub fn install() -> Result<(), String> {
         let value = format!("\"{}\" --background", executable().display());
         let status = Command::new("reg")
-            .args(["add", KEY, "/v", identity::APP_NAME, "/t", "REG_SZ", "/d", &value, "/f"])
+            .args([
+                "add",
+                KEY,
+                "/v",
+                identity::APP_NAME,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &value,
+                "/f",
+            ])
             .status()
             .map_err(|e| format!("reg add: {e}"))?;
         if status.success() {
@@ -150,7 +160,10 @@ mod tests {
         let text = std::fs::read_to_string(super::imp::entry()).unwrap();
         assert!(text.contains("Exec="), "{text}");
         assert!(text.contains("--background"), "{text}");
-        assert!(text.contains(&format!("Name={}", identity::APP_NAME)), "{text}");
+        assert!(
+            text.contains(&format!("Name={}", identity::APP_NAME)),
+            "{text}"
+        );
         set(false).unwrap();
         assert!(!is_enabled());
     }

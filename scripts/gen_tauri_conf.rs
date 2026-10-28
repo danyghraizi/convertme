@@ -170,7 +170,11 @@ pub fn tauri_conf_json() -> String {
     s.push_str(&format!("    \"resources\": {},\n", json_array(&[json_string("../../NOTICE"), json_string("../../LICENSE")])));
     // Signed update artifacts need the private key; without it the bundle step
     // would fail, so the flag follows the environment instead of being hardcoded.
-    let signed = std::env::var_os("TAURI_SIGNING_PRIVATE_KEY").is_some();
+    // An empty value counts as absent: CI passes `${{ secrets.X }}` as "" when the
+    // secret does not exist, and signing with an empty key fails the build.
+    let signed = std::env::var("TAURI_SIGNING_PRIVATE_KEY")
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false);
     s.push_str(&format!("    \"createUpdaterArtifacts\": {signed}\n"));
     s.push_str("  },\n");
     s.push_str("  \"plugins\": {\n");

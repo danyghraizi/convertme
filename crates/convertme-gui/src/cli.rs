@@ -490,7 +490,10 @@ mod tests {
     #[test]
     fn flag_values_are_not_taken_as_files() {
         let parsed = Args::parse(&args(&["a.png", "--to", "WEBP", "b.png"]), &["--to"]).unwrap();
-        assert_eq!(parsed.files, vec![PathBuf::from("a.png"), PathBuf::from("b.png")]);
+        assert_eq!(
+            parsed.files,
+            vec![PathBuf::from("a.png"), PathBuf::from("b.png")]
+        );
     }
 
     #[test]

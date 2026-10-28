@@ -747,7 +747,9 @@ pub fn set_autostart(state: State<'_, AppState>, enabled: bool) -> Result<Settin
     crate::autostart::set(enabled)?;
     let mut settings = state.settings.lock().clone();
     settings.start_at_login = enabled;
-    settings.save(&state.settings_path).map_err(|e| e.to_string())?;
+    settings
+        .save(&state.settings_path)
+        .map_err(|e| e.to_string())?;
     *state.settings.lock() = settings.clone();
     Ok(settings)
 }
