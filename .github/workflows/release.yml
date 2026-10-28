@@ -63,6 +63,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # `beforeBuildCommand` runs the identity gate before the front end.
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
         run: |
           npm --prefix ui ci
           ./scripts/bundle.sh ${{ matrix.bundles }}
