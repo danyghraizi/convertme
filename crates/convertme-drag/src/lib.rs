@@ -224,7 +224,7 @@ pub mod windows_backend {
     //! Low-level hooks, kept as cheap as the OS allows.
     use super::*;
     use std::sync::OnceLock;
-    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_CONTROL, VK_LBUTTON, VK_LMENU, VK_LSHIFT, VK_LWIN,
     };
@@ -325,11 +325,10 @@ pub mod windows_backend {
             let _ = SENDER.set(self.tx.clone());
             let _ = KEYS.set(self.keys);
             unsafe {
-                let kb =
-                    SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), HINSTANCE::default(), 0)
-                        .map_err(|e| DragError::Backend(format!("WH_KEYBOARD_LL: {e}")))?;
+                let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0)
+                    .map_err(|e| DragError::Backend(format!("WH_KEYBOARD_LL: {e}")))?;
                 self.hooks.push(kb);
-                match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), HINSTANCE::default(), 0) {
+                match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0) {
                     Ok(mh) => self.hooks.push(mh),
                     Err(e) => {
                         let _ = UnhookWindowsHookEx(kb);
