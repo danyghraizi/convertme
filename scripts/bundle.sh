@@ -20,6 +20,10 @@ if [ ! -x "$root/vendor/bin/convertme-pdf-$triple" ]; then
   exit 2
 fi
 
+# `tauri.conf.json` is generated from the identity table and is not committed, so the
+# CLI cannot even read `beforeBuildCommand` until it exists.
+(cd "$root" && cargo xtask gen-conf >/dev/null)
+
 cd "$root/ui"
 [ -d node_modules ] || npm install --no-audit --no-fund
 cd "$root/crates/convertme-gui"
