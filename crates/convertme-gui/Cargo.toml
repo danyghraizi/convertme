@@ -1,0 +1,53 @@
+[package]
+name = "convertme-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "convertme"
+
+[lib]
+name = "convertme_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "convertme"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[target.'cfg(unix)'.dependencies]
+x11-dl = "2.21.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Pipes", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Security"] }
+
+[dependencies]
+convertme-core.workspace = true
+convertme-engines.workspace = true
+convertme-drag.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12.5", features = ["protocol-asset", "image-png"] }
+tauri-plugin-dialog = "2.8.4"
+tauri-plugin-opener = "2.7.2"
+tauri-plugin-clipboard-manager = "2.5.0"
+tauri-plugin-updater = "2.14.1"
+rusqlite.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+libc.workspace = true
+walkdir.workspace = true
+
+[features]
+# The official Tauri template's feature pair: embedded assets by default, so a
+# plain `cargo build --release` produces the shipping app. `tauri dev` passes
+# `--no-default-features` to load the Vite server instead.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3"

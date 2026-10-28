@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  gate:
+    name: identity gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: python scripts/debrand.py --src
+
+  build:
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            bundles: deb,rpm,appimage
+          - os: windows-2022
+            bundles: nsis,zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: system dependencies (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libxdo-dev libssl-dev pkg-config imagemagick ffmpeg pandoc ghostscript \
+            poppler-utils qpdf tesseract-ocr 7zip
+
+      - name: vendor the bundled tools
+        run: cargo xtask vendor
+
+      - name: build the PDF sidecar
+        shell: bash
+        run: ./sidecars/pdf/build.sh
+
+      - name: copy the sidecar next to the other bundled tools
+        shell: bash
+        run: cp sidecars/pdf/dist/convertme-pdf* "vendor/bin/convertme-pdf-$(rustc --print host-tuple)$( [[ ${{ runner.os }} == Windows ]] && echo .exe )"
+
+      - name: build and bundle
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm --prefix ui ci
+          ./scripts/bundle.sh ${{ matrix.bundles }}
+
+      - name: scan the artifacts
+        env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: python scripts/debrand.py --all
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.os }}
+          path: |
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.rpm
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.zip
+            target/release/bundle/**/*.sig
+            target/release/bundle/**/latest.json

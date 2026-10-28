@@ -1,0 +1,17 @@
+{
+  "identifier": "default",
+  "description": "The three ConvertMe windows need the dialog, clipboard, opener and event APIs; they get nothing else.",
+  "windows": ["main", "wheel", "preview"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-is-visible",
+    "core:webview:allow-internal-toggle-devtools",
+    "dialog:default",
+    "clipboard-manager:allow-write-text",
+    "opener:default"
+  ]
+}

@@ -1,0 +1,31 @@
+# winget manifest (singleton).
+# `winget install app.convertme` — per-user install, no elevation.
+PackageIdentifier: app.convertme
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: ConvertMe
+PublisherUrl: https://convertme.app
+PublisherSupportUrl: https://convertme.app/support
+PackageName: ConvertMe
+PackageUrl: https://convertme.app
+License: GPL-3.0-or-later
+LicenseUrl: https://convertme.app/license
+ShortDescription: Offline drag-and-drop file converter
+Description: Convert images, video, audio, PDFs, documents, slides, spreadsheets, EPUB, subtitles and archives without uploading anything. Everything runs on this machine.
+Moniker: convertme
+Tags:
+  - converter
+  - offline
+  - privacy
+  - images
+  - video
+  - audio
+  - pdf
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    InstallerUrl: https://convertme.app/downloads/app.convertme_0.1.0_x64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    Scope: user
+ManifestType: singleton
+ManifestVersion: 1.6.0

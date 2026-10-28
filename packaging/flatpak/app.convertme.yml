@@ -1,0 +1,46 @@
+# Flatpak manifest.
+#
+# The bundled tools live inside the sandbox; LibreOffice is reachable only through
+# `flatpak-spawn --host soffice`, which the probe already handles, so Office → PDF
+# rows simply disappear when the host has no LibreOffice.
+app-id: app.convertme
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+command: convertme
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.GlobalShortcuts
+  - --talk-name=org.freedesktop.Flatpak
+
+modules:
+  - name: convertme
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 convertme /app/bin/convertme
+      # Beside the binary, exactly where `default_tools_dir` looks: one rule for the
+      # deb, the AppImage and the sandbox.
+      - cp -a vendor/bin/. /app/bin/
+      - install -Dm644 app.convertme.desktop /app/share/applications/app.convertme.desktop
+      - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/convertme.png
+      - install -Dm644 icons/32x32.png /app/share/icons/hicolor/32x32/apps/convertme.png
+      - install -Dm644 NOTICE /app/share/doc/convertme/NOTICE
+      - install -Dm644 LICENSE /app/share/doc/convertme/LICENSE
+    sources:
+      - type: file
+        path: ../../target/release/convertme
+      - type: dir
+        path: ../../vendor/bin
+      - type: dir
+        path: ../../crates/convertme-gui/icons
+      - type: file
+        path: ../../packaging/app.convertme.desktop
+      - type: file
+        path: ../../NOTICE
+      - type: file
+        path: ../../LICENSE

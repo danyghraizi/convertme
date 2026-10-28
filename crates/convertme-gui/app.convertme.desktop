@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ConvertMe
+Comment=Offline drag-and-drop file converter
+Exec=convertme %F
+Icon=convertme
+Terminal=false
+Categories=Utility;FileTools;
+MimeType=image/jpeg;image/png;image/webp;image/tiff;image/bmp;image/avif;image/heic;video/mp4;video/x-matroska;video/webm;audio/mpeg;audio/flac;audio/ogg;application/pdf;text/markdown;text/plain;text/html;application/epub+zip;application/zip;application/x-tar;application/gzip;
+StartupWMClass=convertme

@@ -1,0 +1,33 @@
+# Maintainer-less AUR recipe for the prebuilt AppImage.
+# Regenerated per release from the AppImage published at convertme.app.
+pkgname=convertme-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Offline drag-and-drop file converter with modifier-key wheels"
+arch=('x86_64')
+url="https://convertme.app"
+license=('GPL-3.0-or-later')
+depends=('gtk3' 'webkit2gtk-4.1' 'libxkbcommon')
+optdepends=('libreoffice-fresh: Office to PDF and ODT conversions')
+provides=('convertme')
+conflicts=('convertme')
+options=('!strip')
+source=("${url}/downloads/app.convertme_${pkgver}_amd64.AppImage")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${srcdir}"
+  # The AppImage carries the desktop entry and the icon; take them from it rather
+  # than keeping a second copy in this recipe.
+  "./app.convertme_${pkgver}_amd64.AppImage" --appimage-extract "app.convertme.desktop" >/dev/null
+  "./app.convertme_${pkgver}_amd64.AppImage" --appimage-extract "app.convertme.png" >/dev/null
+  mv squashfs-root/app.convertme.png convertme.png
+}
+
+package() {
+  install -Dm755 "${srcdir}/app.convertme_${pkgver}_amd64.AppImage" "${pkgdir}/opt/convertme/convertme.AppImage"
+  ln -s /opt/convertme/convertme.AppImage "${pkgdir}/usr/bin/convertme"
+  install -Dm644 "${srcdir}/app.convertme.desktop" "${pkgdir}/usr/share/applications/app.convertme.desktop"
+  install -Dm644 "${srcdir}/convertme.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/convertme.png"
+  install -Dm644 "${srcdir}/NOTICE" "${pkgdir}/usr/share/doc/convertme/NOTICE"
+}

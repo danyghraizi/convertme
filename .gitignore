@@ -1,0 +1,22 @@
+/target
+**/node_modules
+/crates/convertme-gui/ui-dist
+/crates/convertme-gui/tauri.conf.json
+/crates/convertme-gui/gen
+/fixtures/*
+!/fixtures/README.md
+/vendor/*/*
+!/vendor/.gitkeep
+*.log
+.node/
+.DS_Store
+
+# design review captures (not source)
+/design-review
+
+# Python sidecar build outputs (PyInstaller); built by ./sidecars/pdf/build.sh
+/sidecars/pdf/build/
+/sidecars/pdf/dist/
+__pycache__/
+*.pyc
+/sidecars/pdf/.venv/

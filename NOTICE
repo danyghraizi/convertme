@@ -1,0 +1,79 @@
+ConvertMe — third-party notices
+================================
+
+ConvertMe itself is licensed under the GNU General Public License, version 3 or
+later (see `LICENSE`). It drives the following components. None of them is a
+dependency of the Rust crates at build time; they are separate programs, bundled
+with the installer or detected on the host at runtime.
+
+Bundled programs
+----------------
+
+FFmpeg (`ffmpeg`, `ffprobe`)
+    GPL v2 or later, built with libx264, libx265, libvpx, libaom, libopus,
+    libvorbis, lame and libwebp.
+    Source for the exact build shipped with each release is published at
+    https://convertme.app/ffmpeg-source, and a written offer to supply the
+    corresponding source on physical media is included in every installer.
+    FFmpeg is invoked as a separate process; ConvertMe links no FFmpeg code.
+
+ImageMagick (`magick`)
+    ImageMagick licence (Apache-2.0 compatible).
+    https://imagemagick.org/script/license.php
+
+Ghostscript (`gs`)
+    AGPL v3. Invoked as a separate process over its command line, which the
+    AGPL permits; the corresponding source is available at
+    https://convertme.app/ghostscript-source and from Artifex.
+
+qpdf (`qpdf`)
+    Apache-2.0. https://qpdf.readthedocs.io/en/stable/license.html
+
+Poppler (`pdftoppm`, `pdftotext`)
+    GPL v2 or later. https://poppler.freedesktop.org
+
+Pandoc (`pandoc`)
+    GPL v2 or later. https://pandoc.org
+
+7-Zip (`7zz`)
+    GNU LGPL v2.1, with the unRAR restriction: the unRAR code is used only to
+    decode RAR archives, never to create them.
+
+Tesseract (`tesseract`) and the `eng` traineddata
+    Apache-2.0. https://github.com/tesseract-ocr/tesseract
+
+The PDF sidecar (`convertme-pdf`)
+    Python program bundled as a single executable. It uses:
+      * PyMuPDF — AGPL v3, https://github.com/pymupdf/PyMuPDF
+      * python-pptx — MIT
+      * python-docx — MIT
+      * openpyxl — MIT
+    The sidecar runs as a separate process; its source is in `sidecars/pdf/` and
+    is published at https://convertme.app/sidecar-source, satisfying the AGPL.
+
+Detected, not bundled
+---------------------
+
+LibreOffice (`soffice`)
+    MPL-2.0. Used for Office → PDF and ODT conversions when the user has it
+    installed. ConvertMe never ships it; the affected wheel segments are hidden
+    when it is absent and Settings names the gap.
+
+Optional model download
+-----------------------
+
+Face detection for redaction uses YuNet (`face_detection_yunet_2023mar.onnx`),
+Apache-2.0, from the OpenCV model zoo. It is not shipped with the installer; the
+user downloads it into the app data directory, and every redaction path works
+without it (text detection uses Tesseract).
+
+Note on the original sketch: the SCRFD-500M weights named there come from the
+InsightFace model zoo, which is licensed for non-commercial research only. A
+GPL binary cannot redistribute them, so a permissively licensed detector is used
+instead.
+
+Rust crates
+-----------
+
+The full dependency tree with licenses is produced by `cargo about generate` and
+shipped as `THIRD-PARTY-RUST.md` next to this file in the release bundle.

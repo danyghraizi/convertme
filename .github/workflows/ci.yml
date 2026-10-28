@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  gate:
+    # The identity gate runs first: a forbidden token must never reach an artifact,
+    # so nothing else is allowed to build before this passes.
+    name: identity gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: gate self-test
+        run: bash scripts/debrand_selftest.sh
+      - name: scan the tree
+        env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: python scripts/debrand.py --src
+
+  rust:
+    name: rust (${{ matrix.os }})
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libxdo-dev libssl-dev pkg-config
+      - name: format
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace --lib --tests
+
+  ui:
+    name: ui
+    needs: gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --prefix ui
+      - run: npm --prefix ui run typecheck
+      - run: npm --prefix ui run test:geometry
+      - run: npm --prefix ui run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/convertme-gui/ui-dist
+
+  package:
+    name: package (linux)
+    needs: [rust, ui]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/convertme-gui/ui-dist
+      - name: system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libxdo-dev libssl-dev pkg-config imagemagick ffmpeg pandoc 7zip ghostscript \
+            poppler-utils qpdf tesseract-ocr
+      - name: vendor the bundled tools
+        run: cargo xtask vendor
+      - name: build the PDF sidecar
+        run: ./sidecars/pdf/build.sh
+      - name: copy the sidecar into vendor/
+        run: |
+          cp sidecars/pdf/dist/convertme-pdf "vendor/bin/convertme-pdf-$(rustc --print host-tuple)"
+      - name: bundle
+        run: ./scripts/bundle.sh deb,appimage
+      - name: scan the artifacts
+        env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: python scripts/debrand.py --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+
+  perf:
+    # The budgets are requirements, so a regression fails the build.
+    name: perf budgets
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/convertme-gui/ui-dist
+      - name: system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libxdo-dev libssl-dev pkg-config xvfb
+      - run: cargo xtask vendor
+      - run: cargo build --release -p convertme-gui --bin convertme
+      - name: cold start
+        run: xvfb-run -a cargo xtask perf start --runs 20
+      - name: wheel
+        run: xvfb-run -a cargo xtask perf wheel --runs 50
+      - name: idle cost
+        run: xvfb-run -a cargo xtask perf idle --seconds 30

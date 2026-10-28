@@ -1,0 +1,37 @@
+[package]
+name = "convertme-drag"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+convertme-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+ashpd = { version = "0.13.13", default-features = false, features = ["global_shortcuts", "async-io"] }
+pollster = "0.4"
+futures-util = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+x11-dl = "2.21.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+] }
+
+[dev-dependencies]
+tempfile = "3"
