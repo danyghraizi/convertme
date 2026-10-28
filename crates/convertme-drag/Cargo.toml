@@ -14,12 +14,14 @@ thiserror.workspace = true
 libc.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# The Wayland portal and the X11 keymap poller are the only unix backends; keeping
+# them target-scoped is what lets the crate build on Windows at all.
+x11-dl = "2.21.0"
 ashpd = { version = "0.13.13", default-features = false, features = ["global_shortcuts", "async-io"] }
 pollster = "0.4"
 futures-util = "0.3"
-
-[target.'cfg(unix)'.dependencies]
-x11-dl = "2.21.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

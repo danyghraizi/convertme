@@ -69,8 +69,25 @@ pub fn tauri_conf_json() -> String {
         .unwrap_or_else(|| "..".to_string());
     let ui = format!("{root}/ui");
     let gate = format!("{root}/scripts/debrand.py");
+    // A tool that is not vendored yet must not be declared, or `tauri_build` refuses
+    // to compile the crate ("resource path does not exist") and a plain `cargo check`
+    // needs half a gigabyte of binaries. `scripts/bundle.sh` refuses to package
+    // without them, so an artifact can never silently ship empty.
     let external_bins: Vec<String> = BUNDLED_TOOLS
         .iter()
+        .filter(|tool| {
+            let dir = std::path::Path::new(&root).join("vendor").join("bin");
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries.flatten().any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(&format!("{tool}-"))
+                    })
+                })
+                .unwrap_or(false)
+        })
         .map(|t| json_string(&format!("../../vendor/bin/{t}")))
         .collect();
     let endpoints: Vec<String> = update_endpoints().iter().map(|e| json_string(e)).collect();
