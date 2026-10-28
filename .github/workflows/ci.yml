@@ -38,6 +38,15 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The GUI crate embeds the front-end bundle when it compiles, so a clean
+      # checkout must build it before cargo runs.
+      - name: front end
+        run: |
+          npm ci --prefix ui
+          npm --prefix ui run build
       - name: system dependencies
         run: |
           sudo apt-get update
@@ -60,6 +69,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: front end
+        run: |
+          npm ci --prefix ui
+          npm --prefix ui run build
       - run: cargo check --workspace --all-targets
 
   ui:
