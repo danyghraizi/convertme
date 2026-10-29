@@ -1,7 +1,11 @@
 # Lessons from building ConvertMe
 
 Written after a day of interface work on `add background`, where most of the time went
-into failures that looked like something else. Each item states the trap, the evidence
+into failures that looked like something else.
+
+The transferable half of this lives in `~/.omp/agent/AGENTS.md`, which every session loads
+regardless of repository. This file keeps the project-specific detail: names, files,
+commands, and the exact measurements that proved each fix. Each item states the trap, the evidence
 that exposed it, and the rule that prevents it. Read this before touching the UI, the
 engines, or the build.
 
