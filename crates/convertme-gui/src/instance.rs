@@ -156,10 +156,10 @@ mod imp {
 mod imp {
     use super::*;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_INBOUND, ReadFile, WriteFile};
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
-        PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
     use windows::core::HSTRING;
 

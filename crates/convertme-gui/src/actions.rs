@@ -346,6 +346,9 @@ mod clipboard_files {
             if ptr.is_null() {
                 return Err("GlobalLock failed".into());
             }
+            // The block is not zeroed by the allocator, and the header has fields we
+            // do not set; a garbage `fNC`/`pt` would travel to the receiving app.
+            std::ptr::write_bytes(ptr as *mut u8, 0, header);
             let drop = ptr as *mut DROPFILES;
             (*drop).pFiles = header as u32;
             (*drop).fWide = true.into();
