@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js';
+import { For, Show, createEffect, createSignal } from 'solid-js';
 import ColourPicker from './colour-picker';
 
 /**
@@ -7,11 +7,17 @@ import ColourPicker from './colour-picker';
  * history row and the CLI carry exactly what the dialog shows:
  *
  *   linear|135|#0b1020@0,#4b5563@35,#fbbf24@100
+ *
+ * Stops are edited by identity, not by index: the list is sorted for drawing, and
+ * sorting while dragging made every handle move a different stop.
  */
 
 const MAX_STOPS = 8;
+const MIN_STOPS = 2;
 
 interface Stop {
+  /** Stable within the dialog; never serialised. */
+  id: number;
   colour: string;
   position: number;
 }
@@ -22,28 +28,19 @@ interface GradientValue {
   stops: Stop[];
 }
 
+let nextId = 1;
+
 function parse(value: string): GradientValue {
-  const fallback: GradientValue = {
-    kind: 'linear',
-    angle: 0,
-    stops: [
-      { colour: '#f6c26b', position: 0 },
-      { colour: '#e4572e', position: 100 },
-    ],
-  };
   const text = (value ?? '').trim();
-  if (!text) return fallback;
-  const parts = text.split('|');
-  const stopsText = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+  const parts = text ? text.split('|') : [];
+  const stopsText = parts.length > 1 ? parts[parts.length - 1] : parts[0] ?? '';
   let kind: 'linear' | 'radial' = 'linear';
   let angle = 0;
-  if (parts.length > 1) {
-    for (const head of parts.slice(0, -1)) {
-      const part = head.trim();
-      if (!part) continue;
-      if (part === 'linear' || part === 'radial') kind = part;
-      else if (Number.isFinite(Number(part))) angle = Number(part);
-    }
+  for (const head of parts.slice(0, -1)) {
+    const part = head.trim();
+    if (!part) continue;
+    if (part === 'linear' || part === 'radial') kind = part;
+    else if (Number.isFinite(Number(part))) angle = Number(part);
   }
   const raw = stopsText
     .split(',')
@@ -51,22 +48,22 @@ function parse(value: string): GradientValue {
     .filter(Boolean)
     .map((entry) => {
       const [colour, position] = entry.split('@');
-      return {
-        colour: (colour || '#000000').trim(),
-        position: position === undefined ? Number.NaN : Number(position),
-      };
+      return { colour: (colour || '#000000').trim(), position };
     });
-  if (raw.length < 2) return fallback;
-  const last = raw.length - 1;
-  const stops = raw.map((stop, index) => ({
-    colour: stop.colour,
-    position: Number.isFinite(stop.position)
-      ? Math.min(100, Math.max(0, stop.position))
-      : (index * 100) / last,
-  }));
-  stops.sort((a, b) => a.position - b.position);
-  stops[0].position = 0;
-  stops[stops.length - 1].position = 100;
+  const stops: Stop[] =
+    raw.length >= MIN_STOPS
+      ? raw.map((entry, index) => ({
+          id: nextId++,
+          colour: entry.colour,
+          position:
+            entry.position === undefined || !Number.isFinite(Number(entry.position))
+              ? Math.round((index * 100) / (raw.length - 1))
+              : Math.min(100, Math.max(0, Math.round(Number(entry.position)))),
+        }))
+      : [
+          { id: nextId++, colour: '#f6c26b', position: 0 },
+          { id: nextId++, colour: '#e4572e', position: 100 },
+        ];
   return { kind, angle, stops };
 }
 
@@ -88,25 +85,70 @@ function css(value: GradientValue): string {
     : `linear-gradient(${Math.round(value.angle)}deg, ${stops})`;
 }
 
+/** Colour at a position, so a new stop starts from what the strip already shows. */
+function colourAt(stops: Stop[], position: number): string {
+  const sorted = [...stops].sort((a, b) => a.position - b.position);
+  const hex = (value: string): [number, number, number] => {
+    const clean = value.replace('#', '').padEnd(6, '0');
+    const n = Number.parseInt(clean.slice(0, 6), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  if (position <= sorted[0].position) return sorted[0].colour;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const to = sorted[i];
+    const from = sorted[i - 1];
+    if (position <= to.position) {
+      const span = Math.max(1, to.position - from.position);
+      const k = (position - from.position) / span;
+      const [r1, g1, b1] = hex(from.colour);
+      const [r2, g2, b2] = hex(to.colour);
+      const mix = (a: number, b: number): string =>
+        Math.round(a + (b - a) * k)
+          .toString(16)
+          .padStart(2, '0');
+      return `#${mix(r1, r2)}${mix(g1, g2)}${mix(b1, b2)}`;
+    }
+  }
+  return sorted[sorted.length - 1].colour;
+}
+
 interface GradientEditorProps {
   value: string;
   onChange: (value: string) => void;
 }
 
 export default function GradientEditor(props: GradientEditorProps) {
-  const busy = (): boolean => false;
-  const current = (): GradientValue => parse(props.value);
-  const update = (next: GradientValue): void => props.onChange(serialize(next));
+  // Local list: the prop is a string, and re-parsing it on every input would mint new
+  // identities (and re-sort the rows) under the pointer.
+  const [state, setState] = createSignal<GradientValue>(parse(props.value));
+  const [emitted, setEmitted] = createSignal(props.value);
 
-  const withStop = (index: number, patch: Partial<Stop>): void => {
-    const value = current();
-    value.stops = value.stops.map((stop, i) => (i === index ? { ...stop, ...patch } : stop));
-    update(value);
+  createEffect(() => {
+    const incoming = props.value;
+    if (incoming !== emitted()) {
+      setState(parse(incoming));
+      setEmitted(incoming);
+    }
+  });
+
+  const commit = (next: GradientValue): void => {
+    setState(next);
+    const text = serialize(next);
+    setEmitted(text);
+    props.onChange(text);
+  };
+
+  const patch = (id: number, change: Partial<Stop>): void => {
+    const value = state();
+    commit({
+      ...value,
+      stops: value.stops.map((stop) => (stop.id === id ? { ...stop, ...change } : stop)),
+    });
   };
 
   return (
     <div class="gradient-editor">
-      <div class="gradient-strip" style={{ background: css(current()) }} />
+      <div class="gradient-strip" style={{ background: css(state()) }} />
 
       <div class="gradient-row">
         <span class="segmented" role="group" aria-label="Gradient type">
@@ -114,20 +156,16 @@ export default function GradientEditor(props: GradientEditorProps) {
             {(kind) => (
               <button
                 type="button"
-                classList={{ 'is-active': current().kind === kind }}
-                aria-pressed={current().kind === kind}
-                onClick={() => {
-                  const value = current();
-                  value.kind = kind;
-                  update(value);
-                }}
+                classList={{ 'is-active': state().kind === kind }}
+                aria-pressed={state().kind === kind}
+                onClick={() => commit({ ...state(), kind })}
               >
                 {kind === 'linear' ? 'Linear' : 'Radial'}
               </button>
             )}
           </For>
         </span>
-        <Show when={current().kind === 'linear'}>
+        <Show when={state().kind === 'linear'}>
           <label class="angle-row">
             <span>Angle</span>
             <input
@@ -135,27 +173,23 @@ export default function GradientEditor(props: GradientEditorProps) {
               min="0"
               max="360"
               step="1"
-              value={current().angle}
-              onInput={(event) => {
-                const value = current();
-                value.angle = Number(event.currentTarget.value);
-                update(value);
-              }}
+              value={state().angle}
+              onInput={(event) => commit({ ...state(), angle: Number(event.currentTarget.value) })}
             />
-            <output>{Math.round(current().angle)}°</output>
+            <output>{Math.round(state().angle)}°</output>
           </label>
         </Show>
       </div>
 
       <div class="stops">
-        <For each={current().stops}>
-          {(stop, index) => (
+        <For each={state().stops}>
+          {(stop) => (
             <div class="stop-row">
               <ColourPicker
                 compact
                 value={stop.colour}
-                label={`Colour ${index() + 1}`}
-                onChange={(colour) => withStop(index(), { colour })}
+                label="Colour"
+                onChange={(colour) => patch(stop.id, { colour })}
               />
               <input
                 type="range"
@@ -163,9 +197,9 @@ export default function GradientEditor(props: GradientEditorProps) {
                 max="100"
                 step="1"
                 value={Math.round(stop.position)}
-                aria-label={`Position ${index() + 1}`}
+                aria-label={`Position ${Math.round(stop.position)}%`}
                 onInput={(event) =>
-                  withStop(index(), { position: Number(event.currentTarget.value) })
+                  patch(stop.id, { position: Number(event.currentTarget.value) })
                 }
               />
               <output>{Math.round(stop.position)}%</output>
@@ -173,12 +207,10 @@ export default function GradientEditor(props: GradientEditorProps) {
                 type="button"
                 class="stop-remove"
                 aria-label="Remove this colour"
-                disabled={current().stops.length <= 2 || busy()}
-                onClick={() => {
-                  const value = current();
-                  value.stops = value.stops.filter((_, i) => i !== index());
-                  update(value);
-                }}
+                disabled={state().stops.length <= MIN_STOPS}
+                onClick={() =>
+                  commit({ ...state(), stops: state().stops.filter((s) => s.id !== stop.id) })
+                }
               >
                 ×
               </button>
@@ -188,20 +220,27 @@ export default function GradientEditor(props: GradientEditorProps) {
         <button
           type="button"
           class="stop-add"
-          disabled={current().stops.length >= MAX_STOPS || busy()}
+          disabled={state().stops.length >= MAX_STOPS}
           onClick={() => {
-            const value = current();
-            const last = value.stops[value.stops.length - 1];
-            const previous = value.stops[value.stops.length - 2] ?? last;
-            value.stops = [
-              ...value.stops.slice(0, -1),
-              {
-                colour: previous.colour,
-                position: (previous.position + last.position) / 2,
-              },
-              last,
-            ];
-            update(value);
+            const value = state();
+            const sorted = [...value.stops].sort((a, b) => a.position - b.position);
+            // In the widest gap, coloured with what the strip already shows there.
+            let gapFrom = sorted[0];
+            let gapTo = sorted[1];
+            for (let i = 1; i < sorted.length; i += 1) {
+              if (sorted[i].position - sorted[i - 1].position > gapTo.position - gapFrom.position) {
+                gapFrom = sorted[i - 1];
+                gapTo = sorted[i];
+              }
+            }
+            const position = Math.round((gapFrom.position + gapTo.position) / 2);
+            commit({
+              ...value,
+              stops: [
+                ...value.stops,
+                { id: nextId++, colour: colourAt(value.stops, position), position },
+              ],
+            });
           }}
         >
           + Add a colour

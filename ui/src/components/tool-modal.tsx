@@ -37,8 +37,21 @@ export default function ToolModal(props: ToolModalProps) {
   onMount(() => {
     document.addEventListener('keydown', onKeyDown);
     dialog?.focus();
-    onCleanup(() => document.removeEventListener('keydown', onKeyDown));
+    // The page behind must not scroll while a dialog is open: the wheel landed on the
+    // thumbnail grid instead of the control under the pointer.
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    onCleanup(() => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previous;
+    });
   });
+
+  /** Back to the values the tool started with, as the reference dialog offers. */
+  function reset(): void {
+    for (const field of props.fields) setValues(field.key, initialValue(field));
+    setError('');
+  }
 
   const visibleFields = (): Field[] =>
     props.fields.filter((field) => isVisible(field) && field.key !== 'boxes');
@@ -181,6 +194,10 @@ export default function ToolModal(props: ToolModalProps) {
             {error()}
           </p>
           <footer class="modal-footer">
+            <button type="button" class="button button-quiet" onClick={reset}>
+              Reset
+            </button>
+            <span class="modal-footer-gap" />
             <button type="button" class="button button-quiet" onClick={() => props.onClose()}>
               Cancel
             </button>

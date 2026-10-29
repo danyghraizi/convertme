@@ -162,11 +162,9 @@ pub fn parse(value: &str) -> Result<GradientSpec, JobError> {
         .into_iter()
         .map(|(colour, position)| (colour, position.unwrap_or(0.0)))
         .collect();
+    // Positions are honoured as given: forcing the ends made a stop the user placed at
+    // 30% jump to 0, which is not what the dialog showed.
     stops.sort_by(|a, b| a.1.total_cmp(&b.1));
-    stops[0].1 = 0.0;
-    if let Some(last) = stops.last_mut() {
-        last.1 = 1.0;
-    }
 
     Ok(GradientSpec { kind, angle, stops })
 }
@@ -277,6 +275,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(parse(&many).is_err());
+    }
+
+    #[test]
+    fn a_position_is_kept_where_the_dialog_put_it() {
+        let spec = parse("linear|0|#000000@30,#ffffff@100").unwrap();
+        assert!((spec.stops[0].1 - 0.3).abs() < 1e-6);
+        assert!((spec.stops[1].1 - 1.0).abs() < 1e-6);
     }
 
     #[test]

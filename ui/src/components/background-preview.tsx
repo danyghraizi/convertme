@@ -1,10 +1,11 @@
-import { Show, createSignal, onMount } from 'solid-js';
+import { Show, createMemo, createSignal, onMount } from 'solid-js';
 import * as ipc from '../ipc';
 
 /**
  * The composition preview: the photo on its new canvas, with the padding, the corner
- * radius and the fill it will be saved with. The numbers are the engine's; only the
- * scale is ours, so dragging a slider shows the same proportion the file will have.
+ * radius, the ratio and the fill it will be saved with. Every size is computed from the
+ * numbers the engine gets, then scaled once to fit the panel, so the preview and the
+ * file agree on proportions.
  */
 interface BackgroundPreviewProps {
   path: string | null;
@@ -26,12 +27,13 @@ const RATIOS: Record<string, number> = {
 };
 
 const MAX_WIDTH = 430;
-const MAX_HEIGHT = 160;
+const MAX_HEIGHT = 230;
 
 export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');
   const [note, setNote] = createSignal('');
   const [natural, setNatural] = createSignal({ w: 4, h: 3 });
+  const [backdrop, setBackdrop] = createSignal('');
 
   onMount(() => {
     const path = props.path;
@@ -45,21 +47,54 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       .catch(() => setNote('Preview unavailable.'));
   });
 
+  // The chosen background image is shown too: choosing it and seeing nothing was the
+  // whole complaint about that mode.
+  const chosenImage = createMemo(() => props.image?.trim() ?? '');
+  createMemo(() => {
+    const path = chosenImage();
+    if (!path) {
+      setBackdrop('');
+      return;
+    }
+    setBackdrop(ipc.assetUrl(path));
+  });
+
   const fill = (): string => {
     if (props.mode === 'gradient') {
-      const [from, to] = (props.gradient || '#f6c26b,#e4572e').split(',');
-      return `linear-gradient(160deg, ${from || '#f6c26b'}, ${to || '#e4572e'})`;
+      const text = props.gradient || '';
+      const parts = text.split('|');
+      const stopsText = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+      const linear = !text.includes('radial');
+      const angle = Number(parts.find((p) => Number.isFinite(Number(p)) && p.trim() !== '') ?? 0);
+      const stops = (stopsText || '')
+        .split(',')
+        .map((entry) => {
+          const [colour, position] = entry.split('@');
+          return { colour: (colour || '#000').trim(), position: Number(position) };
+        })
+        .sort((a, b) => a.position - b.position)
+        .map((stop) => `${stop.colour} ${Math.round(stop.position)}%`)
+        .join(', ');
+      return linear
+        ? `linear-gradient(${Math.round(angle)}deg, ${stops})`
+        : `radial-gradient(circle at 50% 50%, ${stops})`;
     }
     return props.mode === 'colour' ? props.color || '#101418' : 'transparent';
   };
 
   /** Canvas and photo sizes in source pixels, then one scale to fit the panel. */
-  const layout = () => {
+  const layout = createMemo(() => {
     const { w, h } = natural();
     const pad = Math.max(0, props.padding);
     const ratio = RATIOS[props.aspect];
-    const canvasW = ratio ? Math.max(w + 2 * pad, (h + 2 * pad) * ratio) : w + 2 * pad;
-    const canvasH = ratio ? canvasW / ratio : h + 2 * pad;
+    // The canvas always holds the photo plus its padding; a ratio only extends the
+    // narrower axis, exactly what the engine does.
+    let canvasW = w + 2 * pad;
+    let canvasH = h + 2 * pad;
+    if (ratio) {
+      if (canvasW / canvasH > ratio) canvasH = canvasW / ratio;
+      else canvasW = canvasH * ratio;
+    }
     const scale = Math.min(MAX_WIDTH / canvasW, MAX_HEIGHT / canvasH);
     const photoW = w * scale;
     const photoH = h * scale;
@@ -71,20 +106,20 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       padPx: pad * scale,
       radiusPx: Math.min(props.radius * scale, Math.min(photoW, photoH) / 2),
     };
-  };
+  });
 
   return (
     <div class="photo-preview">
-      <div class="background-stage" style={{ background: fill() }}>
+      <div
+        class="background-stage"
+        style={{
+          background: props.mode === 'image' && backdrop() ? `url(${backdrop()}) center / cover` : fill(),
+        }}
+      >
         <Show when={src()} fallback={<p class="crop-placeholder">{note() || 'Loading…'}</p>}>
           <div
             class="background-canvas"
-            style={{
-              width: `${layout().canvasW}px`,
-              height: `${layout().canvasH}px`,
-              'padding-top': `${layout().padPx}px`,
-              'padding-left': `${layout().padPx}px`,
-            }}
+            style={{ width: `${layout().canvasW}px`, height: `${layout().canvasH}px` }}
           >
             <img
               src={src()}
