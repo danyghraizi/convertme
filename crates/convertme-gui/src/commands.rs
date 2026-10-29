@@ -622,21 +622,21 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 ..Default::default()
             },
             text("image", "Background image", "", Some("path")).when("mode", "image"),
-            num("padding", "Padding", 64.0, 0.0, 2000.0, 1.0, "px"),
-            num("radius", "Corner radius", 24.0, 0.0, 500.0, 1.0, "px"),
-            select(
-                "aspect",
-                "Canvas",
-                "1:1",
-                &["1:1", "4:3", "16:9", "9:16", "source"],
-            )
-            .labelled(&[
-                "Square (1:1)",
-                "Landscape (4:3)",
-                "Wide (16:9)",
-                "Portrait (9:16)",
-                "Same as the photo",
-            ]),
+            ranged("padding", "Padding", 64.0, 0.0, 400.0, 2.0, "px"),
+            ranged("radius", "Corner radius", 24.0, 0.0, 200.0, 1.0, "px"),
+            {
+                // Every ratio visible, as in the reference, and "Auto" means the
+                // engine's own default: the photo plus equal padding.
+                let mut field = select(
+                    "aspect",
+                    "Canvas",
+                    "free",
+                    &["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
+                )
+                .labelled(&["Auto", "1:1", "16:9", "4:3", "9:16", "3:4"]);
+                field.kind = "segmented".into();
+                field
+            },
         ],
         (Category::Images, ToolId::EditPhoto) => vec![
             range("exposure", "Exposure", -3.0, 3.0, 0.1, "EV").group("Light"),
