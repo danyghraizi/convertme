@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createSignal } from 'solid-js';
+import { For, Show, createEffect, createSignal, untrack } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import ColourPicker from './colour-picker';
 
 /**
@@ -118,37 +119,39 @@ interface GradientEditorProps {
 }
 
 export default function GradientEditor(props: GradientEditorProps) {
-  // Local list: the prop is a string, and re-parsing it on every input would mint new
-  // identities (and re-sort the rows) under the pointer.
-  const [state, setState] = createSignal<GradientValue>(parse(props.value));
+  // A store, not a signal of new objects: replacing the stop objects re-created the
+  // range inputs under the pointer, so a drag moved once and then lost the element.
+  const [state, setState] = createStore<GradientValue>(parse(props.value));
   const [emitted, setEmitted] = createSignal(props.value);
 
   createEffect(() => {
-    const incoming = props.value;
-    if (incoming !== emitted()) {
-      setState(parse(incoming));
+    const incoming = untrack(() => props.value);
+    if (incoming !== untrack(emitted)) {
+      const parsed = parse(incoming);
+      setState(reconcile(parsed, { key: 'id' }));
       setEmitted(incoming);
     }
   });
 
-  const commit = (next: GradientValue): void => {
-    setState(next);
-    const text = serialize(next);
+  const commit = (): void => {
+    const text = serialize(state);
+    // Update before the parent re-renders, and read it back untracked: reading a signal
+    // inside the sync effect would tie the two together.
     setEmitted(text);
     props.onChange(text);
   };
 
   const patch = (id: number, change: Partial<Stop>): void => {
-    const value = state();
-    commit({
-      ...value,
-      stops: value.stops.map((stop) => (stop.id === id ? { ...stop, ...change } : stop)),
-    });
+    const index = state.stops.findIndex((stop) => stop.id === id);
+    if (index < 0) return;
+    if (change.colour !== undefined) setState('stops', index, 'colour', change.colour);
+    if (change.position !== undefined) setState('stops', index, 'position', change.position);
+    commit();
   };
 
   return (
     <div class="gradient-editor">
-      <div class="gradient-strip" style={{ background: css(state()) }} />
+      <div class="gradient-strip" style={{ background: css(state) }} />
 
       <div class="gradient-row">
         <span class="segmented" role="group" aria-label="Gradient type">
@@ -156,16 +159,19 @@ export default function GradientEditor(props: GradientEditorProps) {
             {(kind) => (
               <button
                 type="button"
-                classList={{ 'is-active': state().kind === kind }}
-                aria-pressed={state().kind === kind}
-                onClick={() => commit({ ...state(), kind })}
+                classList={{ 'is-active': state.kind === kind }}
+                aria-pressed={state.kind === kind}
+                onClick={() => {
+                  setState('kind', kind);
+                  commit();
+                }}
               >
                 {kind === 'linear' ? 'Linear' : 'Radial'}
               </button>
             )}
           </For>
         </span>
-        <Show when={state().kind === 'linear'}>
+        <Show when={state.kind === 'linear'}>
           <label class="angle-row">
             <span>Angle</span>
             <input
@@ -173,16 +179,19 @@ export default function GradientEditor(props: GradientEditorProps) {
               min="0"
               max="360"
               step="1"
-              value={state().angle}
-              onInput={(event) => commit({ ...state(), angle: Number(event.currentTarget.value) })}
+              value={state.angle}
+              onInput={(event) => {
+                setState('angle', Number(event.currentTarget.value));
+                commit();
+              }}
             />
-            <output>{Math.round(state().angle)}°</output>
+            <output>{Math.round(state.angle)}°</output>
           </label>
         </Show>
       </div>
 
       <div class="stops">
-        <For each={state().stops}>
+        <For each={state.stops}>
           {(stop) => (
             <div class="stop-row">
               <ColourPicker
@@ -207,10 +216,14 @@ export default function GradientEditor(props: GradientEditorProps) {
                 type="button"
                 class="stop-remove"
                 aria-label="Remove this colour"
-                disabled={state().stops.length <= MIN_STOPS}
-                onClick={() =>
-                  commit({ ...state(), stops: state().stops.filter((s) => s.id !== stop.id) })
-                }
+                disabled={state.stops.length <= MIN_STOPS}
+                onClick={() => {
+                  setState(
+                    'stops',
+                    state.stops.filter((s) => s.id !== stop.id),
+                  );
+                  commit();
+                }}
               >
                 ×
               </button>
@@ -220,10 +233,9 @@ export default function GradientEditor(props: GradientEditorProps) {
         <button
           type="button"
           class="stop-add"
-          disabled={state().stops.length >= MAX_STOPS}
+          disabled={state.stops.length >= MAX_STOPS}
           onClick={() => {
-            const value = state();
-            const sorted = [...value.stops].sort((a, b) => a.position - b.position);
+            const sorted = [...state.stops].sort((a, b) => a.position - b.position);
             // In the widest gap, coloured with what the strip already shows there.
             let gapFrom = sorted[0];
             let gapTo = sorted[1];
@@ -234,13 +246,11 @@ export default function GradientEditor(props: GradientEditorProps) {
               }
             }
             const position = Math.round((gapFrom.position + gapTo.position) / 2);
-            commit({
-              ...value,
-              stops: [
-                ...value.stops,
-                { id: nextId++, colour: colourAt(value.stops, position), position },
-              ],
-            });
+            setState('stops', [
+              ...state.stops,
+              { id: nextId++, colour: colourAt(state.stops, position), position },
+            ]);
+            commit();
           }}
         >
           + Add a colour

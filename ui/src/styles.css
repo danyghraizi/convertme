@@ -1345,8 +1345,27 @@ input[type='color'] {
   gap: var(--s-3);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 2px var(--s-3);
+  /* The scrollbar gets its own lane instead of floating over the controls. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-2) transparent;
+  padding: 0 10px var(--s-3) 2px;
   min-height: 0;
+}
+
+.modal-fields::-webkit-scrollbar {
+  width: 10px;
+}
+
+.modal-fields::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modal-fields::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
 }
 
 .modal-footer {
@@ -1953,6 +1972,8 @@ body.wheel-body {
   place-items: center;
   border-radius: var(--r-2);
   overflow: hidden;
+  /* The window's own backdrop: deliberately plain, so the canvas edge is obvious. */
+  box-shadow: inset 0 0 0 1px var(--rule);
   /* Fixed height so the fill, the sliders and the ratio all fit on one panel,
      as in the reference: the preview never pushes the controls off screen. */
   height: 236px;
@@ -1966,6 +1987,28 @@ body.wheel-body {
   place-items: center;
   box-sizing: border-box;
   overflow: hidden;
+  /* The saved canvas. Its border is the only thing that makes a ratio visible. */
+  outline: 1px solid rgba(255, 255, 255, 0.35);
+  outline-offset: 0;
+  background-repeat: no-repeat;
+}
+
+.preview-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-2);
+}
+
+.preview-caption strong {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.preview-caption-note {
+  color: var(--ink-3);
 }
 
 .background-stage img {

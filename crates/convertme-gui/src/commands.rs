@@ -630,6 +630,30 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 });
                 field
             },
+            {
+                let mut field = ranged("bg_zoom", "Image zoom", 1.0, 1.0, 3.0, 0.1, "\u{00d7}");
+                field.show_if = Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "image".into(),
+                });
+                field
+            },
+            {
+                let mut field = ranged("bg_x", "Image across", 0.0, -100.0, 100.0, 1.0, "%");
+                field.show_if = Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "image".into(),
+                });
+                field
+            },
+            {
+                let mut field = ranged("bg_y", "Image up/down", 0.0, -100.0, 100.0, 1.0, "%");
+                field.show_if = Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "image".into(),
+                });
+                field
+            },
             ranged("padding", "Padding", 64.0, 0.0, 400.0, 2.0, "px"),
             ranged("radius", "Corner radius", 24.0, 0.0, 200.0, 1.0, "px"),
             {

@@ -13,6 +13,9 @@ interface BackgroundPreviewProps {
   color: string;
   gradient: string;
   image: string | null;
+  imageZoom: number;
+  imageX: number;
+  imageY: number;
   padding: number;
   radius: number;
   aspect: string;
@@ -82,6 +85,20 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     return props.mode === 'colour' ? props.color || '#101418' : 'transparent';
   };
 
+  /** The canvas in source pixels: what the file will be. */
+  const canvasSize = createMemo(() => {
+    const { w, h } = natural();
+    const pad = Math.max(0, props.padding);
+    let canvasW = w + 2 * pad;
+    let canvasH = h + 2 * pad;
+    const ratio = RATIOS[props.aspect];
+    if (ratio) {
+      if (canvasW / canvasH > ratio) canvasH = canvasW / ratio;
+      else canvasW = canvasH * ratio;
+    }
+    return { w: canvasW, h: canvasH };
+  });
+
   /** Canvas and photo sizes in source pixels, then one scale to fit the panel. */
   const layout = createMemo(() => {
     const { w, h } = natural();
@@ -110,16 +127,28 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
 
   return (
     <div class="photo-preview">
-      <div
-        class="background-stage"
-        style={{
-          background: props.mode === 'image' && backdrop() ? `url(${backdrop()}) center / cover` : fill(),
-        }}
-      >
+      <div class="background-stage">
         <Show when={src()} fallback={<p class="crop-placeholder">{note() || 'Loading…'}</p>}>
           <div
             class="background-canvas"
-            style={{ width: `${layout().canvasW}px`, height: `${layout().canvasH}px` }}
+            style={{
+              width: `${layout().canvasW}px`,
+              height: `${layout().canvasH}px`,
+              // The fill belongs to the saved canvas, not to this window. Zoom and
+              // placement of a chosen picture match the engine's crop window.
+              background:
+                props.mode === 'image' && backdrop()
+                  ? `url(${backdrop()}) center / cover`
+                  : fill(),
+              'background-size':
+                props.mode === 'image' && backdrop()
+                  ? `${Math.max(100, props.imageZoom * 100)}% auto`
+                  : undefined,
+              'background-position':
+                props.mode === 'image' && backdrop()
+                  ? `calc(50% + ${props.imageX / 2}%) calc(50% + ${props.imageY / 2}%)`
+                  : undefined,
+            }}
           >
             <img
               src={src()}
@@ -140,8 +169,11 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
           </div>
         </Show>
       </div>
-      <p class="field-help">
-        A guide to the composition; the saved file uses the exact pixel sizes.
+      <p class="preview-caption">
+        Canvas <strong>{Math.round(canvasSize().w)} × {Math.round(canvasSize().h)}</strong>
+        <span class="preview-caption-note">
+          the frame that will be saved; the grey around it is this window
+        </span>
       </p>
     </div>
   );

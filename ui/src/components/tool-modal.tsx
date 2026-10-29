@@ -153,6 +153,9 @@ export default function ToolModal(props: ToolModalProps) {
                 color={String(values.color ?? '#101418')}
                 gradient={String(values.gradient ?? '')}
                 image={values.image ? String(values.image) : null}
+                imageZoom={Number(values.bg_zoom ?? 1)}
+                imageX={Number(values.bg_x ?? 0)}
+                imageY={Number(values.bg_y ?? 0)}
                 padding={Number(values.padding ?? 0)}
                 radius={Number(values.radius ?? 0)}
                 aspect={String(values.aspect ?? 'source')}

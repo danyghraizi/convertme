@@ -122,7 +122,10 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
         ToolId::AddBackground => {
             check_params(
                 params,
-                &["color", "gradient", "image", "aspect", "padding", "radius"],
+                &[
+                    "color", "gradient", "image", "aspect", "padding", "radius", "bg_zoom", "bg_x",
+                    "bg_y",
+                ],
             )?;
             if let Some(color) = string(params, "color")?
                 && color.trim().is_empty()
@@ -143,6 +146,13 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 && !aspect.is_empty()
             {
                 parse_aspect(aspect)?;
+            }
+            for key in ["bg_zoom", "bg_x", "bg_y"] {
+                if let Some(v) = number(params, key)?
+                    && !v.is_finite()
+                {
+                    return Err(unsupported(format!("`{key}` must be a number")));
+                }
             }
             for key in ["padding", "radius"] {
                 if let Some(v) = number(params, key)?
@@ -776,13 +786,29 @@ fn add_background(
         args.push(os("center"));
         args.push(os("-composite"));
     } else if let Some(background) = background_image {
+        // The background is a picture to place, not just a texture: zoom it and shift the
+        // crop window, so the same image can be reused off-centre.
+        let zoom = number(params, "bg_zoom")?.unwrap_or(1.0).clamp(1.0, 3.0);
+        // The crop window can only move inside the zoomed image; past that, ImageMagick
+        // would clip the background instead of showing more of it.
+        let margin_x = (f64::from(canvas_w) * (zoom - 1.0) / 2.0).max(0.0);
+        let margin_y = (f64::from(canvas_h) * (zoom - 1.0) / 2.0).max(0.0);
+        let dx = ((number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_x)
+            .round() as i64;
+        let dy = ((number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_y)
+            .round() as i64;
         args.push(os(&background));
         args.push(os("-resize"));
-        args.push(os(format!("{size}^")));
+        args.push(os(format!(
+            "{}x{}^",
+            (f64::from(canvas_w) * zoom).round().max(1.0),
+            (f64::from(canvas_h) * zoom).round().max(1.0)
+        )));
         args.push(os("-gravity"));
         args.push(os("center"));
-        args.push(os("-extent"));
-        args.push(os(&size));
+        args.push(os("-crop"));
+        args.push(os(format!("{size}{dx:+}{dy:+}")));
+        args.push(os("+repage"));
         args.push(os(&job.source));
         args.push(os("-gravity"));
         args.push(os("center"));
