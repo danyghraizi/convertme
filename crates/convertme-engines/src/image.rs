@@ -868,7 +868,7 @@ fn add_background(
             let sigma = (shadow_pct / 100.0 * f64::from(padding) * 0.8)
                 .min(shortest * 0.20)
                 .max(1.0);
-            let offset = sigma * 0.9;
+            let offset = sigma * 1.0;
             // 0 degrees points up, 180 down: the shadow falls opposite the light.
             let dx = angle.sin() * offset;
             let dy = -angle.cos() * offset;
@@ -913,7 +913,9 @@ fn add_background(
                 // 100% differ only in how far the same faint grey reaches.
                 os("-evaluate"),
                 os("multiply"),
-                os(format!("{:.3}", 0.12 + 0.38 * shadow_pct / 100.0)),
+                // Density has to be visible against a mid-grey background as well: at
+                // 100% the core reaches 0.8 alpha.
+                os(format!("{:.3}", 0.45 + 0.55 * shadow_pct / 100.0)),
                 // The blurred grey has to become the alpha channel: CopyOpacity copies the
                 // source's alpha, not its intensity.
                 os("-alpha"),

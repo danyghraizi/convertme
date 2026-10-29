@@ -147,7 +147,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       // Same numbers the engine uses: the shadow lives in the padding, sigma grows with
       // that, the offset is 0.9 sigma and the CSS blur radius about twice sigma.
       shadowPx: (props.shadowPct / 100) * pad * 0.8 * scale,
-      shadowAlpha: 0.12 + 0.38 * (props.shadowPct / 100),
+      shadowAlpha: 0.45 + 0.55 * (props.shadowPct / 100),
       shadowAngle: (props.shadowAngle * Math.PI) / 180,
     };
   });
@@ -211,7 +211,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                 'border-radius': `${layout().radiusPx}px`,
                 'box-shadow':
                   layout().shadowPx > 0
-                    ? `${(Math.sin(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(-Math.cos(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(layout().shadowPx * 2).toFixed(1)}px rgba(0, 0, 0, ${layout().shadowAlpha.toFixed(2)})`
+                    ? `${(Math.sin(layout().shadowAngle) * layout().shadowPx * 1.0).toFixed(1)}px ${(-Math.cos(layout().shadowAngle) * layout().shadowPx * 1.0).toFixed(1)}px ${(layout().shadowPx * 2).toFixed(1)}px rgba(0, 0, 0, ${layout().shadowAlpha.toFixed(2)})`
                     : 'none',
               }}
               onLoad={(event) => {
