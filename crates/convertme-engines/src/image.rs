@@ -1540,6 +1540,151 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Unsupported);
     }
 
+    /// A pixel as 0..255 channels, sampled with the same tool the engine uses.
+    fn pixel(f: &Fixture, path: &Path, x: u32, y: u32) -> (u8, u8, u8) {
+        let cmd = Cmd::new(&f.magick)
+            .arg(format!("{}[1x1+{x}+{y}]", path.display()))
+            .arg("-format")
+            .arg("%[fx:int(255*r)] %[fx:int(255*g)] %[fx:int(255*b)]")
+            .arg("info:")
+            .stdout_piped()
+            .budget(Budget::Short);
+        let output = proc::run(cmd, &JobCtx::new()).expect("run magick");
+        assert!(output.success, "magick failed: {}", output.stderr_tail);
+        let mut parts = output.stdout.split_whitespace();
+        (
+            parts.next().unwrap_or("0").parse().unwrap_or(0),
+            parts.next().unwrap_or("0").parse().unwrap_or(0),
+            parts.next().unwrap_or("0").parse().unwrap_or(0),
+        )
+    }
+
+    fn solid(f: &Fixture, name: &str, size: &str, colour: &str) -> PathBuf {
+        make_image(
+            f,
+            name,
+            vec![os("-size"), os(size), os(format!("xc:{colour}"))],
+        )
+    }
+
+    #[test]
+    fn add_background_padding_and_radius_are_proportional() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "pad.png", "400x300", "red");
+        let job = Job::new(
+            input,
+            Intent::Tool {
+                tool: ToolId::AddBackground,
+                params: params(json!({
+                    "color": "#00ff00",
+                    "padding_pct": 10,
+                    "radius_pct": 0,
+                })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compose");
+        let (w, h) = image_size(
+            &f.magick,
+            &artifacts[0],
+            &Context {
+                tools: &f.tools,
+                work: &WorkDir::create(f._dir.path().join("size-work")).expect("work dir"),
+                ctx: &JobCtx::new(),
+            },
+        )
+        .expect("size");
+        // 10% of the shorter side (300) on every side.
+        assert_eq!((w, h), (460, 360));
+        assert_eq!(
+            pixel(&f, &artifacts[0], 2, 2),
+            (0, 255, 0),
+            "canvas corner is the background"
+        );
+    }
+
+    #[test]
+    fn add_background_rounds_the_photo_not_the_canvas() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "round.png", "400x300", "red");
+        let job = Job::new(
+            input,
+            Intent::Tool {
+                tool: ToolId::AddBackground,
+                params: params(json!({
+                    "color": "#00ff00",
+                    "padding_pct": 20,
+                    "radius_pct": 100,
+                })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compose");
+        // Canvas corner: background, not cut away.
+        assert_eq!(pixel(&f, &artifacts[0], 2, 2), (0, 255, 0));
+        // Photo corner (inside the rounded shape): background shows through.
+        assert_eq!(pixel(&f, &artifacts[0], 62, 62), (0, 255, 0));
+        // Photo centre: the photo.
+        let (r, g, _b) = pixel(&f, &artifacts[0], 230, 180);
+        assert!(r > 200 && g < 60, "centre should be the photo, got {r}/{g}");
+    }
+
+    #[test]
+    fn add_background_image_stays_inside_the_frame_at_any_placement() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "shot.png", "400x300", "red");
+        let backdrop = solid(&f, "backdrop.png", "100x100", "blue");
+        for (x, y) in [(0, 0), (-100, -100), (100, 100)] {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::AddBackground,
+                    params: params(json!({
+                        "image": backdrop.to_string_lossy(),
+                        "bg_zoom": 2,
+                        "bg_x": x,
+                        "bg_y": y,
+                        "padding_pct": 10,
+                    })),
+                },
+            );
+            let artifacts = run_engine(&f, &job).expect("compose");
+            // Opaque everywhere: a clipped crop used to leave transparent wedges.
+            let (r, g, b) = pixel(&f, &artifacts[0], 1, 1);
+            assert!(
+                r > 0 || g > 0 || b > 0,
+                "corner is transparent at {x}/{y}: {r}/{g}/{b}"
+            );
+        }
+    }
+
+    #[test]
+    fn add_background_shadow_darkens_the_band_below_the_photo() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "shadow.png", "400x300", "red");
+        let compose = |shadow: f64| {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::AddBackground,
+                    params: params(json!({
+                        "color": "#ffffff",
+                        "padding_pct": 20,
+                        "shadow_pct": shadow,
+                    })),
+                },
+            );
+            run_engine(&f, &job).expect("compose")
+        };
+        let plain = compose(0.0);
+        let shadowed = compose(10.0);
+        // Just below the photo, in the padding band (padding is 60 px, the photo ends
+        // at y=360 in a 420 px canvas).
+        // A few pixels under the photo edge: the shadow fades before the band ends.
+        let (pr, _, _) = pixel(&f, &plain[0], 260, 366);
+        let (sr, _, _) = pixel(&f, &shadowed[0], 260, 366);
+        assert_eq!(pr, 255, "the band starts as the background");
+        assert!(sr < pr - 5, "the shadow should darken it: {sr} vs {pr}");
+    }
+
     #[test]
     fn png_to_webp() {
         let Some(f) = fixture() else { return };
