@@ -55,6 +55,8 @@ const GRADIENT_PRESETS: FillPreset[] = [
 interface ToolModalProps {
   tool: Segment;
   fields: Field[];
+  /** The whole selection: the settings apply to all of them, the preview shows one. */
+  files?: { path: string; label: string }[];
   /** Shown above the fields: the file the tool will act on, and its size. */
   fileLabel?: string | null;
   fileSize?: number | null;
@@ -68,6 +70,8 @@ export default function ToolModal(props: ToolModalProps) {
   for (const field of props.fields) seed[field.key] = initialValue(field);
   const [values, setValues] = createStore<Record<string, FieldValue>>(seed);
   const [submitting, setSubmitting] = createSignal(false);
+  // Which file the preview shows; the settings apply to every selected file.
+  const [shown, setShown] = createSignal(0);
   const [error, setError] = createSignal('');
   let dialog: HTMLDivElement | undefined;
 
@@ -206,7 +210,23 @@ export default function ToolModal(props: ToolModalProps) {
               <span class="modal-file-name" title={props.fileLabel ?? ''}>
                 {props.fileLabel}
               </span>
-              <Show when={props.fileSize}>
+              <Show when={(props.files?.length ?? 0) > 1}>
+              <div class="modal-files" role="group" aria-label="Preview which file">
+                <For each={props.files ?? []}>
+                  {(file, index) => (
+                    <button
+                      type="button"
+                      classList={{ 'is-active': shown() === index() }}
+                      title={file.label}
+                      onClick={() => setShown(index())}
+                    >
+                      {index() + 1}. {file.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <Show when={props.fileSize}>
                 {(size) => <span class="modal-file-size">{formatBytes(size())}</span>}
               </Show>
             </p>
@@ -225,7 +245,7 @@ export default function ToolModal(props: ToolModalProps) {
             </Show>
             <Show when={props.tool.id === 'add-background'}>
               <BackgroundPreview
-                path={props.previewPath}
+                path={props.files?.[shown()]?.path ?? props.previewPath}
                 mode={String(values.mode ?? 'colour')}
                 color={String(values.color ?? '#101418')}
                 gradient={String(values.gradient ?? '')}
@@ -247,7 +267,7 @@ export default function ToolModal(props: ToolModalProps) {
             </Show>
             <Show when={props.tool.id === 'edit-photo'}>
               <PhotoPreview
-                path={props.previewPath}
+                path={props.files?.[shown()]?.path ?? props.previewPath}
                 exposure={Number(values.exposure ?? 0)}
                 brightness={Number(values.brightness ?? 0)}
                 contrast={Number(values.contrast ?? 0)}

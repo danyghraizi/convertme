@@ -791,6 +791,7 @@ export default function App() {
                   null)
                 : null
             }
+            files={state().files.map((path) => ({ path, label: baseName(path) }))}
             previewPath={state().files[0] ?? null}
             onClose={() => setModal(null)}
             onSubmit={submitModal}

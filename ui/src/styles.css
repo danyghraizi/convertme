@@ -2491,3 +2491,30 @@ select:focus {
     inset 0 0 0 1px var(--accent),
     0 1px 3px rgba(0, 0, 0, 0.3);
 }
+
+/* Which selected file the preview shows; every file still gets the same settings. */
+.modal-files {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.modal-files button {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--t-2xs);
+  cursor: pointer;
+}
+
+.modal-files button.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
