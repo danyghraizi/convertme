@@ -3,8 +3,8 @@ import * as ipc from '../ipc';
 
 /**
  * The composition preview: the photo on its new canvas, with the padding, the corner
- * radius and the fill it will be saved with. It is an approximation built from the
- * same numbers the engine gets — the exact scaling is ImageMagick's.
+ * radius and the fill it will be saved with. The numbers are the engine's; only the
+ * scale is ours, so dragging a slider shows the same proportion the file will have.
  */
 interface BackgroundPreviewProps {
   path: string | null;
@@ -22,12 +22,16 @@ const RATIOS: Record<string, number> = {
   '4:3': 4 / 3,
   '16:9': 16 / 9,
   '9:16': 9 / 16,
-  source: 0,
+  '3:4': 3 / 4,
 };
+
+const MAX_WIDTH = 430;
+const MAX_HEIGHT = 200;
 
 export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');
   const [note, setNote] = createSignal('');
+  const [natural, setNatural] = createSignal({ w: 4, h: 3 });
 
   onMount(() => {
     const path = props.path;
@@ -49,34 +53,56 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     return props.mode === 'colour' ? props.color || '#101418' : 'transparent';
   };
 
-  const ratio = (): number | null => {
-    const value = RATIOS[props.aspect];
-    return value === undefined || value === 0 ? null : value;
+  /** Canvas and photo sizes in source pixels, then one scale to fit the panel. */
+  const layout = () => {
+    const { w, h } = natural();
+    const pad = Math.max(0, props.padding);
+    const ratio = RATIOS[props.aspect];
+    const canvasW = ratio ? Math.max(w + 2 * pad, (h + 2 * pad) * ratio) : w + 2 * pad;
+    const canvasH = ratio ? canvasW / ratio : h + 2 * pad;
+    const scale = Math.min(MAX_WIDTH / canvasW, MAX_HEIGHT / canvasH);
+    const photoW = w * scale;
+    const photoH = h * scale;
+    return {
+      canvasW: canvasW * scale,
+      canvasH: canvasH * scale,
+      photoW,
+      photoH,
+      padPx: pad * scale,
+      radiusPx: Math.min(props.radius * scale, Math.min(photoW, photoH) / 2),
+    };
   };
 
   return (
     <div class="photo-preview">
-      <div
-        class="background-stage"
-        style={{
-          'aspect-ratio': ratio() ? String(ratio()) : 'auto',
-          background: fill(),
-          'padding-top': ratio() ? undefined : `${Math.min(props.padding / 8, 48)}px`,
-          'padding-bottom': ratio() ? undefined : `${Math.min(props.padding / 8, 48)}px`,
-        }}
-      >
+      <div class="background-stage" style={{ background: fill() }}>
         <Show when={src()} fallback={<p class="crop-placeholder">{note() || 'Loading…'}</p>}>
-          <img
-            src={src()}
-            alt=""
-            draggable={false}
+          <div
+            class="background-canvas"
             style={{
-              'border-radius': `${Math.min(props.radius / 6, 24)}px`,
-              padding: ratio() ? `${Math.min(props.padding / 8, 48)}px` : '0',
-              'box-sizing': 'border-box',
-              'max-height': '38vh',
+              width: `${layout().canvasW}px`,
+              height: `${layout().canvasH}px`,
+              'padding-top': `${layout().padPx}px`,
+              'padding-left': `${layout().padPx}px`,
             }}
-          />
+          >
+            <img
+              src={src()}
+              alt=""
+              draggable={false}
+              style={{
+                width: `${layout().photoW}px`,
+                height: `${layout().photoH}px`,
+                'border-radius': `${layout().radiusPx}px`,
+              }}
+              onLoad={(event) => {
+                const image = event.currentTarget;
+                if (image.naturalWidth > 0) {
+                  setNatural({ w: image.naturalWidth, h: image.naturalHeight });
+                }
+              }}
+            />
+          </div>
         </Show>
       </div>
       <p class="field-help">

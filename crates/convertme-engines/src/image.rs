@@ -135,7 +135,11 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             {
                 return Err(unsupported("`image` cannot be empty"));
             }
-            if let Some(aspect) = string(params, "aspect")? {
+            // "free" is the dialog's word for "keep the photo's own ratio".
+            if let Some(aspect) = string(params, "aspect")?
+                && !aspect.eq_ignore_ascii_case("free")
+                && !aspect.is_empty()
+            {
                 parse_aspect(aspect)?;
             }
             for key in ["padding", "radius"] {
@@ -732,14 +736,18 @@ fn add_background(
     let mut canvas_h = height + padding.saturating_mul(2);
     // Without an explicit ratio the canvas keeps the source aspect: padding the
     // two axes equally would otherwise stretch a non-square photo.
-    let (a, b) = match string(params, "aspect")? {
-        Some(aspect) => parse_aspect(aspect)?,
-        None => (width as f32, height as f32),
-    };
-    if (canvas_w as f32) / (canvas_h as f32) > a / b {
-        canvas_h = ((canvas_w as f32) * b / a).round().max(1.0) as u32;
-    } else {
-        canvas_w = ((canvas_h as f32) * a / b).round().max(1.0) as u32;
+    // Only an explicit ratio changes the canvas: with "free" the canvas is the
+    // photo plus the same padding on all four sides, which is what the dialog shows.
+    if let Some(aspect) = string(params, "aspect")?
+        .filter(|a| !a.eq_ignore_ascii_case("free"))
+        .filter(|a| !a.is_empty())
+    {
+        let (a, b) = parse_aspect(aspect)?;
+        if (canvas_w as f32) / (canvas_h as f32) > a / b {
+            canvas_h = ((canvas_w as f32) * b / a).round().max(1.0) as u32;
+        } else {
+            canvas_w = ((canvas_h as f32) * a / b).round().max(1.0) as u32;
+        }
     }
     let size = format!("{canvas_w}x{canvas_h}");
 

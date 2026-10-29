@@ -66,7 +66,13 @@ impl Toolset {
     }
 
     pub fn has_engine(&self, engine: convertme_core::formats::EngineRef) -> bool {
-        self.caps.read().has_engine(engine)
+        if self.caps.read().has_engine(engine) {
+            return true;
+        }
+        // A "no" from the cache can be out of date: the cache may predate the
+        // install, or the background probe may not have finished yet. Look once
+        // (`path` caches the answer) instead of refusing a job the tool can run.
+        engine.required().iter().all(|key| self.path(*key).is_ok())
     }
 
     pub fn feature(&self, key: ToolKey, feature: &str) -> bool {

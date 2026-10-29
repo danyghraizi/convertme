@@ -1945,14 +1945,22 @@ body.wheel-body {
   place-items: center;
   border-radius: var(--r-2);
   overflow: hidden;
-  min-height: 160px;
-  padding: 12px;
+  /* Fixed height so the fill, the sliders and the ratio all fit on one panel,
+     as in the reference: the preview never pushes the controls off screen. */
+  height: 232px;
+  padding: 16px;
+}
+
+.background-canvas {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border-radius: 8px;
 }
 
 .background-stage img {
   display: block;
-  max-width: 100%;
-  object-fit: contain;
+  object-fit: cover;
   user-select: none;
 }
 

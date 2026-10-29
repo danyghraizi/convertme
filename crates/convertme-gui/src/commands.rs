@@ -485,6 +485,21 @@ fn range(key: &str, label: &str, min: f64, max: f64, step: f64, unit: &str) -> F
     field
 }
 
+/// A slider that starts somewhere other than the minimum.
+fn ranged(
+    key: &str,
+    label: &str,
+    default: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+    unit: &str,
+) -> Field {
+    let mut field = num(key, label, default, min, max, step, unit);
+    field.kind = "range".into();
+    field
+}
+
 fn select(key: &str, label: &str, default: &str, options: &[&str]) -> Field {
     Field {
         key: key.into(),
