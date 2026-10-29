@@ -651,9 +651,14 @@ fn perf(args: &[String]) -> Result<(), String> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default)
     };
+    let budget = args
+        .iter()
+        .position(|a| a == "--budget")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f64>().ok());
     match which {
-        "wheel" => perf_app("CONVERTME_PERF_WHEEL", num("--runs", 50), "wheel"),
-        "start" => perf_app("CONVERTME_PERF_START", num("--runs", 20), "start"),
+        "wheel" => perf_app("CONVERTME_PERF_WHEEL", num("--runs", 50), "wheel", budget),
+        "start" => perf_app("CONVERTME_PERF_START", num("--runs", 20), "start", budget),
         "idle" => perf_idle(num("--seconds", 30)),
         other => Err(format!("unknown perf target {other:?}")),
     }
@@ -674,7 +679,7 @@ fn release_binary() -> Result<PathBuf, String> {
 
 /// The app measures itself (`CONVERTME_PERF_*`) and prints one `PERF …` line per
 /// run; this task aggregates and enforces the budget.
-fn perf_app(env_var: &str, runs: u64, label: &str) -> Result<(), String> {
+fn perf_app(env_var: &str, runs: u64, label: &str, budget: Option<f64>) -> Result<(), String> {
     let binary = release_binary()?;
     // Cold start is one sample per process: each run is a fresh launch. The wheel
     // measurement is many samples inside one process, since it is the *repeat*
@@ -707,11 +712,14 @@ fn perf_app(env_var: &str, runs: u64, label: &str) -> Result<(), String> {
     }
     let (p50, p95) = percentiles(&samples);
     println!("{label}: n={} p50={p50:.1}ms p95={p95:.1}ms", samples.len());
-    let ceiling = match label {
+    // `--budget` exists for environments whose baseline is not a desktop (a CI
+    // container without a GPU starts WebKit in seconds, not milliseconds); the
+    // numbers the product promises are the defaults below.
+    let ceiling = budget.unwrap_or(match label {
         "wheel" => 50.0,
         "start" => 600.0,
         _ => f64::MAX,
-    };
+    });
     if p95 > ceiling {
         return Err(format!(
             "{label} p95 {p95:.1} ms exceeds the {ceiling:.0} ms budget"

@@ -353,10 +353,11 @@ mod clipboard_files {
             std::ptr::copy_nonoverlapping(list.as_ptr(), dest, list.len());
             let _ = GlobalUnlock(mem);
 
-            OpenClipboard(HWND::default()).map_err(|e| e.to_string())?;
+            OpenClipboard(Some(HWND::default())).map_err(|e| e.to_string())?;
             let result = (|| -> Result<(), String> {
                 EmptyClipboard().map_err(|e| e.to_string())?;
-                SetClipboardData(CF_HDROP.0 as u32, HANDLE(mem.0)).map_err(|e| e.to_string())?;
+                SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(mem.0)))
+                    .map_err(|e| e.to_string())?;
                 Ok(())
             })();
             let _ = CloseClipboard();

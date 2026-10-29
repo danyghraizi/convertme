@@ -199,8 +199,8 @@ mod imp {
             .spawn(move || {
                 loop {
                     // SAFETY: one pipe instance per connection, handles closed per loop.
-                    let pipe: HANDLE = unsafe {
-                        match CreateNamedPipeW(
+                    let pipe = unsafe {
+                        CreateNamedPipeW(
                             &handle_w,
                             PIPE_ACCESS_INBOUND,
                             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -209,19 +209,23 @@ mod imp {
                             64 * 1024,
                             0,
                             None,
-                        ) {
-                            Ok(h) => h,
-                            Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
-                        }
+                        )
                     };
-                    if pipe.is_invalid() {
+                    if pipe.is_invalid() || pipe == HANDLE::default() {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
                         continue;
                     }
                     unsafe {
                         let _ = ConnectNamedPipe(pipe, None);
                         let mut buf = vec![0u8; 64 * 1024];
                         let mut read = 0u32;
-                        if ReadFile(pipe, Some(&mut buf), Some(&mut read as *mut u32), None).is_ok()
+                        if ReadFile(
+                            pipe,
+                            Some(buf.as_mut_slice()),
+                            Some(&mut read as *mut u32),
+                            None,
+                        )
+                        .is_ok()
                             && read > 0
                         {
                             let text = String::from_utf8_lossy(&buf[..read as usize]).to_string();
