@@ -114,6 +114,12 @@ export interface Field {
   step?: number;
   unit?: string;
   options?: string[];
+  /** Presentation for `options` when the stored values are not readable. */
+  option_labels?: string[];
+  /** Render this field only while another field holds a given value. */
+  show_if?: { key: string; equals: string };
+  /** A form control (a mode switch), never sent to the backend. */
+  control?: boolean;
 }
 
 export interface ConvertIntent {

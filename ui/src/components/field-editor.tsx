@@ -318,7 +318,11 @@ export default function FieldEditor(props: FieldEditorProps) {
             onChange={(event) => props.onChange(event.currentTarget.value)}
           >
             <For each={props.field.options ?? []}>
-              {(option) => <option value={option}>{option}</option>}
+              {(option, index) => (
+                <option value={option}>
+                  {props.field.option_labels?.[index()] ?? option}
+                </option>
+              )}
             </For>
           </select>
         </Match>

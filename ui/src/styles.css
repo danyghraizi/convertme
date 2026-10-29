@@ -471,6 +471,7 @@ textarea {
 }
 
 .thumb {
+  position: relative;
   display: grid;
   gap: 6px;
   width: 96px;
@@ -1740,4 +1741,39 @@ body.wheel-body {
 
 .field-switch .field-help {
   display: block;
+}
+
+/* Removing one file from a selection, and clearing it. */
+.panel-action {
+  margin-left: auto;
+}
+
+.thumb-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+
+.thumb:hover .thumb-remove,
+.thumb-remove:focus-visible {
+  opacity: 1;
+}
+
+.thumb-remove:hover {
+  background: var(--surface);
+  color: var(--ink);
 }

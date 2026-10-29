@@ -327,7 +327,9 @@ fn execute(files: &[PathBuf], category: Category, intent: Intent, policy: Overwr
         match queue.submit(job) {
             Ok((id, _)) => ids.push(id),
             Err(e) => {
-                eprintln!("{}: {e}", e.code);
+                // `JobError` already prints its code; prefixing it again read
+                // "unsupported: unsupported: …".
+                eprintln!("{e}");
                 queue.shutdown();
                 return 1;
             }

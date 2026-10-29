@@ -187,6 +187,37 @@ export default function App() {
     );
   }
 
+  /** Re-analyse the remaining files after the selection changes. */
+  async function replaceSelection(next: string[]): Promise<void> {
+    setSelection(next);
+    setModal(null);
+    if (next.length === 0) {
+      setAnalysis(null);
+      setTargets([]);
+      setNote('Selection cleared');
+      return;
+    }
+    setAnalyzing(true);
+    const result = await ipc.analyze(next).catch(() => null);
+    setAnalyzing(false);
+    if (!result) {
+      setAnalysis(null);
+      setNote('Could not read the remaining files');
+      return;
+    }
+    setAnalysis(result);
+    if (result.category) setActiveCategory(normalizeCategory(result.category));
+    await refreshWheelData();
+  }
+
+  async function removeFile(path: string): Promise<void> {
+    await replaceSelection(selection().filter((item) => item !== path));
+  }
+
+  async function clearFiles(): Promise<void> {
+    await replaceSelection([]);
+  }
+
   async function ensureSelection(): Promise<string[] | null> {
     if (hasSelection()) return selection();
     const picked = await ipc.pickFiles().catch(() => []);
@@ -256,6 +287,18 @@ export default function App() {
   async function submitModal(params: Record<string, unknown>): Promise<void> {
     const state = modal();
     if (!state) return;
+    if (state.tool.id === 'crop') {
+      const boxes = Array.isArray(params.boxes) ? (params.boxes as Record<string, number>[]) : [];
+      delete params.boxes;
+      const box = boxes[0];
+      if (box) {
+        params.x = box.x;
+        params.y = box.y;
+        params.w = box.w;
+        params.h = box.h;
+      }
+      if (params.aspect === 'free') delete params.aspect;
+    }
     const result = await ipc.run(state.files, state.category, {
       kind: 'tool',
       tool: state.tool.id,
@@ -488,12 +531,28 @@ export default function App() {
                       ? ` · ${result().count} file${result().count === 1 ? '' : 's'}`
                       : ''}
                   </span>
+                  <button
+                    type="button"
+                    class="button button-quiet panel-action"
+                    onClick={() => void clearFiles()}
+                  >
+                    Clear
+                  </button>
                 </header>
                 <ul class="thumb-strip">
                   <For each={result().thumbs}>
                     {(thumb) => (
                       <li class="thumb">
                         <img src={ipc.assetUrl(thumb.thumb)} alt="" loading="lazy" />
+                        <button
+                          type="button"
+                          class="thumb-remove"
+                          aria-label={`Remove ${baseName(thumb.path)} from the selection`}
+                          title="Remove from the selection"
+                          onClick={() => void removeFile(thumb.path)}
+                        >
+                          ×
+                        </button>
                         <span class="thumb-name" title={thumb.path}>
                           {baseName(thumb.path)}
                         </span>

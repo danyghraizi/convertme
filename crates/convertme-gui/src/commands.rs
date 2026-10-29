@@ -105,7 +105,15 @@ pub struct HistoryRowOut {
     pub intent: String,
 }
 
-#[derive(Serialize)]
+/// Show a field only while another field has a given value. Compression, for one,
+/// is either a percentage or a size, never both.
+#[derive(Serialize, Clone)]
+pub struct ShowIf {
+    pub key: String,
+    pub equals: String,
+}
+
+#[derive(Serialize, Default)]
 pub struct Field {
     pub key: String,
     pub label: String,
@@ -121,6 +129,36 @@ pub struct Field {
     pub unit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
+    /// Human labels for `options`, when the stored values are not presentable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_if: Option<ShowIf>,
+    /// A control that drives the form (a mode switch) rather than a job parameter.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
+}
+
+impl Field {
+    /// Render this field only while `key == equals`.
+    fn when(mut self, key: &str, equals: &str) -> Self {
+        self.show_if = Some(ShowIf {
+            key: key.into(),
+            equals: equals.into(),
+        });
+        self
+    }
+
+    /// Drives other fields; never sent to the backend.
+    fn control(mut self) -> Self {
+        self.control = true;
+        self
+    }
+
+    fn labelled(mut self, labels: &[&str]) -> Self {
+        self.option_labels = Some(labels.iter().map(|l| (*l).to_string()).collect());
+        self
+    }
 }
 
 #[derive(Deserialize)]
@@ -425,7 +463,7 @@ fn num(key: &str, label: &str, default: f64, min: f64, max: f64, step: f64, unit
         max: Some(max),
         step: Some(step),
         unit: Some(unit.into()),
-        options: None,
+        ..Default::default()
     }
 }
 
@@ -438,8 +476,8 @@ fn select(key: &str, label: &str, default: &str, options: &[&str]) -> Field {
         min: None,
         max: None,
         step: None,
-        unit: None,
         options: Some(options.iter().map(|s| s.to_string()).collect()),
+        ..Default::default()
     }
 }
 
@@ -453,7 +491,7 @@ fn text(key: &str, label: &str, default: &str, unit: Option<&str>) -> Field {
         max: None,
         step: None,
         unit: unit.map(str::to_string),
-        options: None,
+        ..Default::default()
     }
 }
 
@@ -463,36 +501,40 @@ fn checkbox(key: &str, label: &str, default: bool) -> Field {
         label: label.into(),
         kind: "checkbox".into(),
         default: serde_json::json!(default),
-        min: None,
-        max: None,
-        step: None,
-        unit: None,
-        options: None,
+        ..Default::default()
     }
 }
 
 fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
     match (category, tool) {
         (Category::Images, ToolId::Compress) => vec![
-            num("percent", "Reduce by", 20.0, 1.0, 95.0, 1.0, "%"),
+            select("mode", "Mode", "percent", &["percent", "target_bytes"])
+                .labelled(&["Reduce by a percentage", "Hit a target size"])
+                .control(),
+            num("percent", "Reduce by", 20.0, 1.0, 95.0, 1.0, "%")
+                .when("mode", "percent"),
             num(
                 "target_bytes",
                 "Target size",
-                0.0,
-                0.0,
+                500_000.0,
+                1000.0,
                 200_000_000.0,
-                1.0,
+                1000.0,
                 "bytes",
-            ),
+            )
+            .when("mode", "target_bytes"),
         ],
-        (Category::Images, ToolId::Crop) => {
-            vec![select(
-                "aspect",
-                "Aspect ratio",
-                "free",
-                &["free", "1:1", "16:9", "4:3", "9:16", "3:2"],
-            )]
-        }
+        (Category::Images, ToolId::Crop) => vec![
+            Field {
+                key: "boxes".into(),
+                label: "Area to keep".into(),
+                kind: "boxes".into(),
+                default: serde_json::json!([]),
+                ..Default::default()
+            },
+            select("aspect", "Aspect ratio", "free", &["free", "1:1", "16:9", "4:3", "9:16", "3:4"])
+                .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4"]),
+        ],
         (Category::Images, ToolId::Annotate) => vec![
             text("text", "Text", "", None),
             text("color", "Ink colour", "#f5f5f5", None),
@@ -532,11 +574,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                     label: "Areas to fill".into(),
                     kind: "boxes".into(),
                     default: serde_json::json!([]),
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: None,
-                    options: None,
+                    ..Default::default()
                 },
                 text("color", "Fill colour", "#000000", None),
             ];
@@ -579,11 +617,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 label: "Areas to blur".into(),
                 kind: "boxes".into(),
                 default: serde_json::json!([]),
-                min: None,
-                max: None,
-                step: None,
-                unit: None,
-                options: None,
+                ..Default::default()
             },
             text(
                 "ranges",

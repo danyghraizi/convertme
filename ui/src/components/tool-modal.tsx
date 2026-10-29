@@ -33,16 +33,39 @@ export default function ToolModal(props: ToolModalProps) {
     onCleanup(() => document.removeEventListener('keydown', onKeyDown));
   });
 
+  /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
+  function isVisible(field: Field): boolean {
+    const rule = field.show_if;
+    if (!rule) return true;
+    return String(values[rule.key] ?? '') === rule.equals;
+  }
+
+  function collected(): Record<string, unknown> {
+    const params: Record<string, unknown> = {};
+    for (const field of props.fields) {
+      if (isVisible(field) && !field.control) params[field.key] = values[field.key];
+    }
+    return params;
+  }
+
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (submitting()) return;
     setSubmitting(true);
     setError('');
     try {
-      await props.onSubmit({ ...values });
+      await props.onSubmit(collected());
       props.onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The backend rejected the request');
+      // The bridge rejects with a plain string; swallowing it produced a message that
+      // told the user nothing about what to change.
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === 'string'
+            ? cause.replace(/^unsupported: /, '')
+            : 'The backend rejected the request',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -71,7 +94,7 @@ export default function ToolModal(props: ToolModalProps) {
         </header>
         <form class="modal-form" onSubmit={(event) => void submit(event)}>
           <div class="modal-fields">
-            <For each={props.fields}>
+            <For each={props.fields.filter(isVisible)}>
               {(field) => (
                 <FieldEditor
                   field={field}

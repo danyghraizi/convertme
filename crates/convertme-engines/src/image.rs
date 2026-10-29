@@ -77,7 +77,8 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
         ToolId::Crop => {
             check_params(params, &["x", "y", "w", "h", "aspect"])?;
             let rect = crop_params(params)?;
-            let aspect = string(params, "aspect")?;
+            // `free` means "keep the drawn rectangle as it is", not an unknown ratio.
+            let aspect = string(params, "aspect")?.filter(|a| !a.eq_ignore_ascii_case("free"));
             if rect.is_some() && aspect.is_some() {
                 return Err(unsupported(
                     "use either a crop rectangle or an aspect ratio, not both",
@@ -408,7 +409,9 @@ fn crop_rect(
         return Ok((x, y, w, h));
     }
 
-    if let Some(aspect) = string(params, "aspect")? {
+    if let Some(aspect) =
+        string(params, "aspect")?.filter(|a| !a.eq_ignore_ascii_case("free") && !a.is_empty())
+    {
         let (a, b) = parse_aspect(aspect)?;
         let (w, h) = if (width as f32) / (height as f32) > a / b {
             let w = ((height as f32) * a / b).round() as u32;
@@ -1152,17 +1155,17 @@ fn is_lossy_ext(ext: &str) -> bool {
 fn parse_aspect(value: &str) -> Result<(f32, f32), JobError> {
     let (a, b) = value
         .split_once(':')
-        .ok_or_else(|| unsupported(format!("unsupported aspect ratio `{value}`")))?;
+        .ok_or_else(|| unsupported(format!("unknown aspect ratio `{value}`")))?;
     let a: f32 = a
         .trim()
         .parse()
-        .map_err(|_| unsupported(format!("unsupported aspect ratio `{value}`")))?;
+        .map_err(|_| unsupported(format!("unknown aspect ratio `{value}`")))?;
     let b: f32 = b
         .trim()
         .parse()
-        .map_err(|_| unsupported(format!("unsupported aspect ratio `{value}`")))?;
+        .map_err(|_| unsupported(format!("unknown aspect ratio `{value}`")))?;
     if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 {
-        return Err(unsupported(format!("unsupported aspect ratio `{value}`")));
+        return Err(unsupported(format!("unknown aspect ratio `{value}`")));
     }
     Ok((a, b))
 }
