@@ -1,8 +1,8 @@
-export type WheelKey = 'shift' | 'control' | 'alt' | 'meta';
+export type WheelKey = "shift" | "control" | "alt" | "meta";
 
-export type OverwritePolicy = 'never' | 'ask' | 'replace';
+export type OverwritePolicy = "never" | "ask" | "replace";
 
-export type DragBackend = 'auto' | 'windows' | 'x11' | 'wayland';
+export type DragBackend = "auto" | "windows" | "x11" | "wayland";
 
 export interface Settings {
   convert_key: WheelKey;
@@ -93,16 +93,17 @@ export interface Box {
 }
 
 export type FieldKind =
-  | 'number'
-  | 'text'
-  | 'range'
-  | 'color'
-  | 'select'
-  | 'checkbox'
-  | 'boxes'
-  | 'order';
+  | "number"
+  | "text"
+  | "range"
+  | "color"
+  | "select"
+  | "checkbox"
+  | "boxes"
+  | "order";
 
-export type FieldValue = string | number | boolean | number[] | string[] | Box[];
+export type FieldValue =
+  string | number | boolean | number[] | string[] | Box[];
 
 export interface Field {
   key: string;
@@ -123,12 +124,12 @@ export interface Field {
 }
 
 export interface ConvertIntent {
-  kind: 'convert';
+  kind: "convert";
   target: string;
 }
 
 export interface ToolIntent {
-  kind: 'tool';
+  kind: "tool";
   tool: string;
   params: Record<string, unknown>;
 }
@@ -141,12 +142,7 @@ export interface RunResult {
 }
 
 export type JobStatus =
-  | 'queued'
-  | 'running'
-  | 'done'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted';
+  "queued" | "running" | "done" | "failed" | "cancelled" | "interrupted";
 
 export interface HistoryRow {
   id: string;
@@ -167,19 +163,19 @@ export interface DetectedBox {
 }
 
 export type DragSignal =
-  | { kind: 'modifier'; key: string; active: boolean }
-  | { kind: 'shortcut'; key: string }
-  | { kind: 'drag'; active: boolean }
-  | { kind: 'unavailable'; reason: string };
+  | { kind: "modifier"; key: string; active: boolean }
+  | { kind: "shortcut"; key: string }
+  | { kind: "drag"; active: boolean }
+  | { kind: "unavailable"; reason: string };
 
 export type JobEventKind =
-  | 'queued'
-  | 'started'
-  | 'progress'
-  | 'finished'
-  | 'failed'
-  | 'cancelled'
-  | 'idle';
+  | "queued"
+  | "started"
+  | "progress"
+  | "finished"
+  | "failed"
+  | "cancelled"
+  | "idle";
 
 export interface JobError {
   code: string;
@@ -196,7 +192,7 @@ export interface JobEvent {
 }
 
 export interface ProgressState {
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
   fraction: number;
   stage?: string;
 }

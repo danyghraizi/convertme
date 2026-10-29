@@ -1777,3 +1777,115 @@ body.wheel-body {
   background: var(--surface);
   color: var(--ink);
 }
+
+/* Crop surface: the whole picture, the kept region, and eight handles. */
+.crop-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.crop-surface {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: var(--sunken);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  touch-action: none;
+  min-height: 200px;
+}
+
+.crop-surface img {
+  display: block;
+  max-width: 100%;
+  max-height: 46vh;
+  user-select: none;
+  pointer-events: none;
+}
+
+.crop-surface.is-empty {
+  min-height: 160px;
+}
+
+.crop-placeholder {
+  margin: 0;
+  padding: var(--s-5);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+/* Everything outside the region is dimmed, so the crop reads at a glance. */
+.crop-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 12, 0.42);
+  pointer-events: none;
+}
+
+.crop-region {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(8, 10, 12, 0);
+  border: 2px solid var(--accent);
+  background: transparent;
+  box-shadow: none;
+  cursor: move;
+  touch-action: none;
+}
+
+/* Punch the kept area out of the dimming layer. */
+.crop-region::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 9999px rgba(8, 10, 12, 0.42);
+  pointer-events: none;
+}
+
+.crop-shade {
+  display: none;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 3px;
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  cursor: nwse-resize;
+}
+
+.crop-handle-n,
+.crop-handle-s {
+  cursor: ns-resize;
+}
+
+.crop-handle-e,
+.crop-handle-w {
+  cursor: ew-resize;
+}
+
+.crop-handle-ne,
+.crop-handle-sw {
+  cursor: nesw-resize;
+}
+
+.crop-readout {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-size: 13px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.crop-origin {
+  color: var(--ink-3);
+}
+
+.crop-readout .button {
+  margin-left: auto;
+}

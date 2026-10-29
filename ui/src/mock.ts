@@ -1,4 +1,4 @@
-import { ACTIONS, FALLBACK_TARGETS, FALLBACK_TOOLS } from './catalog';
+import { ACTIONS, FALLBACK_TARGETS, FALLBACK_TOOLS } from "./catalog";
 import type {
   AnalyzeResult,
   BootInfo,
@@ -10,52 +10,55 @@ import type {
   Segment,
   Settings,
   WheelContents,
-} from './types';
+} from "./types";
 
 /** Fixture paths used by `pick_files` and by the wheel's browser demo. */
-export const MOCK_DEMO_PATHS = ['/fixtures/photo.jpg', '/fixtures/poster.png'];
+export const MOCK_DEMO_PATHS = ["/fixtures/photo.jpg", "/fixtures/poster.png"];
 
 const DEFAULT_SETTINGS: Settings = {
-  convert_key: 'shift',
-  tools_key: 'control',
-  actions_key: 'alt',
-  overwrite: 'never',
+  convert_key: "shift",
+  tools_key: "control",
+  actions_key: "alt",
+  overwrite: "never",
   history_limit: 100,
   preview_cache_bytes: 256 * 1024 * 1024,
-  ocr_languages: ['eng'],
+  ocr_languages: ["eng"],
   update_check: false,
-  drag_backend: 'auto',
+  drag_backend: "auto",
   start_at_login: false,
-  redact_fill: '#111111',
+  redact_fill: "#111111",
   extra_tools_dir: null,
 };
 
 const BOOT: BootInfo = {
   settings: { ...DEFAULT_SETTINGS },
   backend: {
-    kind: 'mock',
-    description: 'Browser preview: fixture data, no native backend attached',
+    kind: "mock",
+    description: "Browser preview: fixture data, no native backend attached",
   },
-  about: { name: 'ConvertMe', version: '0.1.0', options: 0, tools: 0 },
+  about: { name: "ConvertMe", version: "0.1.0", options: 0, tools: 0 },
   capabilities: { missing: [] },
   pending_paths: [],
 };
 
 type MockEventName =
-  | 'open-paths'
-  | 'drag-signal'
-  | 'job-event'
-  | 'wheel-mode'
-  | 'wheel-shown'
-  | 'wheel-hidden'
-  | 'overlay-open'
-  | 'capabilities-changed';
+  | "open-paths"
+  | "drag-signal"
+  | "job-event"
+  | "wheel-mode"
+  | "wheel-shown"
+  | "wheel-hidden"
+  | "overlay-open"
+  | "capabilities-changed";
 
 type Listener = (payload: unknown) => void;
 
 const listeners = new Map<MockEventName, Set<Listener>>();
 
-export function mockOnEvent(name: MockEventName, cb: (payload: unknown) => void): () => void {
+export function mockOnEvent(
+  name: MockEventName,
+  cb: (payload: unknown) => void,
+): () => void {
   let set = listeners.get(name);
   if (!set) {
     set = new Set();
@@ -74,47 +77,47 @@ export function mockEmitEvent(name: MockEventName, payload: unknown): void {
 }
 
 const EXTENSIONS: Record<string, { category: string; format: string }> = {
-  png: { category: 'images', format: 'PNG' },
-  jpg: { category: 'images', format: 'JPEG' },
-  jpeg: { category: 'images', format: 'JPEG' },
-  webp: { category: 'images', format: 'WEBP' },
-  avif: { category: 'images', format: 'AVIF' },
-  heic: { category: 'images', format: 'HEIC' },
-  tif: { category: 'images', format: 'TIFF' },
-  tiff: { category: 'images', format: 'TIFF' },
-  bmp: { category: 'images', format: 'BMP' },
-  gif: { category: 'images', format: 'GIF' },
-  ico: { category: 'images', format: 'ICO' },
-  mp4: { category: 'video', format: 'MP4' },
-  mkv: { category: 'video', format: 'MKV' },
-  webm: { category: 'video', format: 'WEBM' },
-  mov: { category: 'video', format: 'MOV' },
-  avi: { category: 'video', format: 'AVI' },
-  mp3: { category: 'audio', format: 'MP3' },
-  wav: { category: 'audio', format: 'WAV' },
-  flac: { category: 'audio', format: 'FLAC' },
-  ogg: { category: 'audio', format: 'OGG' },
-  m4a: { category: 'audio', format: 'M4A' },
-  pdf: { category: 'pdf', format: 'PDF' },
-  docx: { category: 'documents', format: 'DOCX' },
-  odt: { category: 'documents', format: 'ODT' },
-  md: { category: 'documents', format: 'MD' },
-  txt: { category: 'documents', format: 'TXT' },
-  html: { category: 'documents', format: 'HTML' },
-  epub: { category: 'epub', format: 'EPUB' },
-  pptx: { category: 'slides', format: 'PPTX' },
-  ppt: { category: 'slides', format: 'PPT' },
-  xlsx: { category: 'spreadsheets', format: 'XLSX' },
-  xls: { category: 'spreadsheets', format: 'XLS' },
-  ods: { category: 'spreadsheets', format: 'ODS' },
-  csv: { category: 'spreadsheets', format: 'CSV' },
-  srt: { category: 'subtitles', format: 'SRT' },
-  vtt: { category: 'subtitles', format: 'VTT' },
-  zip: { category: 'archives', format: 'ZIP' },
-  tar: { category: 'archives', format: 'TAR' },
-  gz: { category: 'archives', format: 'GZ' },
-  '7z': { category: 'archives', format: '7Z' },
-  rar: { category: 'archives', format: 'RAR' },
+  png: { category: "images", format: "PNG" },
+  jpg: { category: "images", format: "JPEG" },
+  jpeg: { category: "images", format: "JPEG" },
+  webp: { category: "images", format: "WEBP" },
+  avif: { category: "images", format: "AVIF" },
+  heic: { category: "images", format: "HEIC" },
+  tif: { category: "images", format: "TIFF" },
+  tiff: { category: "images", format: "TIFF" },
+  bmp: { category: "images", format: "BMP" },
+  gif: { category: "images", format: "GIF" },
+  ico: { category: "images", format: "ICO" },
+  mp4: { category: "video", format: "MP4" },
+  mkv: { category: "video", format: "MKV" },
+  webm: { category: "video", format: "WEBM" },
+  mov: { category: "video", format: "MOV" },
+  avi: { category: "video", format: "AVI" },
+  mp3: { category: "audio", format: "MP3" },
+  wav: { category: "audio", format: "WAV" },
+  flac: { category: "audio", format: "FLAC" },
+  ogg: { category: "audio", format: "OGG" },
+  m4a: { category: "audio", format: "M4A" },
+  pdf: { category: "pdf", format: "PDF" },
+  docx: { category: "documents", format: "DOCX" },
+  odt: { category: "documents", format: "ODT" },
+  md: { category: "documents", format: "MD" },
+  txt: { category: "documents", format: "TXT" },
+  html: { category: "documents", format: "HTML" },
+  epub: { category: "epub", format: "EPUB" },
+  pptx: { category: "slides", format: "PPTX" },
+  ppt: { category: "slides", format: "PPT" },
+  xlsx: { category: "spreadsheets", format: "XLSX" },
+  xls: { category: "spreadsheets", format: "XLS" },
+  ods: { category: "spreadsheets", format: "ODS" },
+  csv: { category: "spreadsheets", format: "CSV" },
+  srt: { category: "subtitles", format: "SRT" },
+  vtt: { category: "subtitles", format: "VTT" },
+  zip: { category: "archives", format: "ZIP" },
+  tar: { category: "archives", format: "TAR" },
+  gz: { category: "archives", format: "GZ" },
+  "7z": { category: "archives", format: "7Z" },
+  rar: { category: "archives", format: "RAR" },
 };
 
 function baseName(path: string): string {
@@ -124,8 +127,8 @@ function baseName(path: string): string {
 
 function extensionOf(path: string): string {
   const name = baseName(path);
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 function svgDataUrl(title: string, width: number, height: number): string {
@@ -149,7 +152,7 @@ export function mockAnalyze(paths: string[]): AnalyzeResult {
     const ext = extensionOf(path);
     const known = EXTENSIONS[ext];
     if (!known) {
-      skipped.push({ path, message: `Unsupported file type ".${ext || '?'}"` });
+      skipped.push({ path, message: `Unsupported file type ".${ext || "?"}"` });
       continue;
     }
     if (category === null) {
@@ -173,11 +176,17 @@ export function mockAnalyze(paths: string[]): AnalyzeResult {
   };
 }
 
-export function mockWheels(category: string, format: string | null): WheelContents {
+export function mockWheels(
+  category: string,
+  format: string | null,
+): WheelContents {
   const key = category.toLowerCase();
   const targets = FALLBACK_TARGETS[key] ?? [];
   const convert = targets
-    .filter((target) => !format || target.label.toUpperCase() !== format.toUpperCase())
+    .filter(
+      (target) =>
+        !format || target.label.toUpperCase() !== format.toUpperCase(),
+    )
     .map((target) => ({ ...target }));
   const tools = (FALLBACK_TOOLS[key] ?? []).map((tool) => ({ ...tool }));
   const actions: Segment[] = ACTIONS.map((action) => ({ ...action }));
@@ -187,90 +196,144 @@ export function mockWheels(category: string, format: string | null): WheelConten
 const TOOL_FIELDS: Record<string, Field[]> = {
   compress: [
     {
-      key: 'mode',
-      label: 'Mode',
-      kind: 'select',
-      default: 'percent',
-      options: ['percent', 'target_bytes'],
-      option_labels: ['Reduce by a percentage', 'Hit a target size'],
+      key: "mode",
+      label: "Mode",
+      kind: "select",
+      default: "percent",
+      options: ["percent", "target_bytes"],
+      option_labels: ["Reduce by a percentage", "Hit a target size"],
       control: true,
     },
     {
-      key: 'percent',
-      label: 'Reduce by',
-      kind: 'number',
+      key: "percent",
+      label: "Reduce by",
+      kind: "number",
       default: 20,
       min: 1,
       max: 95,
       step: 1,
-      unit: '%',
-      show_if: { key: 'mode', equals: 'percent' },
+      unit: "%",
+      show_if: { key: "mode", equals: "percent" },
     },
     {
-      key: 'target_bytes',
-      label: 'Target size',
-      kind: 'number',
+      key: "target_bytes",
+      label: "Target size",
+      kind: "number",
       default: 500000,
       min: 1000,
       max: 200000000,
       step: 1000,
-      unit: 'bytes',
-      show_if: { key: 'mode', equals: 'target_bytes' },
+      unit: "bytes",
+      show_if: { key: "mode", equals: "target_bytes" },
     },
   ],
   crop: [
-    { key: 'boxes', label: 'Area to keep', kind: 'boxes', default: [] },
+    { key: "boxes", label: "Area to keep", kind: "boxes", default: [] },
     {
-      key: 'aspect',
-      label: 'Aspect ratio',
-      kind: 'select',
-      default: 'free',
-      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4'],
-      option_labels: ['Free', '1:1', '16:9', '4:3', '9:16', '3:4'],
+      key: "aspect",
+      label: "Aspect ratio",
+      kind: "select",
+      default: "free",
+      options: ["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
+      option_labels: ["Free", "1:1", "16:9", "4:3", "9:16", "3:4"],
     },
   ],
   trim: [
-    { key: 'start', label: 'Start', kind: 'number', default: 0, min: 0, step: 0.1, unit: 's' },
-    { key: 'end', label: 'End', kind: 'number', default: 30, min: 0, step: 0.1, unit: 's' },
+    {
+      key: "start",
+      label: "Start",
+      kind: "number",
+      default: 0,
+      min: 0,
+      step: 0.1,
+      unit: "s",
+    },
+    {
+      key: "end",
+      label: "End",
+      kind: "number",
+      default: 30,
+      min: 0,
+      step: 0.1,
+      unit: "s",
+    },
   ],
   redact: [
     {
-      key: 'mode',
-      label: 'What to cover',
-      kind: 'select',
-      default: 'faces',
-      options: ['faces', 'text', 'faces and text', 'manual'],
+      key: "mode",
+      label: "What to cover",
+      kind: "select",
+      default: "faces",
+      options: ["faces", "text", "faces and text", "manual"],
     },
-    { key: 'fill', label: 'Fill colour', kind: 'color', default: '#111111' },
-    { key: 'regions', label: 'Regions', kind: 'boxes', default: [] },
+    { key: "fill", label: "Fill colour", kind: "color", default: "#111111" },
+    { key: "regions", label: "Regions", kind: "boxes", default: [] },
   ],
   organize: [
-    { key: 'pages', label: 'Page order', kind: 'order', default: [1, 2, 3, 4] },
-    { key: 'rotate', label: 'Rotate all', kind: 'number', default: 0, min: -270, max: 270, step: 90, unit: '\u00b0' },
+    { key: "pages", label: "Page order", kind: "order", default: [1, 2, 3, 4] },
+    {
+      key: "rotate",
+      label: "Rotate all",
+      kind: "number",
+      default: 0,
+      min: -270,
+      max: 270,
+      step: 90,
+      unit: "\u00b0",
+    },
   ],
   metadata: [
-    { key: 'title', label: 'Title', kind: 'text', default: '' },
-    { key: 'author', label: 'Author', kind: 'text', default: '' },
-    { key: 'strip_other', label: 'Remove all other tags', kind: 'checkbox', default: false },
+    { key: "title", label: "Title", kind: "text", default: "" },
+    { key: "author", label: "Author", kind: "text", default: "" },
+    {
+      key: "strip_other",
+      label: "Remove all other tags",
+      kind: "checkbox",
+      default: false,
+    },
   ],
   speed: [
-    { key: 'rate', label: 'Speed', kind: 'range', default: 1, min: 0.25, max: 4, step: 0.25, unit: '\u00d7' },
-    { key: 'keep_pitch', label: 'Keep pitch', kind: 'checkbox', default: true },
+    {
+      key: "rate",
+      label: "Speed",
+      kind: "range",
+      default: 1,
+      min: 0.25,
+      max: 4,
+      step: 0.25,
+      unit: "\u00d7",
+    },
+    { key: "keep_pitch", label: "Keep pitch", kind: "checkbox", default: true },
   ],
   channels: [
     {
-      key: 'layout',
-      label: 'Channel layout',
-      kind: 'select',
-      default: 'stereo',
-      options: ['mono', 'stereo'],
+      key: "layout",
+      label: "Channel layout",
+      kind: "select",
+      default: "stereo",
+      options: ["mono", "stereo"],
     },
   ],
   shift: [
-    { key: 'offset', label: 'Shift by', kind: 'number', default: 0, step: 0.1, unit: 's' },
+    {
+      key: "offset",
+      label: "Shift by",
+      kind: "number",
+      default: 0,
+      step: 0.1,
+      unit: "s",
+    },
   ],
   split: [
-    { key: 'parts', label: 'Number of parts', kind: 'number', default: 2, min: 2, max: 50, step: 1 },
+    {
+      key: "parts",
+      label: "Number of parts",
+      kind: "number",
+      default: 2,
+      min: 2,
+      max: 50,
+      step: 1,
+    },
   ],
 };
 
@@ -282,33 +345,33 @@ export function mockToolFields(_category: string, tool: string): Field[] {
 let historySeq = 1000;
 const historyRows: HistoryRow[] = [
   {
-    id: 'job-0994',
-    input: '/fixtures/photo.jpg',
-    output: '/fixtures/photo.webp',
-    status: 'done',
+    id: "job-0994",
+    input: "/fixtures/photo.jpg",
+    output: "/fixtures/photo.webp",
+    status: "done",
     started: Date.now() - 1000 * 60 * 12,
     ended: Date.now() - 1000 * 60 * 11,
-    intent: 'convert to WEBP',
+    intent: "convert to WEBP",
   },
   {
-    id: 'job-0993',
-    input: '/fixtures/notes.pdf',
-    output: '/fixtures/notes.docx',
-    status: 'done',
+    id: "job-0993",
+    input: "/fixtures/notes.pdf",
+    output: "/fixtures/notes.docx",
+    status: "done",
     started: Date.now() - 1000 * 60 * 40,
     ended: Date.now() - 1000 * 60 * 38,
-    intent: 'convert to DOCX',
+    intent: "convert to DOCX",
   },
   {
-    id: 'job-0992',
-    input: '/fixtures/broken.pdf',
+    id: "job-0992",
+    input: "/fixtures/broken.pdf",
     output: null,
-    status: 'failed',
+    status: "failed",
     started: Date.now() - 1000 * 60 * 55,
     ended: Date.now() - 1000 * 60 * 54,
-    error_code: 'engine_failed',
-    error_tail: 'PDF header not found',
-    intent: 'convert to PNG',
+    error_code: "engine_failed",
+    error_tail: "PDF header not found",
+    intent: "convert to PNG",
   },
 ];
 
@@ -331,21 +394,23 @@ function later(fn: () => void, ms: number): void {
 export function mockRun(
   paths: string[],
   category: string,
-  intent: { kind: 'convert'; target: string } | { kind: 'tool'; tool: string; params: object },
+  intent:
+    | { kind: "convert"; target: string }
+    | { kind: "tool"; tool: string; params: object },
 ): RunResult {
   const valid = paths.filter((path) => path.trim().length > 0);
   const jobs = valid.map((path) => {
     jobSeq += 1;
-    const id = `job-${String(historySeq + jobSeq).padStart(4, '0')}`;
+    const id = `job-${String(historySeq + jobSeq).padStart(4, "0")}`;
     const label =
-      intent.kind === 'convert'
+      intent.kind === "convert"
         ? `convert to ${intent.target.toUpperCase()}`
         : `tool ${intent.tool}`;
     const row: HistoryRow = {
       id,
       input: path,
       output: null,
-      status: 'queued',
+      status: "queued",
       started: Date.now(),
       ended: null,
       intent: label,
@@ -353,25 +418,29 @@ export function mockRun(
     historyRows.unshift(row);
     if (historyRows.length > 200) historyRows.pop();
 
-    const emit = (event: JobEvent): void => mockEmitEvent('job-event', event);
-    emit({ kind: 'queued', id });
+    const emit = (event: JobEvent): void => mockEmitEvent("job-event", event);
+    emit({ kind: "queued", id });
     later(() => {
-      row.status = 'running';
-      emit({ kind: 'started', id, stage: category });
+      row.status = "running";
+      emit({ kind: "started", id, stage: category });
     }, 180);
-    later(() => emit({ kind: 'progress', id, fraction: 0.45, stage: 'working' }), 700);
+    later(
+      () => emit({ kind: "progress", id, fraction: 0.45, stage: "working" }),
+      700,
+    );
     later(() => {
-      emit({ kind: 'progress', id, fraction: 0.85, stage: 'publishing' });
+      emit({ kind: "progress", id, fraction: 0.85, stage: "publishing" });
     }, 1100);
     later(() => {
-      const ext = intent.kind === 'convert' ? intent.target.toLowerCase() : 'out';
-      const stem = baseName(path).replace(/\.[^.]+$/, '');
+      const ext =
+        intent.kind === "convert" ? intent.target.toLowerCase() : "out";
+      const stem = baseName(path).replace(/\.[^.]+$/, "");
       const output = `/fixtures/${stem}-converted.${ext}`;
-      row.status = 'done';
+      row.status = "done";
       row.output = output;
       row.ended = Date.now();
-      emit({ kind: 'finished', id, outputs: [output] });
-      emit({ kind: 'idle' });
+      emit({ kind: "finished", id, outputs: [output] });
+      emit({ kind: "idle" });
     }, 1700);
 
     return id;
@@ -390,13 +459,25 @@ export function mockDetectBoxes(path: string, faces: boolean): DetectedBox[] {
   if (faces) {
     boxes.push({
       rect: { x: 0.32 + seed * 0.02, y: 0.18, w: 0.22, h: 0.3 },
-      kind: 'face',
-      detail: 'face 0.94',
+      kind: "face",
+      detail: "face 0.94",
     });
-    boxes.push({ rect: { x: 0.62, y: 0.24, w: 0.18, h: 0.24 }, kind: 'face', detail: 'face 0.88' });
+    boxes.push({
+      rect: { x: 0.62, y: 0.24, w: 0.18, h: 0.24 },
+      kind: "face",
+      detail: "face 0.88",
+    });
   } else {
-    boxes.push({ rect: { x: 0.1, y: 0.62, w: 0.5, h: 0.08 }, kind: 'text', detail: 'line' });
-    boxes.push({ rect: { x: 0.1, y: 0.76, w: 0.72, h: 0.08 }, kind: 'text', detail: 'line' });
+    boxes.push({
+      rect: { x: 0.1, y: 0.62, w: 0.5, h: 0.08 },
+      kind: "text",
+      detail: "line",
+    });
+    boxes.push({
+      rect: { x: 0.1, y: 0.76, w: 0.72, h: 0.08 },
+      kind: "text",
+      detail: "line",
+    });
   }
   return boxes;
 }

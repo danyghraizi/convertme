@@ -1,12 +1,19 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
-import * as ipc from './ipc';
-import HistoryList from './components/history-list';
-import SettingsPanel from './components/settings-panel';
-import ToolModal from './components/tool-modal';
-import { CATEGORIES, FALLBACK_TOOLS, categoryLabel } from './catalog';
-import { baseName } from './format';
-import { mergePaths } from './paths';
-import { keyLabel } from './keys';
+import {
+  For,
+  Show,
+  createEffect,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
+import * as ipc from "./ipc";
+import HistoryList from "./components/history-list";
+import SettingsPanel from "./components/settings-panel";
+import ToolModal from "./components/tool-modal";
+import { CATEGORIES, FALLBACK_TOOLS, categoryLabel } from "./catalog";
+import { baseName } from "./format";
+import { mergePaths } from "./paths";
+import { keyLabel } from "./keys";
 import type {
   AnalyzeResult,
   BootInfo,
@@ -19,7 +26,7 @@ import type {
   Segment,
   Settings,
   WheelContents,
-} from './types';
+} from "./types";
 
 interface ModalState {
   tool: Segment;
@@ -43,15 +50,17 @@ export default function App() {
   const [tools, setTools] = createSignal<Segment[] | null>(null);
   const [targets, setTargets] = createSignal<Segment[] | null>(null);
   const [historyRows, setHistoryRows] = createSignal<HistoryRow[]>([]);
-  const [progress, setProgress] = createSignal<Record<string, ProgressState>>({});
-  const [view, setView] = createSignal<'workspace' | 'settings'>('workspace');
+  const [progress, setProgress] = createSignal<Record<string, ProgressState>>(
+    {},
+  );
+  const [view, setView] = createSignal<"workspace" | "settings">("workspace");
   const [activityOpen, setActivityOpen] = createSignal(false);
   const [modal, setModal] = createSignal<ModalState | null>(null);
   const [dragActive, setDragActive] = createSignal(false);
   const [analyzing, setAnalyzing] = createSignal(false);
-  const [busyTool, setBusyTool] = createSignal('');
-  const [note, setNote] = createSignal('');
-  const [backendNote, setBackendNote] = createSignal('');
+  const [busyTool, setBusyTool] = createSignal("");
+  const [note, setNote] = createSignal("");
+  const [backendNote, setBackendNote] = createSignal("");
   const unlisteners: (() => void)[] = [];
   let disposed = false;
   let historyFrame = 0;
@@ -63,15 +72,16 @@ export default function App() {
     return FALLBACK_TOOLS[activeCategory()] ?? [];
   };
   const targetCards = (): Segment[] => targets() ?? [];
-  const queuedCount = (): number => historyRows().filter((row) => row.status === 'queued').length;
+  const queuedCount = (): number =>
+    historyRows().filter((row) => row.status === "queued").length;
   const runningCount = (): number =>
-    historyRows().filter((row) => row.status === 'running').length;
+    historyRows().filter((row) => row.status === "running").length;
   const hasSelection = (): boolean => selection().length > 0;
   const settingsHint = (): string => {
     const current = settings();
-    return `Hold ${keyLabel(current?.convert_key ?? 'shift')} to convert, ${keyLabel(
-      current?.tools_key ?? 'control',
-    )} for tools, ${keyLabel(current?.actions_key ?? 'alt')} for actions.`;
+    return `Hold ${keyLabel(current?.convert_key ?? "shift")} to convert, ${keyLabel(
+      current?.tools_key ?? "control",
+    )} for tools, ${keyLabel(current?.actions_key ?? "alt")} for actions.`;
   };
 
   function track(promise: Promise<() => void>): void {
@@ -104,33 +114,37 @@ export default function App() {
   }
 
   function onJobEvent(event: JobEvent): void {
-    if (event.kind === 'idle') {
+    if (event.kind === "idle") {
       scheduleHistory();
       return;
     }
     const id = event.id;
     if (!id) return;
     switch (event.kind) {
-      case 'queued':
-        setJobProgress(id, { status: 'queued', fraction: 0 });
+      case "queued":
+        setJobProgress(id, { status: "queued", fraction: 0 });
         scheduleHistory();
         break;
-      case 'started':
-        setJobProgress(id, { status: 'running', fraction: 0, stage: event.stage });
-        scheduleHistory();
-        break;
-      case 'progress':
+      case "started":
         setJobProgress(id, {
-          status: 'running',
+          status: "running",
+          fraction: 0,
+          stage: event.stage,
+        });
+        scheduleHistory();
+        break;
+      case "progress":
+        setJobProgress(id, {
+          status: "running",
           fraction: event.fraction ?? 0,
           stage: event.stage,
         });
         break;
-      case 'finished':
-      case 'failed':
-      case 'cancelled':
+      case "finished":
+      case "failed":
+      case "cancelled":
         setJobProgress(id, null);
-        if (event.kind === 'failed' && event.error) {
+        if (event.kind === "failed" && event.error) {
           setNote(`${event.error.code}: ${event.error.message}`);
         }
         scheduleHistory();
@@ -144,7 +158,7 @@ export default function App() {
     // The backend shows the wheel itself when a modifier goes down; the only
     // thing the main window needs to surface is a backend that cannot observe
     // drags at all (Wayland without the portal, for example).
-    if (signal.kind === 'unavailable') setBackendNote(signal.reason);
+    if (signal.kind === "unavailable") setBackendNote(signal.reason);
   }
 
   async function refreshWheelData(): Promise<void> {
@@ -173,7 +187,7 @@ export default function App() {
     if (!result) {
       setAnalysis(null);
       setTargets([]);
-      setNote('Could not analyse the dropped files');
+      setNote("Could not analyse the dropped files");
       return;
     }
     setAnalysis(result);
@@ -182,8 +196,8 @@ export default function App() {
     const skipped = result.skipped.length;
     setNote(
       skipped > 0
-        ? `${result.count} readable file${result.count === 1 ? '' : 's'}, ${skipped} skipped`
-        : '',
+        ? `${result.count} readable file${result.count === 1 ? "" : "s"}, ${skipped} skipped`
+        : "",
     );
   }
 
@@ -194,7 +208,7 @@ export default function App() {
     if (next.length === 0) {
       setAnalysis(null);
       setTargets([]);
-      setNote('Selection cleared');
+      setNote("Selection cleared");
       return;
     }
     setAnalyzing(true);
@@ -202,7 +216,7 @@ export default function App() {
     setAnalyzing(false);
     if (!result) {
       setAnalysis(null);
-      setNote('Could not read the remaining files');
+      setNote("Could not read the remaining files");
       return;
     }
     setAnalysis(result);
@@ -235,11 +249,11 @@ export default function App() {
     const skipped = result.skipped.length;
     setNote(
       [
-        `${result.jobs.length} job${result.jobs.length === 1 ? '' : 's'} started (${label})`,
+        `${result.jobs.length} job${result.jobs.length === 1 ? "" : "s"} started (${label})`,
         skipped > 0 ? `${skipped} skipped` : null,
       ]
         .filter((part): part is string => part !== null)
-        .join(' \u00b7 '),
+        .join(" \u00b7 "),
     );
   }
 
@@ -248,13 +262,15 @@ export default function App() {
     if (files.length === 0 || target.disabled) return;
     try {
       const result = await ipc.run(files, activeCategory(), {
-        kind: 'convert',
+        kind: "convert",
         target: target.id,
       });
       announceRun(result, target.label);
       scheduleHistory();
     } catch (error) {
-      setNote(error instanceof Error ? error.message : 'Conversion could not start');
+      setNote(
+        error instanceof Error ? error.message : "Conversion could not start",
+      );
     }
   }
 
@@ -268,7 +284,7 @@ export default function App() {
       const fields = await ipc.toolFields(category, tool.id).catch(() => []);
       if (fields.length === 0) {
         const result = await ipc.run(files, category, {
-          kind: 'tool',
+          kind: "tool",
           tool: tool.id,
           params: {},
         });
@@ -278,17 +294,19 @@ export default function App() {
       }
       setModal({ tool, fields, category, files });
     } catch (error) {
-      setNote(error instanceof Error ? error.message : 'Tool could not start');
+      setNote(error instanceof Error ? error.message : "Tool could not start");
     } finally {
-      setBusyTool('');
+      setBusyTool("");
     }
   }
 
   async function submitModal(params: Record<string, unknown>): Promise<void> {
     const state = modal();
     if (!state) return;
-    if (state.tool.id === 'crop') {
-      const boxes = Array.isArray(params.boxes) ? (params.boxes as Record<string, number>[]) : [];
+    if (state.tool.id === "crop") {
+      const boxes = Array.isArray(params.boxes)
+        ? (params.boxes as Record<string, number>[])
+        : [];
       delete params.boxes;
       const box = boxes[0];
       if (box) {
@@ -297,10 +315,10 @@ export default function App() {
         params.w = box.w;
         params.h = box.h;
       }
-      if (params.aspect === 'free') delete params.aspect;
+      if (params.aspect === "free") delete params.aspect;
     }
     const result = await ipc.run(state.files, state.category, {
-      kind: 'tool',
+      kind: "tool",
       tool: state.tool.id,
       params,
     });
@@ -317,7 +335,7 @@ export default function App() {
     }
     await ipc.saveSettings(next);
     setSettings(next);
-    setNote('Settings saved');
+    setNote("Settings saved");
   }
 
   function selectCategory(id: string): void {
@@ -331,7 +349,9 @@ export default function App() {
   async function refreshAutostart(): Promise<void> {
     const current = settings();
     if (!current) return;
-    const actual = await ipc.autostartStatus().catch(() => current.start_at_login);
+    const actual = await ipc
+      .autostartStatus()
+      .catch(() => current.start_at_login);
     if (actual !== current.start_at_login) {
       setSettings({ ...current, start_at_login: actual });
     }
@@ -339,7 +359,7 @@ export default function App() {
 
   // Reconcile the login toggle with the system every time the page is opened.
   createEffect(() => {
-    if (view() === 'settings') void refreshAutostart();
+    if (view() === "settings") void refreshAutostart();
   });
 
   async function refreshBackendInfo(): Promise<void> {
@@ -351,7 +371,7 @@ export default function App() {
   }
 
   onMount(() => {
-    document.documentElement.dataset.window = 'main';
+    document.documentElement.dataset.window = "main";
     void ipc.boot().then(
       (info) => {
         setBootInfo(info);
@@ -364,20 +384,21 @@ export default function App() {
           });
         }
       },
-      () => setNote('Backend did not answer boot'),
+      () => setNote("Backend did not answer boot"),
     );
     void refreshHistory();
     void refreshWheelData();
 
-    track(ipc.onEvent('open-paths', (paths) => void handlePaths(paths)));
-    track(ipc.onEvent('capabilities-changed', () => void refreshBackendInfo()));
-    track(ipc.onEvent('job-event', (event) => onJobEvent(event)));
-    track(ipc.onEvent('drag-signal', (signal) => onDragSignal(signal)));
+    track(ipc.onEvent("open-paths", (paths) => void handlePaths(paths)));
+    track(ipc.onEvent("capabilities-changed", () => void refreshBackendInfo()));
+    track(ipc.onEvent("job-event", (event) => onJobEvent(event)));
+    track(ipc.onEvent("drag-signal", (signal) => onDragSignal(signal)));
     track(
       ipc.subscribeDragDrop((payload) => {
-        if (payload.kind === 'enter' || payload.kind === 'over') setDragActive(true);
-        else if (payload.kind === 'leave') setDragActive(false);
-        else if (payload.kind === 'drop') {
+        if (payload.kind === "enter" || payload.kind === "over")
+          setDragActive(true);
+        else if (payload.kind === "leave") setDragActive(false);
+        else if (payload.kind === "drop") {
           setDragActive(false);
           void handlePaths(payload.paths);
         }
@@ -388,14 +409,14 @@ export default function App() {
     // `cargo xtask perf start` measures.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        void ipc.emitToBackend('ui-ready');
+        void ipc.emitToBackend("ui-ready");
       });
     });
 
     // The perf harness measures from process start to this frame.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (!disposed) void ipc.emitToBackend('ui-ready');
+        if (!disposed) void ipc.emitToBackend("ui-ready");
       });
     });
 
@@ -409,17 +430,19 @@ export default function App() {
   });
 
   const activeJobs = (): number =>
-    historyRows().filter((row) => row.status === 'running' || row.status === 'queued').length;
+    historyRows().filter(
+      (row) => row.status === "running" || row.status === "queued",
+    ).length;
 
   const activitySummary = (): string => {
     const rows = historyRows();
-    if (rows.length === 0) return 'nothing yet';
-    const done = rows.filter((row) => row.status === 'done').length;
+    if (rows.length === 0) return "nothing yet";
+    const done = rows.filter((row) => row.status === "done").length;
     const failed = rows.filter(
-      (row) => row.status === 'failed' || row.status === 'interrupted',
+      (row) => row.status === "failed" || row.status === "interrupted",
     ).length;
     const active = rows.filter(
-      (row) => row.status === 'running' || row.status === 'queued',
+      (row) => row.status === "running" || row.status === "queued",
     ).length;
     return [
       active > 0 ? `${active} active` : null,
@@ -427,16 +450,16 @@ export default function App() {
       failed > 0 ? `${failed} failed` : null,
     ]
       .filter((part): part is string => part !== null)
-      .join(' · ');
+      .join(" · ");
   };
 
   return (
     <div class="app">
       <aside class="sidebar-nav" aria-label="Categories and settings">
         <div class="brand">
-          <h1>{bootInfo()?.about.name ?? 'ConvertMe'}</h1>
+          <h1>{bootInfo()?.about.name ?? "ConvertMe"}</h1>
           <span class="brand-version">
-            {bootInfo() ? `v${bootInfo()?.about.version}` : 'starting'}
+            {bootInfo() ? `v${bootInfo()?.about.version}` : "starting"}
           </span>
         </div>
 
@@ -446,7 +469,7 @@ export default function App() {
               <button
                 type="button"
                 class="category-button"
-                classList={{ 'is-active': activeCategory() === category.id }}
+                classList={{ "is-active": activeCategory() === category.id }}
                 aria-pressed={activeCategory() === category.id}
                 onClick={() => selectCategory(category.id)}
               >
@@ -460,13 +483,24 @@ export default function App() {
           <button
             type="button"
             class="button"
-            classList={{ 'is-active': view() === 'settings' }}
-            aria-pressed={view() === 'settings'}
-            onClick={() => setView(view() === 'settings' ? 'workspace' : 'settings')}
+            classList={{ "is-active": view() === "settings" }}
+            aria-pressed={view() === "settings"}
+            onClick={() =>
+              setView(view() === "settings" ? "workspace" : "settings")
+            }
           >
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              aria-hidden="true"
+            >
               <circle cx="8" cy="8" r="2.4" />
-              <path d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2" stroke-linecap="round" />
+              <path
+                d="M8 1.6v1.7M8 12.7v1.7M1.6 8h1.7M12.7 8h1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2"
+                stroke-linecap="round"
+              />
             </svg>
             Settings
           </button>
@@ -474,7 +508,7 @@ export default function App() {
       </aside>
 
       <div class="app-main">
-        <Show when={view() === 'settings'}>
+        <Show when={view() === "settings"}>
           <section class="settings-page" aria-label="Settings">
             <Show when={settings()}>
               {(current) => (
@@ -484,7 +518,7 @@ export default function App() {
                   about={bootInfo()?.about ?? null}
                   missing={bootInfo()?.capabilities.missing ?? []}
                   onSave={saveSettings}
-                  onClose={() => setView('workspace')}
+                  onClose={() => setView("workspace")}
                 />
               )}
             </Show>
@@ -494,42 +528,52 @@ export default function App() {
         <main
           class="workspace"
           aria-label="Workspace"
-          style={{ display: view() === 'settings' ? 'none' : undefined }}
+          style={{ display: view() === "settings" ? "none" : undefined }}
         >
           <div
             class="dropzone"
-            classList={{ 'is-dragging': dragActive(), 'is-filled': hasSelection() }}
+            classList={{
+              "is-dragging": dragActive(),
+              "is-filled": hasSelection(),
+            }}
           >
             <div class="dropzone-text">
               <p class="dropzone-title">
                 {analyzing()
-                  ? 'Reading files'
+                  ? "Reading files"
                   : hasSelection()
-                    ? `${selection().length} file${selection().length === 1 ? '' : 's'} ready`
-                    : 'Drop files here'}
+                    ? `${selection().length} file${selection().length === 1 ? "" : "s"} ready`
+                    : "Drop files here"}
               </p>
               <p class="dropzone-copy">
                 {hasSelection()
                   ? settingsHint()
-                  : 'Drag a file from the file manager, or choose one below. Everything stays on this machine.'}
+                  : "Drag a file from the file manager, or choose one below. Everything stays on this machine."}
               </p>
             </div>
-            <button type="button" class="button" onClick={() => void chooseFiles()}>
+            <button
+              type="button"
+              class="button"
+              onClick={() => void chooseFiles()}
+            >
               Choose files…
             </button>
           </div>
 
           <Show when={analysis()}>
             {(result) => (
-              <section class="panel panel-card selection-panel" aria-labelledby="selection-heading">
+              <section
+                class="panel panel-card selection-panel"
+                aria-labelledby="selection-heading"
+              >
                 <header class="panel-head">
                   <h2 id="selection-heading">Selected</h2>
                   <span class="panel-meta">
                     {categoryLabel(result().category)}
-                    {result().format ? ` · ${result().format}` : ''}
+                    {result().format ? ` · ${result().format}` : ""}
                     {result().count > 0
-                      ? ` · ${result().count} file${result().count === 1 ? '' : 's'}`
-                      : ''}
+                      ? ` · ${result().count} file${result().count === 1 ? "" : "s"}`
+                      : ""}
                   </span>
                   <button
                     type="button"
@@ -543,7 +587,11 @@ export default function App() {
                   <For each={result().thumbs}>
                     {(thumb) => (
                       <li class="thumb">
-                        <img src={ipc.assetUrl(thumb.thumb)} alt="" loading="lazy" />
+                        <img
+                          src={ipc.assetUrl(thumb.thumb)}
+                          alt=""
+                          loading="lazy"
+                        />
                         <button
                           type="button"
                           class="thumb-remove"
@@ -580,16 +628,23 @@ export default function App() {
           </Show>
 
           <Show when={hasSelection()}>
-            <section class="panel panel-card targets-panel" aria-labelledby="targets-heading">
+            <section
+              class="panel panel-card targets-panel"
+              aria-labelledby="targets-heading"
+            >
               <header class="panel-head">
                 <h2 id="targets-heading">Convert to</h2>
-                <span class="panel-meta">{categoryLabel(activeCategory())}</span>
+                <span class="panel-meta">
+                  {categoryLabel(activeCategory())}
+                </span>
               </header>
               <Show
                 when={targetCards().length > 0}
                 fallback={
                   <p class="empty-note">
-                    {targets() === null ? 'Loading targets…' : 'No conversion for this format.'}
+                    {targets() === null
+                      ? "Loading targets…"
+                      : "No conversion for this format."}
                   </p>
                 }
               >
@@ -617,11 +672,15 @@ export default function App() {
             </section>
           </Show>
 
-          <section class="panel panel-card tools-panel" aria-labelledby="tools-heading">
+          <section
+            class="panel panel-card tools-panel"
+            aria-labelledby="tools-heading"
+          >
             <header class="panel-head">
               <h2 id="tools-heading">Tools</h2>
               <span class="panel-meta">
-                {categoryLabel(activeCategory())} · {toolCards().length} available
+                {categoryLabel(activeCategory())} · {toolCards().length}{" "}
+                available
               </span>
             </header>
             <ul class="tool-grid">
@@ -631,23 +690,36 @@ export default function App() {
                     <button
                       type="button"
                       class="tool-card"
-                      classList={{ 'is-busy': busyTool() === tool.id }}
+                      classList={{ "is-busy": busyTool() === tool.id }}
                       disabled={tool.disabled === true}
                       onClick={() => void openTool(tool)}
                     >
-                      <span class="tool-index">{String(index() + 1).padStart(2, '0')}</span>
+                      <span class="tool-index">
+                        {String(index() + 1).padStart(2, "0")}
+                      </span>
                       <span class="tool-text">
                         <span class="tool-label">{tool.label}</span>
                         <span class="tool-blurb">
-                          {busyTool() === tool.id ? 'Reading fields…' : (tool.blurb ?? '')}
+                          {busyTool() === tool.id
+                            ? "Reading fields…"
+                            : (tool.blurb ?? "")}
                         </span>
                         <Show when={tool.hint}>
                           <span class="tool-hint">{tool.hint}</span>
                         </Show>
                       </span>
                       <span class="tool-chevron" aria-hidden="true">
-                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
-                          <path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round" />
+                        <svg
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                        >
+                          <path
+                            d="M6 4l4 4-4 4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
                         </svg>
                       </span>
                     </button>
@@ -660,7 +732,7 @@ export default function App() {
 
         <section
           class="activity"
-          classList={{ 'is-collapsed': !activityOpen() }}
+          classList={{ "is-collapsed": !activityOpen() }}
           aria-label="Activity"
         >
           <button
@@ -686,15 +758,28 @@ export default function App() {
                 tabindex="0"
                 onClick={(event) => {
                   event.stopPropagation();
-                  void ipc.cancelAll().then(scheduleHistory, () => setNote('Could not cancel jobs'));
+                  void ipc
+                    .cancelAll()
+                    .then(scheduleHistory, () =>
+                      setNote("Could not cancel jobs"),
+                    );
                 }}
               >
                 Cancel all
               </span>
             </Show>
             <span class="activity-toggle" aria-hidden="true">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M4 6l4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+              >
+                <path
+                  d="M4 6l4 4 4-4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
             </span>
           </button>
@@ -704,18 +789,32 @@ export default function App() {
               progress={progress()}
               limit={HISTORY_LIMIT}
               onCancel={(id) => {
-                void ipc.cancelJob(id).then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not cancel the job');
-                });
+                void ipc
+                  .cancelJob(id)
+                  .then(scheduleHistory, (error: unknown) => {
+                    setNote(
+                      error instanceof Error
+                        ? error.message
+                        : "Could not cancel the job",
+                    );
+                  });
               }}
               onRetry={(id) => {
                 void ipc.retry(id).then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not retry the job');
+                  setNote(
+                    error instanceof Error
+                      ? error.message
+                      : "Could not retry the job",
+                  );
                 });
               }}
               onCancelAll={() => {
                 void ipc.cancelAll().then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not cancel jobs');
+                  setNote(
+                    error instanceof Error
+                      ? error.message
+                      : "Could not cancel jobs",
+                  );
                 });
               }}
             />
@@ -728,8 +827,10 @@ export default function App() {
           </span>
           <span class="status-divider" aria-hidden="true" />
           <span class="status-backend">
-            {bootInfo()?.backend.kind ?? 'connecting'}
-            {bootInfo()?.about.options ? ` · ${bootInfo()?.about.options} options` : ''}
+            {bootInfo()?.backend.kind ?? "connecting"}
+            {bootInfo()?.about.options
+              ? ` · ${bootInfo()?.about.options} options`
+              : ""}
           </span>
           <Show when={note()}>
             <span class="status-note">{note()}</span>
@@ -743,11 +844,19 @@ export default function App() {
             title="Open the wheel for this selection (same as pressing the key during a drag)"
             onClick={() => {
               if (ipc.isMock()) {
-                window.open('/?window=wheel', 'convertme-wheel', 'width=680,height=680');
+                window.open(
+                  "/?window=wheel",
+                  "convertme-wheel",
+                  "width=680,height=680",
+                );
                 return;
               }
               void ipc.previewWheel(selection()).catch((error) => {
-                setNote(error instanceof Error ? error.message : 'The wheel could not open');
+                setNote(
+                  error instanceof Error
+                    ? error.message
+                    : "The wheel could not open",
+                );
               });
             }}
           >

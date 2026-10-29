@@ -511,8 +511,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             select("mode", "Mode", "percent", &["percent", "target_bytes"])
                 .labelled(&["Reduce by a percentage", "Hit a target size"])
                 .control(),
-            num("percent", "Reduce by", 20.0, 1.0, 95.0, 1.0, "%")
-                .when("mode", "percent"),
+            num("percent", "Reduce by", 20.0, 1.0, 95.0, 1.0, "%").when("mode", "percent"),
             num(
                 "target_bytes",
                 "Target size",
@@ -532,8 +531,13 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 default: serde_json::json!([]),
                 ..Default::default()
             },
-            select("aspect", "Aspect ratio", "free", &["free", "1:1", "16:9", "4:3", "9:16", "3:4"])
-                .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4"]),
+            select(
+                "aspect",
+                "Aspect ratio",
+                "free",
+                &["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
+            )
+            .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4"]),
         ],
         (Category::Images, ToolId::Annotate) => vec![
             text("text", "Text", "", None),
