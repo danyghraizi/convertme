@@ -230,6 +230,17 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       show_if: { key: 'target', equals: 'true' },
     },
   ],
+  crop: [
+    { key: 'boxes', label: 'Area to keep', kind: 'boxes', default: [] },
+    {
+      key: 'aspect',
+      label: 'Aspect ratio',
+      kind: 'segmented',
+      default: 'free',
+      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4'],
+      option_labels: ['Free', '1:1', '16:9', '4:3', '9:16', '3:4'],
+    },
+  ],
   'edit-photo': [
     { key: 'exposure', label: 'Exposure', kind: 'range', default: 0, min: -3, max: 3, step: 0.1, unit: 'EV', group: 'Light' },
     { key: 'brightness', label: 'Brightness', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Light' },
@@ -252,16 +263,15 @@ const TOOL_FIELDS: Record<string, Field[]> = {
     {
       key: 'color',
       label: 'Colour',
-      kind: 'text',
+      kind: 'color',
       default: '#101418',
       show_if: { key: 'mode', equals: 'colour' },
     },
     {
       key: 'gradient',
       label: 'Gradient',
-      kind: 'text',
+      kind: 'gradient',
       default: '#f6c26b,#e4572e',
-      unit: '#from,#to',
       show_if: { key: 'mode', equals: 'gradient' },
     },
     {

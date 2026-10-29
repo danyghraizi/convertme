@@ -567,7 +567,13 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
         ],
         (Category::Images, ToolId::Annotate) => vec![
             text("text", "Text", "", None),
-            text("color", "Ink colour", "#f5f5f5", None),
+            Field {
+                key: "color".into(),
+                label: "Ink colour".into(),
+                kind: "color".into(),
+                default: serde_json::json!("#f5f5f5"),
+                ..Default::default()
+            },
         ],
         (Category::Images, ToolId::AddBackground) => vec![
             select(
@@ -578,10 +584,28 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             )
             .labelled(&["A colour", "A gradient", "Another image"])
             .control(),
-            text("color", "Colour", "#101418", None).when("mode", "colour"),
-            // The engine's spelling, so the field cannot teach a value it will refuse.
-            text("gradient", "Gradient", "#f6c26b,#e4572e", Some("#from,#to"))
-                .when("mode", "gradient"),
+            Field {
+                key: "color".into(),
+                label: "Colour".into(),
+                kind: "color".into(),
+                default: serde_json::json!("#101418"),
+                show_if: Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "colour".into(),
+                }),
+                ..Default::default()
+            },
+            Field {
+                key: "gradient".into(),
+                label: "Gradient".into(),
+                kind: "gradient".into(),
+                default: serde_json::json!("#f6c26b,#e4572e"),
+                show_if: Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "gradient".into(),
+                }),
+                ..Default::default()
+            },
             text("image", "Background image", "", Some("path")).when("mode", "image"),
             num("padding", "Padding", 64.0, 0.0, 2000.0, 1.0, "px"),
             num("radius", "Corner radius", 24.0, 0.0, 500.0, 1.0, "px"),

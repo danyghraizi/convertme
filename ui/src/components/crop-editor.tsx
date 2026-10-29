@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import * as ipc from '../ipc';
 import type { Box } from '../types';
 
@@ -61,6 +61,37 @@ export default function CropEditor(props: CropEditorProps) {
     if (w === 0 || h === 0) return null;
     return (a / b) * (h / w);
   }
+
+  /** Fit a rectangle of the locked ratio around a centre, inside the frame. */
+  function fitRatio(box: Box, locked: number): Box {
+    const area = Math.max(MIN * MIN, box.w * box.h);
+    let h = Math.sqrt(area / locked);
+    let w = h * locked;
+    if (w > 1) {
+      w = 1;
+      h = w / locked;
+    }
+    if (h > 1) {
+      h = 1;
+      w = h * locked;
+    }
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const x = Math.min(Math.max(0, cx - w / 2), 1 - w);
+    const y = Math.min(Math.max(0, cy - h / 2), 1 - h);
+    return { x, y, w, h };
+  }
+
+  // Choosing a ratio reshapes what is on screen. Constraining only the next drag left
+  // a 4:3 box labelled 1:1, which is exactly what the label must never allow.
+  createEffect(() => {
+    const locked = ratio();
+    if (locked === null) return;
+    const current = props.value ?? { x: 0, y: 0, w: 1, h: 1 };
+    const actual = current.w / current.h;
+    if (Math.abs(actual - locked) < 0.01) return;
+    props.onChange(fitRatio(current, locked));
+  });
 
   function clamp01(value: number): number {
     return Math.min(1, Math.max(0, value));

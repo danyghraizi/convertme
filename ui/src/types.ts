@@ -95,7 +95,16 @@ export interface Box {
 }
 
 export type FieldKind =
-  'number' | 'text' | 'range' | 'color' | 'select' | 'checkbox' | 'boxes' | 'order';
+  | 'number'
+  | 'text'
+  | 'range'
+  | 'color'
+  | 'gradient'
+  | 'segmented'
+  | 'select'
+  | 'checkbox'
+  | 'boxes'
+  | 'order';
 
 export type FieldValue = string | number | boolean | number[] | string[] | Box[];
 

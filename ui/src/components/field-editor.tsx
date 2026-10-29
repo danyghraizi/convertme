@@ -253,6 +253,50 @@ function OrderEditor(props: OrderEditorProps) {
   );
 }
 
+/** Swatches that cover the useful neutrals and accents, so a colour is one click. */
+const SWATCHES = [
+  '#101418',
+  '#ffffff',
+  '#9aa5b1',
+  '#f6c26b',
+  '#e4572e',
+  '#2f855a',
+  '#2b6cb0',
+  '#6b46c1',
+];
+
+function GradientEditor(props: { id: string; value: FieldValue; onChange: (value: FieldValue) => void }) {
+  const parts = (): [string, string] => {
+    const [from, to] = asText(props.value, '#f6c26b,#e4572e').split(',');
+    return [from || '#f6c26b', to || '#e4572e'];
+  };
+  const set = (index: 0 | 1, colour: string): void => {
+    const next: [string, string] = parts();
+    next[index] = colour;
+    props.onChange(`${next[0]},${next[1]}`);
+  };
+  return (
+    <div class="gradient-row">
+      <input
+        id={props.id}
+        type="color"
+        value={parts()[0]}
+        onInput={(event) => set(0, event.currentTarget.value)}
+      />
+      <input
+        type="color"
+        aria-label="To colour"
+        value={parts()[1]}
+        onInput={(event) => set(1, event.currentTarget.value)}
+      />
+      <span
+        class="gradient-chip"
+        style={{ background: `linear-gradient(120deg, ${parts()[0]}, ${parts()[1]})` }}
+      />
+    </div>
+  );
+}
+
 export default function FieldEditor(props: FieldEditorProps) {
   const id = (): string => `field-${props.field.key}`;
   const unit = (): string => props.field.unit ?? '';
@@ -320,7 +364,41 @@ export default function FieldEditor(props: FieldEditorProps) {
               value={asText(props.value, '#111111')}
               onInput={(event) => props.onChange(event.currentTarget.value)}
             />
+            <span class="swatches" role="group" aria-label="Presets">
+              <For each={SWATCHES}>
+                {(colour) => (
+                  <button
+                    type="button"
+                    class="swatch"
+                    classList={{ 'is-active': asText(props.value).toLowerCase() === colour }}
+                    style={{ background: colour }}
+                    aria-label={colour}
+                    title={colour}
+                    onClick={() => props.onChange(colour)}
+                  />
+                )}
+              </For>
+            </span>
             <output>{asText(props.value)}</output>
+          </span>
+        </Match>
+        <Match when={props.field.kind === 'gradient'}>
+          <GradientEditor id={id()} value={props.value} onChange={props.onChange} />
+        </Match>
+        <Match when={props.field.kind === 'segmented'}>
+          <span class="segmented" role="group" aria-label={props.field.label}>
+            <For each={props.field.options ?? []}>
+              {(option, index) => (
+                <button
+                  type="button"
+                  classList={{ 'is-active': asText(props.value) === option }}
+                  aria-pressed={asText(props.value) === option}
+                  onClick={() => props.onChange(option)}
+                >
+                  {props.field.option_labels?.[index()] ?? option}
+                </button>
+              )}
+            </For>
           </span>
         </Match>
         <Match when={props.field.kind === 'select'}>
