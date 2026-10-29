@@ -309,9 +309,12 @@ fn build(cmd: &Cmd) -> Command {
     .max(1);
     command.env("OMP_NUM_THREADS", threads.to_string());
     command.env("MAGICK_THREAD_LIMIT", "2");
-    command.env("MAGICK_MEMORY_LIMIT", "512MiB");
-    command.env("MAGICK_MAP_LIMIT", "1GiB");
-    command.env("MAGICK_DISK_LIMIT", "4GiB");
+    // A 5000x3750 Q16-HDRI image is ~300 MB of pixel cache on its own, and composing
+    // needs two of them; the old 512 MiB ceiling made "add background" fail with
+    // "cache resources exhausted" on ordinary phone photos.
+    command.env("MAGICK_MEMORY_LIMIT", "2GiB");
+    command.env("MAGICK_MAP_LIMIT", "4GiB");
+    command.env("MAGICK_DISK_LIMIT", "8GiB");
     // Keep tool output machine-readable regardless of the user's locale.
     command.env("LC_ALL", "C.UTF-8");
     command.env("LANG", "C.UTF-8");

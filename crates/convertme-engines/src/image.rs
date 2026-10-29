@@ -776,6 +776,9 @@ fn add_background(
     cx.ctx.set_stage("composing the background");
     cx.ctx.set_progress(0.05);
     let mut args: Vec<OsString> = Vec::new();
+    // Q16-HDRI doubles the pixel cache for no visible gain in a composed PNG/JPEG.
+    args.push(os("-depth"));
+    args.push(os("8"));
     if let Some(spec) = &gradient {
         let paint = cx.scratch("background-gradient.ppm");
         crate::gradient::write_ppm(&paint, canvas_w, canvas_h, spec)
@@ -786,28 +789,26 @@ fn add_background(
         args.push(os("center"));
         args.push(os("-composite"));
     } else if let Some(background) = background_image {
-        // The background is a picture to place, not just a texture: zoom it and shift the
-        // crop window, so the same image can be reused off-centre.
+        // The background is a picture to place, not just a texture: cover it at the
+        // requested zoom, then crop the canvas-sized window with *absolute* offsets.
+        // With `-gravity center`, a negative offset makes ImageMagick clip the crop
+        // instead of moving it, which left transparent wedges in the saved file.
         let zoom = number(params, "bg_zoom")?.unwrap_or(1.0).clamp(1.0, 3.0);
-        // The crop window can only move inside the zoomed image; past that, ImageMagick
-        // would clip the background instead of showing more of it.
-        let margin_x = (f64::from(canvas_w) * (zoom - 1.0) / 2.0).max(0.0);
-        let margin_y = (f64::from(canvas_h) * (zoom - 1.0) / 2.0).max(0.0);
-        let dx = ((number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_x)
-            .round() as i64;
-        let dy = ((number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_y)
-            .round() as i64;
+        let zoomed_w = (f64::from(canvas_w) * zoom).round().max(1.0);
+        let zoomed_h = (f64::from(canvas_h) * zoom).round().max(1.0);
+        let margin_x = ((zoomed_w - f64::from(canvas_w)) / 2.0).max(0.0);
+        let margin_y = ((zoomed_h - f64::from(canvas_h)) / 2.0).max(0.0);
+        let shift_x =
+            (number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_x;
+        let shift_y =
+            (number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_y;
+        let crop_x = (margin_x - shift_x).round().clamp(0.0, margin_x * 2.0) as u32;
+        let crop_y = (margin_y - shift_y).round().clamp(0.0, margin_y * 2.0) as u32;
         args.push(os(&background));
         args.push(os("-resize"));
-        args.push(os(format!(
-            "{}x{}^",
-            (f64::from(canvas_w) * zoom).round().max(1.0),
-            (f64::from(canvas_h) * zoom).round().max(1.0)
-        )));
-        args.push(os("-gravity"));
-        args.push(os("center"));
+        args.push(os(format!("{}x{}^", zoomed_w, zoomed_h)));
         args.push(os("-crop"));
-        args.push(os(format!("{size}{dx:+}{dy:+}")));
+        args.push(os(format!("{size}+{crop_x}+{crop_y}")));
         args.push(os("+repage"));
         args.push(os(&job.source));
         args.push(os("-gravity"));

@@ -153,7 +153,6 @@ export default function ToolModal(props: ToolModalProps) {
         <form class="modal-form" onSubmit={(event) => void submit(event)}>
           <Show when={props.fileLabel}>
             <p class="modal-file">
-              <span class="modal-file-label">This file</span>
               <span class="modal-file-name" title={props.fileLabel ?? ''}>
                 {props.fileLabel}
               </span>
