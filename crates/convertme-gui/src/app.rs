@@ -95,6 +95,7 @@ pub fn run() -> i32 {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::boot,
+            commands::image_size,
             commands::take_pending_paths,
             commands::analyze,
             commands::wheels,

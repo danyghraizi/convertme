@@ -312,6 +312,16 @@ export async function run(paths: string[], category: string, intent: Intent): Pr
   return readRunResult(await invoke('run', { paths, category, intent }));
 }
 
+/** Pixel size of a picture: the preview draws a thumbnail but must report real sizes. */
+export async function imageSize(path: string): Promise<{ w: number; h: number } | null> {
+  if (isMock()) {
+    // The mock has no file to read; a phone-sized picture keeps the maths honest.
+    return { w: 4032, h: 3024 };
+  }
+  const raw = (await invoke('image_size', { path })) as [number, number] | null;
+  return Array.isArray(raw) && raw.length === 2 ? { w: raw[0], h: raw[1] } : null;
+}
+
 export async function toolFields(category: string, tool: string): Promise<Field[]> {
   // The mock is parsed by the same reader the app uses, so a dropped kind fails here too.
   if (isMock()) return readFields(mock.mockToolFields(category, tool));

@@ -454,6 +454,13 @@ pub async fn run(
     Ok(RunOut { jobs, skipped })
 }
 
+/// Pixel size of a picture, so the composition preview can show real dimensions instead
+/// of the size of the thumbnail it draws.
+#[tauri::command]
+pub fn image_size(path: String) -> Option<(u32, u32)> {
+    convertme_engines::image_dimensions(std::path::Path::new(&path))
+}
+
 #[tauri::command]
 pub fn tool_fields(category: String, tool: String) -> Vec<Field> {
     let Some(category) = Category::parse(&category) else {

@@ -39,6 +39,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');
   const [note, setNote] = createSignal('');
   const [natural, setNatural] = createSignal({ w: 4, h: 3 });
+  const [real, setReal] = createSignal<{ w: number; h: number } | null>(null);
   const [backdrop, setBackdrop] = createSignal('');
 
   onMount(() => {
@@ -51,6 +52,10 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       .previewThumb(path, 1024)
       .then((url) => setSrc(ipc.assetUrl(url)))
       .catch(() => setNote('Preview unavailable.'));
+    // The drawn bitmap is a thumbnail; the numbers must be the file's own pixels.
+    void ipc.imageSize(path).then((size) => {
+      if (size) setReal(size);
+    });
   });
 
   // The chosen background image is shown too: choosing it and seeing nothing was the
@@ -90,7 +95,8 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
 
   /** The canvas in source pixels: what the file will be. */
   const canvasSize = createMemo(() => {
-    const { w, h } = natural();
+    const source = real() ?? natural();
+    const { w, h } = source;
     const pad = Math.max(0, props.padding);
     let canvasW = w + 2 * pad;
     let canvasH = h + 2 * pad;
@@ -104,7 +110,9 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
 
   /** Canvas and photo sizes in source pixels, then one scale to fit the panel. */
   const layout = createMemo(() => {
-    const { w, h } = natural();
+    // Draw with the thumbnail's shape, but place the photo by the real proportions.
+    const realSize = real();
+    const { w, h } = realSize ?? natural();
     const pad = Math.max(0, props.padding);
     const ratio = RATIOS[props.aspect];
     // The canvas always holds the photo plus its padding; a ratio only extends the

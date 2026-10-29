@@ -321,3 +321,8 @@ pub(crate) fn ensure_file(path: &Path, what: &str) -> Result<(), JobError> {
         Err(e) => Err(JobError::io(format!("{what} did not produce {path:?}"), &e)),
     }
 }
+
+/// Width and height of an image, read from its header (no decode).
+pub fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    ::image::image_dimensions(path).ok()
+}
