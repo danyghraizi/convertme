@@ -8,17 +8,49 @@ import { initialValue } from '../fields';
 import { formatBytes } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
 
+interface FillPreset {
+  label: string;
+  mode: 'colour' | 'gradient';
+  color?: string;
+  gradient?: string;
+  css: string;
+}
+
 /** Ready-made fills, so a background does not start from a hex value. */
-const FILL_PRESETS = [
+const SOLID_PRESETS: FillPreset[] = [
   { label: 'Ink', mode: 'colour', color: '#101418', css: '#101418' },
   { label: 'Paper', mode: 'colour', color: '#ffffff', css: '#ffffff' },
   { label: 'Amber', mode: 'colour', color: '#f6c26b', css: '#f6c26b' },
   { label: 'Ember', mode: 'colour', color: '#e4572e', css: '#e4572e' },
-  { label: 'Warm sunset', mode: 'gradient', gradient: 'linear|90|#f6c26b@0,#e4572e@100', css: 'linear-gradient(90deg,#f6c26b,#e4572e)' },
-  { label: 'Dusk', mode: 'gradient', gradient: 'linear|135|#0b1020@0,#4b5563@35,#fbbf24@100', css: 'linear-gradient(135deg,#0b1020,#4b5563 35%,#fbbf24)' },
-  { label: 'Mint', mode: 'gradient', gradient: 'radial||#7ee787@0,#0f2417@100', css: 'radial-gradient(circle,#7ee787,#0f2417)' },
-  { label: 'Sea', mode: 'gradient', gradient: 'linear|0|#2b6cb0@0,#63b3ed@100', css: 'linear-gradient(0deg,#2b6cb0,#63b3ed)' },
-] as const;
+];
+
+const GRADIENT_PRESETS: FillPreset[] = [
+  {
+    label: 'Warm sunset',
+    mode: 'gradient',
+    gradient: 'linear|90|#f6c26b@0,#e4572e@100',
+    css: 'linear-gradient(90deg,#f6c26b,#e4572e)',
+  },
+  {
+    label: 'Dusk',
+    mode: 'gradient',
+    gradient: 'linear|135|#0b1020@0,#4b5563@35,#fbbf24@100',
+    css: 'linear-gradient(135deg,#0b1020,#4b5563 35%,#fbbf24)',
+  },
+  {
+    label: 'Mint',
+    mode: 'gradient',
+    gradient: 'radial||#7ee787@0,#0f2417@100',
+    css: 'radial-gradient(circle,#7ee787,#0f2417)',
+  },
+  {
+    label: 'Sea',
+    mode: 'gradient',
+    gradient: 'linear|0|#2b6cb0@0,#63b3ed@100',
+    css: 'linear-gradient(0deg,#2b6cb0,#63b3ed)',
+  },
+];
+
 
 interface ToolModalProps {
   tool: Segment;
@@ -58,6 +90,12 @@ export default function ToolModal(props: ToolModalProps) {
       document.body.style.overflow = previous;
     });
   });
+
+  function applyFill(preset: FillPreset): void {
+    setValues('mode', preset.mode);
+    if (preset.mode === 'gradient' && preset.gradient) setValues('gradient', preset.gradient);
+    if (preset.mode === 'colour' && preset.color) setValues('color', preset.color);
+  }
 
   /** Back to the values the tool started with, as the reference dialog offers. */
   function reset(): void {
@@ -220,16 +258,7 @@ export default function ToolModal(props: ToolModalProps) {
             </Show>
             <Show when={props.tool.id === 'add-background' && values.mode !== 'image'}>
               <div class="fill-presets" role="group" aria-label="Ready-made backgrounds">
-                <button
-                  type="button"
-                  class="fill-preset fill-preset-image"
-                  title="Another image"
-                  aria-label="Another image"
-                  onClick={() => setValues('mode', 'image')}
-                >
-                  <span aria-hidden="true">▧</span>
-                </button>
-                <For each={FILL_PRESETS}>
+                <For each={SOLID_PRESETS}>
                   {(preset) => (
                     <button
                       type="button"
@@ -237,18 +266,37 @@ export default function ToolModal(props: ToolModalProps) {
                       style={{ background: preset.css }}
                       title={preset.label}
                       aria-label={preset.label}
-                      onClick={() => {
-                        setValues('mode', preset.mode);
-                        if (preset.mode === 'gradient' && preset.gradient) {
-                          setValues('gradient', preset.gradient);
-                        }
-                        if (preset.mode === 'colour' && preset.color) {
-                          setValues('color', preset.color);
-                        }
-                      }}
+                      onClick={() => applyFill(preset)}
                     />
                   )}
                 </For>
+                <span class="fill-separator" aria-hidden="true" />
+                <For each={GRADIENT_PRESETS}>
+                  {(preset) => (
+                    <button
+                      type="button"
+                      class="fill-preset"
+                      style={{ background: preset.css }}
+                      title={preset.label}
+                      aria-label={preset.label}
+                      onClick={() => applyFill(preset)}
+                    />
+                  )}
+                </For>
+                <span class="fill-gap" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="fill-preset fill-preset-image"
+                  title="Use another image"
+                  aria-label="Use another image"
+                  onClick={() => setValues('mode', 'image')}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+                    <circle cx="5.6" cy="6.4" r="1.3" />
+                    <path d="M2.6 12.2l3.6-3.7 2.6 2.4 2.2-2.1 2.4 3.4" />
+                  </svg>
+                </button>
               </div>
             </Show>
 
