@@ -172,12 +172,16 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     )));
                 }
             }
-            for key in ["padding_pct", "radius_pct"] {
-                if let Some(v) = number(params, key)?
-                    && (!v.is_finite() || !(0.0..=50.0).contains(&v))
-                {
-                    return Err(unsupported(format!("`{key}` is a percentage from 0 to 50")));
-                }
+            if let Some(v) = number(params, "padding_pct")?
+                && (!v.is_finite() || !(0.0..=100.0).contains(&v))
+            {
+                return Err(unsupported("`padding_pct` is a percentage from 0 to 100"));
+            }
+            if let Some(v) = number(params, "radius_pct")?
+                && (!v.is_finite() || !(0.0..=50.0).contains(&v))
+            {
+                // 50% of the shorter side is already a circle; more has no meaning.
+                return Err(unsupported("`radius_pct` is a percentage from 0 to 50"));
             }
             Ok(())
         }
@@ -756,7 +760,7 @@ fn add_background(
     // nothing on a 5000 px photo, where 400 px is an 8% border.
     let shortest = width.min(height).max(1) as f64;
     let padding = match number(params, "padding_pct")? {
-        Some(pct) => (pct.clamp(0.0, 50.0) / 100.0 * shortest).round() as u32,
+        Some(pct) => (pct.clamp(0.0, 100.0) / 100.0 * shortest).round() as u32,
         None => number(params, "padding")?.unwrap_or(0.0).round() as u32,
     };
     let radius = match number(params, "radius_pct")? {
@@ -791,15 +795,48 @@ fn add_background(
     let size = format!("{canvas_w}x{canvas_h}");
 
     let out = tool_out(job, cx, ToolId::AddBackground);
-    let ext = output_ext(job);
-    let base = if radius > 0 {
-        cx.scratch(&format!("background-base.{ext}"))
+
+    // Rounding belongs to the photo, not to the canvas: masking the finished composition
+    // cut the corners off the background, which is not what the dialog shows.
+    let photo: OsString = if radius > 0 {
+        let rounded = cx.scratch("photo-rounded.png");
+        let r = radius.min(width.min(height) / 2).max(1).to_string();
+        let mask = format!(
+            "roundrectangle 0,0 {},{} {},{}",
+            width.saturating_sub(1),
+            height.saturating_sub(1),
+            r,
+            r
+        );
+        let args = vec![
+            os("-depth"),
+            os("8"),
+            os(&job.source),
+            os("("),
+            os("-size"),
+            os(format!("{width}x{height}")),
+            os("xc:black"),
+            os("-fill"),
+            os("white"),
+            os("-draw"),
+            os(&mask),
+            os(")"),
+            os("-alpha"),
+            os("off"),
+            os("-compose"),
+            os("CopyOpacity"),
+            os("-composite"),
+            os(&rounded),
+        ];
+        run_magick(&magick, args, cx, Budget::Short)?;
+        ensure_file(&rounded, "the rounded photo")?;
+        rounded.into_os_string()
     } else {
-        out.clone()
+        job.source.clone().into_os_string()
     };
 
     cx.ctx.set_stage("composing the background");
-    cx.ctx.set_progress(0.05);
+    cx.ctx.set_progress(0.4);
     let mut args: Vec<OsString> = Vec::new();
     // Q16-HDRI doubles the pixel cache for no visible gain in a composed PNG/JPEG.
     args.push(os("-depth"));
@@ -809,7 +846,7 @@ fn add_background(
         crate::gradient::write_ppm(&paint, canvas_w, canvas_h, spec)
             .map_err(|e| convertme_core::error::JobError::io("writing the gradient", &e))?;
         args.push(os(&paint));
-        args.push(os(&job.source));
+        args.push(photo.clone());
         args.push(os("-gravity"));
         args.push(os("center"));
         args.push(os("-composite"));
@@ -835,12 +872,12 @@ fn add_background(
         args.push(os("-crop"));
         args.push(os(format!("{size}+{crop_x}+{crop_y}")));
         args.push(os("+repage"));
-        args.push(os(&job.source));
+        args.push(photo.clone());
         args.push(os("-gravity"));
         args.push(os("center"));
         args.push(os("-composite"));
     } else {
-        args.push(os(&job.source));
+        args.push(photo.clone());
         args.push(os("-background"));
         args.push(os(&color));
         args.push(os("-gravity"));
@@ -848,41 +885,9 @@ fn add_background(
         args.push(os("-extent"));
         args.push(os(&size));
     }
-    args.push(os(&base));
+    args.push(os(&out));
     run_magick(&magick, args, cx, Budget::Short)?;
-    ensure_file(&base, "the image encoder")?;
-
-    if radius > 0 {
-        let r = radius.min(canvas_w.min(canvas_h) / 2).max(1);
-        cx.ctx.set_progress(0.7);
-        let mask = format!(
-            "roundrectangle 0,0 {},{} {},{}",
-            canvas_w.saturating_sub(1),
-            canvas_h.saturating_sub(1),
-            r,
-            r
-        );
-        let args = vec![
-            os(&base),
-            os("("),
-            os("-size"),
-            os(&size),
-            os("xc:black"),
-            os("-fill"),
-            os("white"),
-            os("-draw"),
-            os(mask),
-            os(")"),
-            os("-alpha"),
-            os("off"),
-            os("-compose"),
-            os("CopyOpacity"),
-            os("-composite"),
-            os(&out),
-        ];
-        run_magick(&magick, args, cx, Budget::Short)?;
-        ensure_file(&out, "the image encoder")?;
-    }
+    ensure_file(&out, "the image encoder")?;
 
     cx.ctx.set_progress(1.0);
     Ok(vec![out])
