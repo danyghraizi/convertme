@@ -178,10 +178,10 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 return Err(unsupported("`padding_pct` is a percentage from 0 to 100"));
             }
             if let Some(v) = number(params, "radius_pct")?
-                && (!v.is_finite() || !(0.0..=50.0).contains(&v))
+                && (!v.is_finite() || !(0.0..=100.0).contains(&v))
             {
-                // 50% of the shorter side is already a circle; more has no meaning.
-                return Err(unsupported("`radius_pct` is a percentage from 0 to 50"));
+                // 100% is a circle; the radius stops there.
+                return Err(unsupported("`radius_pct` is a percentage from 0 to 100"));
             }
             Ok(())
         }
@@ -763,8 +763,9 @@ fn add_background(
         Some(pct) => (pct.clamp(0.0, 100.0) / 100.0 * shortest).round() as u32,
         None => number(params, "padding")?.unwrap_or(0.0).round() as u32,
     };
+    // 100% of the slider is a circle, so the radius runs to half the shorter side.
     let radius = match number(params, "radius_pct")? {
-        Some(pct) => (pct.clamp(0.0, 50.0) / 100.0 * shortest).round() as u32,
+        Some(pct) => (pct.clamp(0.0, 100.0) / 100.0 * shortest / 2.0).round() as u32,
         None => number(params, "radius")?.unwrap_or(0.0).round() as u32,
     };
     let color = string(params, "color")?.unwrap_or("#101418").to_string();
@@ -856,22 +857,36 @@ fn add_background(
         // With `-gravity center`, a negative offset makes ImageMagick clip the crop
         // instead of moving it, which left transparent wedges in the saved file.
         let zoom = number(params, "bg_zoom")?.unwrap_or(1.0).clamp(1.0, 3.0);
-        let zoomed_w = (f64::from(canvas_w) * zoom).round().max(1.0);
-        let zoomed_h = (f64::from(canvas_h) * zoom).round().max(1.0);
-        let margin_x = ((zoomed_w - f64::from(canvas_w)) / 2.0).max(0.0);
-        let margin_y = ((zoomed_h - f64::from(canvas_h)) / 2.0).max(0.0);
+        // Crop the source first, then scale the window to the canvas. Upscaling first
+        // (zoom x canvas) is what exhausted ImageMagick's pixel cache on large photos.
+        let (bg_w, bg_h) = image_size(&magick, &background, cx)?;
+        let target = f64::from(canvas_w) / f64::from(canvas_h);
+        let src_aspect = f64::from(bg_w) / f64::from(bg_h);
+        let (base_w, base_h) = if src_aspect > target {
+            (f64::from(bg_h) * target, f64::from(bg_h))
+        } else {
+            (f64::from(bg_w), f64::from(bg_w) / target)
+        };
+        let vis_w = (base_w / zoom).round().clamp(1.0, f64::from(bg_w));
+        let vis_h = (base_h / zoom).round().clamp(1.0, f64::from(bg_h));
+        let free_x = (base_w - vis_w).max(0.0);
+        let free_y = (base_h - vis_h).max(0.0);
         let shift_x =
-            (number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_x;
+            (number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * free_x / 2.0;
         let shift_y =
-            (number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * margin_y;
-        let crop_x = (margin_x - shift_x).round().clamp(0.0, margin_x * 2.0) as u32;
-        let crop_y = (margin_y - shift_y).round().clamp(0.0, margin_y * 2.0) as u32;
+            (number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * free_y / 2.0;
+        let crop_x = (free_x / 2.0 - shift_x).round().clamp(0.0, free_x) as u32;
+        let crop_y = (free_y / 2.0 - shift_y).round().clamp(0.0, free_y) as u32;
         args.push(os(&background));
-        args.push(os("-resize"));
-        args.push(os(format!("{}x{}^", zoomed_w, zoomed_h)));
         args.push(os("-crop"));
-        args.push(os(format!("{size}+{crop_x}+{crop_y}")));
+        args.push(os(format!(
+            "{}x{}+{crop_x}+{crop_y}",
+            vis_w.round(),
+            vis_h.round()
+        )));
         args.push(os("+repage"));
+        args.push(os("-resize"));
+        args.push(os(format!("{size}!")));
         args.push(photo.clone());
         args.push(os("-gravity"));
         args.push(os("center"));

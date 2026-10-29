@@ -662,7 +662,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 field
             },
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
-            ranged("radius_pct", "Corner radius", 2.0, 0.0, 50.0, 1.0, "%"),
+            ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
             {
                 // Every ratio visible, as in the reference, and "Auto" means the
                 // engine's own default: the photo plus equal padding.

@@ -133,8 +133,9 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       photoW,
       photoH,
       padPx: pad * scale,
+      // 100% is a circle, so the slider maps to half the shorter side.
       radiusPx: Math.min(
-        (props.radiusPct / 100) * Math.min(w, h) * scale,
+        (props.radiusPct / 100) * (Math.min(w, h) / 2) * scale,
         Math.min(photoW, photoH) / 2,
       ),
     };
