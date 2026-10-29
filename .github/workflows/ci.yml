@@ -105,6 +105,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The release profile is what this job builds; keeping it separate from the
+          # debug cache the Rust job fills avoids evicting either.
+          prefix-key: release
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -120,7 +125,14 @@ jobs:
             poppler-utils qpdf tesseract-ocr rpm
       - name: vendor the bundled tools
         run: cargo xtask vendor
+      - name: cache the PDF sidecar
+        id: sidecar-cache
+        uses: actions/cache@v4
+        with:
+          path: sidecars/pdf/dist/convertme-pdf
+          key: sidecar-${{ runner.os }}-${{ hashFiles('sidecars/pdf/**') }}
       - name: build the PDF sidecar
+        if: steps.sidecar-cache.outputs.cache-hit != 'true'
         run: ./sidecars/pdf/build.sh
       - name: copy the sidecar into vendor/
         run: |
@@ -140,6 +152,10 @@ jobs:
           path: |
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binary
+          path: target/release/convertme
 
   perf:
     # The budgets are requirements, so a regression fails the build.
@@ -159,14 +175,23 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
             libxdo-dev libssl-dev pkg-config xvfb imagemagick ffmpeg pandoc 7zip \
             ghostscript poppler-utils qpdf tesseract-ocr
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binary
+          path: target/release
+      - run: chmod +x target/release/convertme
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: perf
       - run: cargo xtask vendor
-      - run: cargo build --release -p convertme-gui --bin convertme
       # The budget the product promises (600 ms) is measured on a desktop session.
       # This container has no GPU and starts WebKit in seconds, so the gate here
       # catches regressions against the container baseline instead of pretending.
+      # Each start sample is a fresh process, and this container needs seconds to
+      # bring WebKit up; eight launches tell a regression from noise just as well.
       - name: cold start
-        run: xvfb-run -a cargo xtask perf start --runs 20 --budget 8000
+        run: xvfb-run -a cargo xtask perf start --runs 8 --budget 8000
       - name: wheel
-        run: xvfb-run -a cargo xtask perf wheel --runs 50 --budget 400
+        run: xvfb-run -a cargo xtask perf wheel --runs 30 --budget 400
       - name: idle cost
-        run: xvfb-run -a cargo xtask perf idle --seconds 30
+        run: xvfb-run -a cargo xtask perf idle --seconds 20
