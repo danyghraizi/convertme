@@ -136,6 +136,9 @@ pub struct Field {
     pub option_labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_if: Option<ShowIf>,
+    /// Section heading, when a tool's controls fall into groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl Field {
@@ -145,6 +148,12 @@ impl Field {
             key: key.into(),
             equals: equals.into(),
         });
+        self
+    }
+
+    /// Put this control under a section heading.
+    fn group(mut self, name: &str) -> Self {
+        self.group = Some(name.into());
         self
     }
 
@@ -461,6 +470,12 @@ fn num(key: &str, label: &str, default: f64, min: f64, max: f64, step: f64, unit
     }
 }
 
+fn range(key: &str, label: &str, min: f64, max: f64, step: f64, unit: &str) -> Field {
+    let mut field = num(key, label, 0.0, min, max, step, unit);
+    field.kind = "range".into();
+    field
+}
+
 fn select(key: &str, label: &str, default: &str, options: &[&str]) -> Field {
     Field {
         key: key.into(),
@@ -557,22 +572,19 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             ),
         ],
         (Category::Images, ToolId::EditPhoto) => vec![
-            num("brightness", "Brightness", 0.0, -100.0, 100.0, 1.0, ""),
-            num("contrast", "Contrast", 0.0, -100.0, 100.0, 1.0, ""),
-            num("saturation", "Saturation", 0.0, -100.0, 100.0, 1.0, ""),
-            num("gamma", "Gamma", 1.0, 0.1, 5.0, 0.05, ""),
+            range("exposure", "Exposure", -3.0, 3.0, 0.1, "EV").group("Light"),
+            range("brightness", "Brightness", -100.0, 100.0, 1.0, "").group("Light"),
+            range("contrast", "Contrast", -100.0, 100.0, 1.0, "").group("Light"),
+            {
+                let mut field = range("gamma", "Gamma", 0.2, 3.0, 0.01, "").group("Light");
+                // 1.0 is "leave it alone"; the slider starts neutral, not at zero.
+                field.default = serde_json::json!(1.0);
+                field
+            },
+            range("temperature", "Temperature", -100.0, 100.0, 1.0, "").group("Colour"),
+            range("saturation", "Saturation", -100.0, 100.0, 1.0, "").group("Colour"),
+            range("hue", "Hue", -180.0, 180.0, 1.0, "°").group("Colour"),
         ],
-        (Category::Images, ToolId::Metadata) => {
-            let format = convertme_engines::metadata::editable_tags(
-                convertme_core::formats::FormatId("JPG"),
-            );
-            let mut fields: Vec<Field> = format
-                .iter()
-                .map(|tag| text(&format!("set.{tag}"), tag, "", None))
-                .collect();
-            fields.push(checkbox("strip", "Remove all metadata", false));
-            fields
-        }
         (Category::Images, ToolId::Redact) => {
             let mut fields = vec![
                 Field {

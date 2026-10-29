@@ -150,18 +150,37 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             Ok(())
         }
         ToolId::EditPhoto => {
-            check_params(params, &["brightness", "contrast", "saturation", "gamma"])?;
+            check_params(
+                params,
+                &[
+                    "exposure",
+                    "brightness",
+                    "contrast",
+                    "saturation",
+                    "hue",
+                    "temperature",
+                    "gamma",
+                ],
+            )?;
             let brightness = number(params, "brightness")?.unwrap_or(0.0);
             let contrast = number(params, "contrast")?.unwrap_or(0.0);
             let saturation = number(params, "saturation")?.unwrap_or(0.0);
+            let temperature = number(params, "temperature")?.unwrap_or(0.0);
+            let hue = number(params, "hue")?.unwrap_or(0.0);
+            let exposure = number(params, "exposure")?.unwrap_or(0.0);
             for (key, value) in [
                 ("brightness", brightness),
                 ("contrast", contrast),
                 ("saturation", saturation),
+                ("temperature", temperature),
+                ("hue", hue),
             ] {
                 if !(-100.0..=100.0).contains(&value) {
                     return Err(unsupported(format!("`{key}` must be between -100 and 100")));
                 }
+            }
+            if !(-3.0..=3.0).contains(&exposure) {
+                return Err(unsupported("`exposure` must be between -3 and 3 stops"));
             }
             if let Some(gamma) = number(params, "gamma")?
                 && !(0.1..=10.0).contains(&gamma)
@@ -171,6 +190,9 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             if brightness == 0.0
                 && contrast == 0.0
                 && saturation == 0.0
+                && temperature == 0.0
+                && hue == 0.0
+                && exposure == 0.0
                 && number(params, "gamma")?.is_none()
             {
                 return Err(unsupported("no photo adjustment was requested"));
@@ -835,15 +857,43 @@ fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Pa
     let brightness = number(params, "brightness")?.unwrap_or(0.0) as f32;
     let contrast = number(params, "contrast")?.unwrap_or(0.0) as f32;
     let saturation = number(params, "saturation")?.unwrap_or(0.0) as f32;
+    let exposure = number(params, "exposure")?.unwrap_or(0.0) as f32;
+    let hue = number(params, "hue")?.unwrap_or(0.0) as f32;
+    let temperature = number(params, "temperature")?.unwrap_or(0.0) as f32;
     let gamma = number(params, "gamma")?;
 
     let out = tool_out(job, cx, ToolId::EditPhoto);
     let mut args = vec![os(&job.source)];
-    if brightness != 0.0 || saturation != 0.0 {
+    if exposure != 0.0 {
+        // Stops of light, applied as a linear multiply before anything tonal.
+        let factor = 2f32.powf(exposure).clamp(0.05, 20.0);
+        args.push(os("-evaluate"));
+        args.push(os("multiply"));
+        args.push(os(format!("{factor:.4}")));
+    }
+    if temperature != 0.0 {
+        // Warm or cool: lift red and drop blue, and the reverse, without clipping.
+        let warm = (temperature / 300.0).clamp(-0.33, 0.33);
+        args.push(os("+channel"));
+        args.push(os("-channel"));
+        args.push(os("R"));
+        args.push(os("-evaluate"));
+        args.push(os("multiply"));
+        args.push(os(format!("{:.4}", 1.0 + warm)));
+        args.push(os("-channel"));
+        args.push(os("B"));
+        args.push(os("-evaluate"));
+        args.push(os("multiply"));
+        args.push(os(format!("{:.4}", 1.0 - warm)));
+        args.push(os("+channel"));
+    }
+    if brightness != 0.0 || saturation != 0.0 || hue != 0.0 {
         let bright = (100.0 + brightness).clamp(0.0, 200.0);
         let sat = (100.0 + saturation).clamp(0.0, 200.0);
+        // `-modulate`'s third value is a hue percentage: 100 is unchanged.
+        let hue_shift = (100.0 + hue / 3.6).clamp(0.0, 200.0);
         args.push(os("-modulate"));
-        args.push(os(format!("{bright:.2},{sat:.2},100")));
+        args.push(os(format!("{bright:.2},{sat:.2},{hue_shift:.2}")));
     }
     if contrast != 0.0 {
         args.push(os("-brightness-contrast"));

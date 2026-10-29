@@ -113,6 +113,8 @@ export interface Field {
   option_labels?: string[];
   /** Render this field only while another field holds a given value. */
   show_if?: { key: string; equals: string };
+  /** Section heading when the controls are grouped. */
+  group?: string;
 }
 
 export interface ConvertIntent {

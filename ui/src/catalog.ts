@@ -40,6 +40,8 @@ export const FALLBACK_TOOLS: Record<string, Segment[]> = {
     seg('collage', 'Collage', 'Arrange several photos into one image'),
     seg('redact', 'Redact', 'Cover faces or text with solid blocks'),
     seg('metadata', 'Edit metadata', 'Read and write image tags'),
+    seg('edit-photo', 'Edit photo', 'Adjust exposure, colour and tone'),
+    seg('add-background', 'Add background', 'Place the photo on a colour or a gradient'),
   ],
   video: [
     seg('compress', 'Compress to size', 'Two-pass encode to a target size'),

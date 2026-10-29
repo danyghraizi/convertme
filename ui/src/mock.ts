@@ -230,6 +230,28 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       show_if: { key: 'target', equals: 'true' },
     },
   ],
+  'edit-photo': [
+    { key: 'exposure', label: 'Exposure', kind: 'range', default: 0, min: -3, max: 3, step: 0.1, unit: 'EV', group: 'Light' },
+    { key: 'brightness', label: 'Brightness', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Light' },
+    { key: 'contrast', label: 'Contrast', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Light' },
+    { key: 'gamma', label: 'Gamma', kind: 'range', default: 1, min: 0.2, max: 3, step: 0.01, group: 'Light' },
+    { key: 'temperature', label: 'Temperature', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Colour' },
+    { key: 'saturation', label: 'Saturation', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Colour' },
+    { key: 'hue', label: 'Hue', kind: 'range', default: 0, min: -180, max: 180, step: 1, unit: '°', group: 'Colour' },
+  ],
+  'add-background': [
+    { key: 'color', label: 'Background', kind: 'text', default: '#101418' },
+    { key: 'padding', label: 'Padding', kind: 'number', default: 64, min: 0, max: 2000, step: 1, unit: 'px' },
+    { key: 'radius', label: 'Corner radius', kind: 'number', default: 24, min: 0, max: 500, step: 1, unit: 'px' },
+    {
+      key: 'aspect',
+      label: 'Canvas',
+      kind: 'select',
+      default: '1:1',
+      options: ['1:1', '4:3', '16:9', '9:16', 'source'],
+      option_labels: ['Square (1:1)', 'Landscape (4:3)', 'Wide (16:9)', 'Portrait (9:16)', 'Same as the photo'],
+    },
+  ],
   trim: [
     {
       key: 'start',

@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import CropEditor from './crop-editor';
+import PhotoPreview from './photo-preview';
 import FieldEditor from './field-editor';
 import { initialValue } from '../fields';
 import { formatBytes } from '../format';
@@ -37,6 +38,9 @@ export default function ToolModal(props: ToolModalProps) {
     dialog?.focus();
     onCleanup(() => document.removeEventListener('keydown', onKeyDown));
   });
+
+  const visibleFields = (): Field[] =>
+    props.fields.filter((field) => isVisible(field) && field.key !== 'boxes');
 
   /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
   function isVisible(field: Field): boolean {
@@ -128,14 +132,35 @@ export default function ToolModal(props: ToolModalProps) {
                 />
               </div>
             </Show>
-            <For each={props.fields.filter((field) => isVisible(field) && field.key !== 'boxes')}>
-              {(field) => (
-                <FieldEditor
-                  field={field}
-                  value={values[field.key] ?? initialValue(field)}
-                  previewPath={props.previewPath}
-                  onChange={(value) => setValues(field.key, value)}
-                />
+            <Show when={props.tool.id === 'edit-photo'}>
+              <PhotoPreview
+                path={props.previewPath}
+                exposure={Number(values.exposure ?? 0)}
+                brightness={Number(values.brightness ?? 0)}
+                contrast={Number(values.contrast ?? 0)}
+                saturation={Number(values.saturation ?? 0)}
+                hue={Number(values.hue ?? 0)}
+                temperature={Number(values.temperature ?? 0)}
+              />
+            </Show>
+            <For each={visibleFields()}>
+              {(field, index) => (
+                <>
+                  <Show
+                    when={
+                      field.group &&
+                      field.group !== visibleFields()[index() - 1]?.group
+                    }
+                  >
+                    <h3 class="modal-group">{field.group}</h3>
+                  </Show>
+                  <FieldEditor
+                    field={field}
+                    value={values[field.key] ?? initialValue(field)}
+                    previewPath={props.previewPath}
+                    onChange={(value) => setValues(field.key, value)}
+                  />
+                </>
               )}
             </For>
           </div>
