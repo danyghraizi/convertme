@@ -180,9 +180,9 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 return Err(unsupported("`padding_pct` is a percentage from 0 to 100"));
             }
             if let Some(v) = number(params, "shadow_pct")?
-                && (!v.is_finite() || !(0.0..=20.0).contains(&v))
+                && (!v.is_finite() || !(0.0..=100.0).contains(&v))
             {
-                return Err(unsupported("`shadow_pct` is a percentage from 0 to 20"));
+                return Err(unsupported("`shadow_pct` is a percentage from 0 to 100"));
             }
             if let Some(v) = number(params, "shadow_angle")?
                 && (!v.is_finite() || !(0.0..=360.0).contains(&v))

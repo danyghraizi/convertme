@@ -331,8 +331,8 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       kind: 'range',
       default: 2,
       min: 0,
-      max: 20,
-      step: 0.5,
+      max: 100,
+      step: 1,
       unit: '%',
     },
     {

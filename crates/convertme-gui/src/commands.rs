@@ -663,7 +663,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             },
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
-            ranged("shadow_pct", "Shadow", 2.0, 0.0, 20.0, 0.5, "%"),
+            ranged("shadow_pct", "Shadow", 2.0, 0.0, 100.0, 1.0, "%"),
             ranged(
                 "shadow_angle",
                 "Shadow angle",
