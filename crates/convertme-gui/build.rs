@@ -19,6 +19,12 @@ fn main() {
     println!("cargo:rerun-if-changed=ui-dist");
     println!("cargo:rerun-if-changed=../../ui/src");
     fail_if_stale();
+    // Per-file, not per-directory: Vite rewrites existing files in place, which leaves
+    // the directory mtime untouched, so a rebuilt bundle was never re-embedded and the
+    // window kept showing the previous design.
+    for file in files_under(Path::new("ui-dist")) {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
     tauri_build::build();
 }
 
@@ -39,6 +45,22 @@ fn fail_if_stale() {
              `cargo build` alone cannot rebundle the frontend."
         );
     }
+}
+
+fn files_under(path: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if child.is_dir() {
+            found.extend(files_under(&child));
+        } else if child.is_file() {
+            found.push(child);
+        }
+    }
+    found
 }
 
 /// Recursive newest mtime, skipping the font and image assets that never change.

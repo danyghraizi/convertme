@@ -109,3 +109,9 @@ for CI and screenshots; it is not needed to use the app.
 GPL-3.0-or-later. The bundled tools and their licences are listed in `NOTICE`;
 FFmpeg's corresponding source and the sidecar's source are published per the offers
 described there.
+
+## Building the window
+
+`cargo build` embeds `crates/convertme-gui/ui-dist` as it stands. After changing anything
+under `ui/src`, run `npm --prefix ui run build` first: the build script fails if the bundle
+is older, and a test compares the embedded page with the built one.
