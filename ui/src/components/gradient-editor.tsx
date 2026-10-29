@@ -125,7 +125,9 @@ export default function GradientEditor(props: GradientEditorProps) {
   const [emitted, setEmitted] = createSignal(props.value);
 
   createEffect(() => {
-    const incoming = untrack(() => props.value);
+    // `props.value` is tracked (the effect must re-run when the parent sets a preset);
+    // only the comparison value is untracked, so our own emit does not feed back.
+    const incoming = props.value;
     if (incoming !== untrack(emitted)) {
       const parsed = parse(incoming);
       setState(reconcile(parsed, { key: 'id' }));

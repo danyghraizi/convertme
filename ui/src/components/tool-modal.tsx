@@ -8,6 +8,18 @@ import { initialValue } from '../fields';
 import { formatBytes } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
 
+/** Ready-made fills, so a background does not start from a hex value. */
+const FILL_PRESETS = [
+  { label: 'Ink', mode: 'colour', color: '#101418', css: '#101418' },
+  { label: 'Paper', mode: 'colour', color: '#ffffff', css: '#ffffff' },
+  { label: 'Amber', mode: 'colour', color: '#f6c26b', css: '#f6c26b' },
+  { label: 'Ember', mode: 'colour', color: '#e4572e', css: '#e4572e' },
+  { label: 'Warm sunset', mode: 'gradient', gradient: 'linear|90|#f6c26b@0,#e4572e@100', css: 'linear-gradient(90deg,#f6c26b,#e4572e)' },
+  { label: 'Dusk', mode: 'gradient', gradient: 'linear|135|#0b1020@0,#4b5563@35,#fbbf24@100', css: 'linear-gradient(135deg,#0b1020,#4b5563 35%,#fbbf24)' },
+  { label: 'Mint', mode: 'gradient', gradient: 'radial||#7ee787@0,#0f2417@100', css: 'radial-gradient(circle,#7ee787,#0f2417)' },
+  { label: 'Sea', mode: 'gradient', gradient: 'linear|0|#2b6cb0@0,#63b3ed@100', css: 'linear-gradient(0deg,#2b6cb0,#63b3ed)' },
+] as const;
+
 interface ToolModalProps {
   tool: Segment;
   fields: Field[];
@@ -185,6 +197,7 @@ export default function ToolModal(props: ToolModalProps) {
                 imageY={Number(values.bg_y ?? 0)}
                 paddingPct={Number(values.padding_pct ?? 0)}
                 radiusPct={Number(values.radius_pct ?? 0)}
+                shadowPct={Number(values.shadow_pct ?? 0)}
                 aspect={String(values.aspect ?? 'source')}
                 onPlace={(x, y) => {
                   setValues('bg_x', x);
@@ -204,6 +217,31 @@ export default function ToolModal(props: ToolModalProps) {
                 temperature={Number(values.temperature ?? 0)}
               />
             </Show>
+            <Show when={props.tool.id === 'add-background' && values.mode !== 'image'}>
+              <div class="fill-presets" role="group" aria-label="Ready-made backgrounds">
+                <For each={FILL_PRESETS}>
+                  {(preset) => (
+                    <button
+                      type="button"
+                      class="fill-preset"
+                      style={{ background: preset.css }}
+                      title={preset.label}
+                      aria-label={preset.label}
+                      onClick={() => {
+                        setValues('mode', preset.mode);
+                        if (preset.mode === 'gradient' && preset.gradient) {
+                          setValues('gradient', preset.gradient);
+                        }
+                        if (preset.mode === 'colour' && preset.color) {
+                          setValues('color', preset.color);
+                        }
+                      }}
+                    />
+                  )}
+                </For>
+              </div>
+            </Show>
+
             <For each={visibleFields()}>
               {(field, index) => (
                 <>

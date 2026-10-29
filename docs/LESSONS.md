@@ -124,7 +124,8 @@ understood.
   allowed-parameter list; the test caught a stale `padding` assertion immediately.
 - `clippy -D warnings` catches the leftovers of a refactor (an unused local) before CI.
 - When a test run fails once and passes twice, capture the log (`> /tmp/preflight.log`)
-  instead of assuming flakiness.
+  instead of assuming flakiness. `could not compile <crate> (lib test)` usually comes from
+  `clippy --all-targets -D warnings`, not from the tests: read the log, not the summary.
 - A brief written summary of each round (cause → fix → measurement) is what let the user
   trust the next build; keep writing them.
 

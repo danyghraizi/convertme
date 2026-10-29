@@ -583,7 +583,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 "aspect",
                 "Aspect ratio",
                 "free",
-                &["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
+                &["free", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"],
             )
             .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4"]),
         ],
@@ -663,6 +663,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             },
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
+            ranged("shadow_pct", "Shadow", 2.0, 0.0, 20.0, 0.5, "%"),
             {
                 // Every ratio visible, as in the reference, and "Auto" means the
                 // engine's own default: the photo plus equal padding.
@@ -670,9 +671,9 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                     "aspect",
                     "Canvas ratio",
                     "free",
-                    &["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
+                    &["free", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"],
                 )
-                .labelled(&["Auto", "1:1", "16:9", "4:3", "9:16", "3:4"]);
+                .labelled(&["Auto", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"]);
                 field.kind = "segmented".into();
                 field
             },
@@ -1104,11 +1105,12 @@ mod field_payload {
         assert_eq!(kind("color"), "color");
         assert_eq!(kind("padding_pct"), "range");
         assert_eq!(kind("radius_pct"), "range");
+        assert_eq!(kind("shadow_pct"), "range");
         let aspect = fields.iter().find(|f| f.key == "aspect").unwrap();
         assert_eq!(
             aspect.option_labels.as_deref(),
             Some(
-                ["Auto", "1:1", "16:9", "4:3", "9:16", "3:4"]
+                ["Auto", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"]
                     .map(String::from)
                     .as_slice()
             )

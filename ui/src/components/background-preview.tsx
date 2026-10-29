@@ -19,6 +19,7 @@ interface BackgroundPreviewProps {
   /** Percent of the shorter side, as the dialog shows them. */
   paddingPct: number;
   radiusPct: number;
+  shadowPct: number;
   aspect: string;
   /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
   onPlace?: (x: number, y: number) => void;
@@ -31,6 +32,7 @@ const RATIOS: Record<string, number> = {
   '16:9': 16 / 9,
   '9:16': 9 / 16,
   '3:4': 3 / 4,
+  '4:5': 4 / 5,
 };
 
 const MAX_WIDTH = 430;
@@ -138,6 +140,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
         (props.radiusPct / 100) * (Math.min(w, h) / 2) * scale,
         Math.min(photoW, photoH) / 2,
       ),
+      shadowPx: (props.shadowPct / 100) * Math.min(w, h) * scale,
     };
   });
 
@@ -198,6 +201,10 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                 width: `${layout().photoW}px`,
                 height: `${layout().photoH}px`,
                 'border-radius': `${layout().radiusPx}px`,
+                'box-shadow':
+                  layout().shadowPx > 0
+                    ? `0 ${(layout().shadowPx * 0.6).toFixed(1)}px ${layout().shadowPx.toFixed(1)}px rgba(0, 0, 0, 0.45)`
+                    : 'none',
               }}
               onLoad={(event) => {
                 const image = event.currentTarget;

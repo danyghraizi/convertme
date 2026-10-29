@@ -326,6 +326,16 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       unit: '%',
     },
     {
+      key: 'shadow_pct',
+      label: 'Shadow',
+      kind: 'range',
+      default: 2,
+      min: 0,
+      max: 20,
+      step: 0.5,
+      unit: '%',
+    },
+    {
       key: 'radius_pct',
       label: 'Corner radius',
       kind: 'range',
@@ -340,8 +350,8 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       label: 'Canvas ratio',
       kind: 'segmented',
       default: 'free',
-      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4'],
-      option_labels: ['Auto', '1:1', '16:9', '4:3', '9:16', '3:4'],
+      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4', '4:5'],
+      option_labels: ['Auto', '1:1', '16:9', '4:3', '9:16', '3:4', '4:5'],
     },
   ],
   trim: [

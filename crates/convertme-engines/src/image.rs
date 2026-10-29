@@ -131,6 +131,7 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     "radius",
                     "padding_pct",
                     "radius_pct",
+                    "shadow_pct",
                     "bg_zoom",
                     "bg_x",
                     "bg_y",
@@ -176,6 +177,11 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 && (!v.is_finite() || !(0.0..=100.0).contains(&v))
             {
                 return Err(unsupported("`padding_pct` is a percentage from 0 to 100"));
+            }
+            if let Some(v) = number(params, "shadow_pct")?
+                && (!v.is_finite() || !(0.0..=20.0).contains(&v))
+            {
+                return Err(unsupported("`shadow_pct` is a percentage from 0 to 20"));
             }
             if let Some(v) = number(params, "radius_pct")?
                 && (!v.is_finite() || !(0.0..=100.0).contains(&v))
@@ -836,29 +842,53 @@ fn add_background(
         job.source.clone().into_os_string()
     };
 
+    // A soft drop shadow under the photo, sized from the same reference as the
+    // padding. It is a separate layer so the photo itself stays exactly centred.
+    let shadow: Option<PathBuf> = {
+        let shadow_pct = number(params, "shadow_pct")?
+            .unwrap_or(0.0)
+            .clamp(0.0, 20.0);
+        if shadow_pct <= 0.0 {
+            None
+        } else {
+            let sigma = (shadow_pct / 100.0 * shortest * 0.35).max(1.0);
+            let offset = (sigma * 1.2).round();
+            let path = cx.scratch("photo-shadow.png");
+            let args = vec![
+                os("-depth"),
+                os("8"),
+                os(&photo),
+                os("("),
+                os("+clone"),
+                os("-background"),
+                os("black"),
+                os("-shadow"),
+                os(format!("55x{sigma:.1}+0+{offset:.0}")),
+                os(")"),
+                os("-delete"),
+                os("0"),
+                os(&path),
+            ];
+            run_magick(&magick, args, cx, Budget::Short)?;
+            ensure_file(&path, "the shadow")?;
+            Some(path)
+        }
+    };
+
     cx.ctx.set_stage("composing the background");
     cx.ctx.set_progress(0.4);
-    let mut args: Vec<OsString> = Vec::new();
     // Q16-HDRI doubles the pixel cache for no visible gain in a composed PNG/JPEG.
-    args.push(os("-depth"));
-    args.push(os("8"));
+    let mut args: Vec<OsString> = vec![os("-depth"), os("8"), os("-size"), os(&size)];
     if let Some(spec) = &gradient {
         let paint = cx.scratch("background-gradient.ppm");
         crate::gradient::write_ppm(&paint, canvas_w, canvas_h, spec)
             .map_err(|e| convertme_core::error::JobError::io("writing the gradient", &e))?;
         args.push(os(&paint));
-        args.push(photo.clone());
-        args.push(os("-gravity"));
-        args.push(os("center"));
-        args.push(os("-composite"));
     } else if let Some(background) = background_image {
-        // The background is a picture to place, not just a texture: cover it at the
-        // requested zoom, then crop the canvas-sized window with *absolute* offsets.
-        // With `-gravity center`, a negative offset makes ImageMagick clip the crop
-        // instead of moving it, which left transparent wedges in the saved file.
+        // The background is a picture to place, not just a texture. Crop the source
+        // window first and scale it to the canvas: upscaling before cropping is what
+        // exhausted ImageMagick's pixel cache on large photos.
         let zoom = number(params, "bg_zoom")?.unwrap_or(1.0).clamp(1.0, 3.0);
-        // Crop the source first, then scale the window to the canvas. Upscaling first
-        // (zoom x canvas) is what exhausted ImageMagick's pixel cache on large photos.
         let (bg_w, bg_h) = image_size(&magick, &background, cx)?;
         let target = f64::from(canvas_w) / f64::from(canvas_h);
         let src_aspect = f64::from(bg_w) / f64::from(bg_h);
@@ -877,6 +907,7 @@ fn add_background(
             (number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * free_y / 2.0;
         let crop_x = (free_x / 2.0 - shift_x).round().clamp(0.0, free_x) as u32;
         let crop_y = (free_y / 2.0 - shift_y).round().clamp(0.0, free_y) as u32;
+        args.push(os("("));
         args.push(os(&background));
         args.push(os("-crop"));
         args.push(os(format!(
@@ -887,19 +918,20 @@ fn add_background(
         args.push(os("+repage"));
         args.push(os("-resize"));
         args.push(os(format!("{size}!")));
-        args.push(photo.clone());
+        args.push(os(")"));
+    } else {
+        args.push(os(format!("xc:{color}")));
+    }
+    if let Some(shadow) = &shadow {
+        args.push(os(shadow));
         args.push(os("-gravity"));
         args.push(os("center"));
         args.push(os("-composite"));
-    } else {
-        args.push(photo.clone());
-        args.push(os("-background"));
-        args.push(os(&color));
-        args.push(os("-gravity"));
-        args.push(os("center"));
-        args.push(os("-extent"));
-        args.push(os(&size));
     }
+    args.push(os(&photo));
+    args.push(os("-gravity"));
+    args.push(os("center"));
+    args.push(os("-composite"));
     args.push(os(&out));
     run_magick(&magick, args, cx, Budget::Short)?;
     ensure_file(&out, "the image encoder")?;
