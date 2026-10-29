@@ -155,10 +155,12 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
               const start = { x: event.clientX, y: event.clientY, bx: props.imageX, by: props.imageY };
               const rect = target.getBoundingClientRect();
               const move = (e: PointerEvent): void => {
+                // The pointer drags the *frame*, so the picture moves the other way: pull
+                // right and the picture follows to the right.
                 const dx = ((e.clientX - start.x) / Math.max(1, rect.width)) * 200;
                 const dy = ((e.clientY - start.y) / Math.max(1, rect.height)) * 200;
                 const clamp = (v: number): number => Math.min(100, Math.max(-100, Math.round(v)));
-                props.onPlace?.(clamp(start.bx + dx), clamp(start.by + dy));
+                props.onPlace?.(clamp(start.bx - dx), clamp(start.by - dy));
               };
               const up = (): void => {
                 target.removeEventListener('pointermove', move);
