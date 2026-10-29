@@ -4,7 +4,7 @@ import BackgroundPreview from './background-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor from './field-editor';
-import { initialValue } from '../fields';
+import { collectParams, initialValue, visibleIn } from '../fields';
 import { formatBytes } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
 
@@ -97,7 +97,9 @@ export default function ToolModal(props: ToolModalProps) {
     if (count <= 1) return;
     const next = (shown() + delta + count) % count;
     if (!shared()) {
-      perFile.set(shown(), { ...values });
+      // Store the parameters, not the whole store: `mode` is a control and the backend
+      // rejects it ("unknown parameter `mode`").
+      perFile.set(shown(), collected() as Record<string, FieldValue>);
       keep(perFile.get(next));
     }
     setShown(next);
@@ -142,27 +144,11 @@ export default function ToolModal(props: ToolModalProps) {
 
   /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
   function isVisible(field: Field): boolean {
-    const rule = field.show_if;
-    if (!rule) return true;
-    return String(values[rule.key] ?? '') === rule.equals;
+    return visibleIn(field, values);
   }
 
-  function collected(): Record<string, unknown> {
-    const params: Record<string, unknown> = {};
-    for (const field of props.fields) {
-      if (!isVisible(field) || field.control) continue;
-      const value = values[field.key];
-      // A select carries strings; a numeric choice (an image scale, a channel count)
-      // is a number to the backend, and there is no way to tell the two apart from
-      // the value alone, so a finite numeric string becomes a number.
-      if (field.kind === 'select' && typeof value === 'string' && value.trim() !== '') {
-        const numeric = Number(value);
-        params[field.key] = Number.isFinite(numeric) ? numeric : value;
-        continue;
-      }
-      params[field.key] = value;
-    }
-    return params;
+  function collected(from: Record<string, FieldValue> = values): Record<string, unknown> {
+    return collectParams(props.fields, from);
   }
 
   async function submit(event: SubmitEvent): Promise<void> {

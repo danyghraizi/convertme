@@ -47,3 +47,35 @@ export function initialValue(field: Field): FieldValue {
       return asText(field.default);
   }
 }
+
+/** Visibility of a field given a value map (`show_if`). */
+export function visibleIn(field: Field, values: Record<string, FieldValue>): boolean {
+  const rule = field.show_if;
+  if (!rule) return true;
+  return String(values[rule.key] ?? '') === rule.equals;
+}
+
+/**
+ * The parameters a tool receives. Controls (a mode switch) and fields hidden by their
+ * `show_if` never travel: the backend rejects unknown keys, and a hidden field would send
+ * a value the dialog is not showing.
+ */
+export function collectParams(
+  fields: Field[],
+  values: Record<string, FieldValue>,
+): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (!visibleIn(field, values) || field.control) continue;
+    const value = values[field.key];
+    // A select carries strings; a numeric choice (an image scale, a channel count) is a
+    // number to the backend, and the value alone cannot tell the two apart.
+    if (field.kind === 'select' && typeof value === 'string' && value.trim() !== '') {
+      const numeric = Number(value);
+      params[field.key] = Number.isFinite(numeric) ? numeric : value;
+      continue;
+    }
+    params[field.key] = value;
+  }
+  return params;
+}

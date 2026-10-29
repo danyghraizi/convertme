@@ -863,14 +863,20 @@ fn add_background(
                 .to_radians();
             // The shadow lives in the padding, so its size is relative to that: scaling it
             // by the photo made every percentage saturate the same narrow band.
-            let sigma = (shadow_pct / 100.0 * f64::from(padding) * 0.8).max(1.0);
+            // Bounded: padding can be 100% of the shorter side, and a 500 px blur on a
+            // large canvas took minutes. The mask is also built at most 1200 px wide.
+            let sigma = (shadow_pct / 100.0 * f64::from(padding) * 0.8)
+                .min(shortest * 0.20)
+                .max(1.0);
             let offset = sigma * 0.9;
             // 0 degrees points up, 180 down: the shadow falls opposite the light.
             let dx = angle.sin() * offset;
             let dy = -angle.cos() * offset;
             // Half resolution keeps the falloff smooth (2x upscale of a wide blur) while
             // cutting the blur cost by four.
-            let scale = (2500.0 / f64::from(width.max(height))).min(1.0);
+            // The shadow is a wide, soft gradient: 600 px on its longest side is plenty,
+            // and it caps the blur cost regardless of padding or percentage.
+            let scale = (600.0 / f64::from(width.max(height) + 2 * padding)).min(1.0);
             let small_w = f64::from(width) * scale;
             let small_h = f64::from(height) * scale;
             let sigma_s = sigma * scale;

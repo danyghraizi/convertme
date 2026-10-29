@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test:geometry": "node --test src/geometry.test.ts",
-    "test:fields": "node --test src/field-parse.test.ts",
+    "test:fields": "node --test src/field-parse.test.ts src/fields.test.ts",
     "tauri": "tauri"
   },
   "dependencies": {
