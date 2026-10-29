@@ -139,3 +139,34 @@ understood.
 - When the user says "it still doesn't work", first prove *which build* they are running,
   then reproduce their exact inputs. Twice, the answer was a stale process, and twice it
   was a thumbnail-based preview.
+
+## 13. A memory ceiling is a safety rail, not a performance knob
+
+**Trap.** "cache resources exhausted" was answered twice by raising ImageMagick's limit
+(512 MiB → 2 GiB → 4 GiB). That makes the app need more RAM to do the same work, and the
+product has to run on a 4 GB laptop. It also hides the real cost: a shadow layer the size
+of the canvas, and a composed 195 Mpx file being composed again.
+
+**Rule.** Keep the limits modest (1 GiB RAM, 2 GiB mapping, disk spill) and make the work
+cheaper: bound intermediates, downscale what is blurred, skip an optional layer above a
+size that the budget cannot hold, and spill to disk instead of failing. When a ceiling is
+reached, the answer is a smaller working set, not a bigger allowance.
+
+## 14. Optional effects must degrade, not fail
+
+Above ~60 megapixels the shadow is skipped and the job succeeds; tiling or a
+per-tile shadow is the honest fix and is recorded as such. A background composition on a
+195 Mpx input (12500x15625 → 13500x16625) now completes in 36 s under the modest budget.
+
+## 15. CopyOpacity copies alpha, not intensity
+
+`-compose CopyOpacity` takes the source's *alpha* channel; a blurred grey mask therefore
+needs `-alpha copy` first, and the canvas it is composited onto must start transparent
+(`xc:none`), or the shadow becomes an opaque slab.
+
+## 16. The preview must follow the selection
+
+The preview components loaded their thumbnail once, on mount, so switching file kept the
+old picture on screen while the fields changed underneath. Any preview that takes a path
+reloads on that path; per-file settings are stored as *collected parameters* (never the
+whole value store — a UI control such as `mode` leaked and the backend rejected it).

@@ -855,7 +855,10 @@ fn add_background(
         let shadow_pct = number(params, "shadow_pct")?
             .unwrap_or(0.0)
             .clamp(0.0, 100.0);
-        if shadow_pct <= 0.0 {
+        // A shadow layer the size of a huge canvas does not fit the memory budget on
+        // modest hardware. Dropping it keeps the job working; tiling is the real fix.
+        let too_big = canvas_w as u64 * canvas_h as u64 > 60_000_000;
+        if shadow_pct <= 0.0 || too_big {
             None
         } else {
             let angle = number(params, "shadow_angle")?
@@ -927,6 +930,10 @@ fn add_background(
                 os("-colorize"),
                 os("100"),
                 os("+channel"),
+                // 8 bits before the upscale: the big canvas is the memory cost, and a
+                // smooth 16-bit gradient survives the conversion.
+                os("-depth"),
+                os("8"),
                 os("-resize"),
                 os(format!("{:.3}%", 100.0 / scale)),
                 os(&path),
