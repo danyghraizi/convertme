@@ -19,6 +19,9 @@ interface BackgroundPreviewProps {
   padding: number;
   radius: number;
   aspect: string;
+  /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
+  onPlace?: (x: number, y: number) => void;
+  onZoom?: (zoom: number) => void;
 }
 
 const RATIOS: Record<string, number> = {
@@ -30,7 +33,7 @@ const RATIOS: Record<string, number> = {
 };
 
 const MAX_WIDTH = 430;
-const MAX_HEIGHT = 230;
+const MAX_HEIGHT = 200;
 
 export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');
@@ -131,6 +134,28 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
         <Show when={src()} fallback={<p class="crop-placeholder">{note() || 'Loading…'}</p>}>
           <div
             class="background-canvas"
+            classList={{ 'can-move': props.mode === 'image' && Boolean(backdrop()) }}
+            onPointerDown={(event) => {
+              if (props.mode !== 'image' || !backdrop() || !props.onPlace) return;
+              const target = event.currentTarget;
+              target.setPointerCapture(event.pointerId);
+              const start = { x: event.clientX, y: event.clientY, bx: props.imageX, by: props.imageY };
+              const rect = target.getBoundingClientRect();
+              const move = (e: PointerEvent): void => {
+                const dx = ((e.clientX - start.x) / Math.max(1, rect.width)) * 200;
+                const dy = ((e.clientY - start.y) / Math.max(1, rect.height)) * 200;
+                const clamp = (v: number): number => Math.min(100, Math.max(-100, Math.round(v)));
+                props.onPlace?.(clamp(start.bx + dx), clamp(start.by + dy));
+              };
+              const up = (): void => {
+                target.removeEventListener('pointermove', move);
+                target.removeEventListener('pointerup', up);
+                target.removeEventListener('pointercancel', up);
+              };
+              target.addEventListener('pointermove', move);
+              target.addEventListener('pointerup', up);
+              target.addEventListener('pointercancel', up);
+            }}
             style={{
               width: `${layout().canvasW}px`,
               height: `${layout().canvasH}px`,
@@ -169,6 +194,20 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
           </div>
         </Show>
       </div>
+      <Show when={props.mode === 'image'}>
+        <label class="preview-zoom">
+          <span>Zoom</span>
+          <input
+            type="range"
+            min="1"
+            max="3"
+            step="0.05"
+            value={props.imageZoom}
+            onInput={(event) => props.onZoom?.(Number(event.currentTarget.value))}
+          />
+          <output>{props.imageZoom.toFixed(1)}×</output>
+        </label>
+      </Show>
       <p class="preview-caption">
         Canvas <strong>{Math.round(canvasSize().w)} × {Math.round(canvasSize().h)}</strong>
         <span class="preview-caption-note">

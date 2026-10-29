@@ -125,10 +125,38 @@ export default function ToolModal(props: ToolModalProps) {
             <p class="modal-blurb">{props.tool.blurb ?? ''}</p>
           </div>
         </header>
+        <span
+          class="modal-grip"
+          role="separator"
+          aria-label="Resize this window"
+          onPointerDown={(event) => {
+            const target = event.currentTarget;
+            target.setPointerCapture(event.pointerId);
+            const rect = dialog?.getBoundingClientRect();
+            const start = { x: event.clientX, y: event.clientY, w: rect?.width ?? 640, h: rect?.height ?? 600 };
+            const move = (e: PointerEvent): void => {
+              const width = Math.min(window.innerWidth * 0.94, Math.max(420, start.w + (e.clientX - start.x)));
+              const height = Math.min(window.innerHeight * 0.92, Math.max(320, start.h + (e.clientY - start.y)));
+              dialog?.style.setProperty('--modal-w', `${Math.round(width)}px`);
+              dialog?.style.setProperty('--modal-h', `${Math.round(height)}px`);
+            };
+            const up = (): void => {
+              target.removeEventListener('pointermove', move);
+              target.removeEventListener('pointerup', up);
+              target.removeEventListener('pointercancel', up);
+            };
+            target.addEventListener('pointermove', move);
+            target.addEventListener('pointerup', up);
+            target.addEventListener('pointercancel', up);
+          }}
+        />
         <form class="modal-form" onSubmit={(event) => void submit(event)}>
           <Show when={props.fileLabel}>
             <p class="modal-file">
-              <span class="modal-file-name">{props.fileLabel}</span>
+              <span class="modal-file-label">This file</span>
+              <span class="modal-file-name" title={props.fileLabel ?? ''}>
+                {props.fileLabel}
+              </span>
               <Show when={props.fileSize}>
                 {(size) => <span class="modal-file-size">{formatBytes(size())}</span>}
               </Show>
@@ -159,6 +187,11 @@ export default function ToolModal(props: ToolModalProps) {
                 padding={Number(values.padding ?? 0)}
                 radius={Number(values.radius ?? 0)}
                 aspect={String(values.aspect ?? 'source')}
+                onPlace={(x, y) => {
+                  setValues('bg_x', x);
+                  setValues('bg_y', y);
+                }}
+                onZoom={(zoom) => setValues('bg_zoom', zoom)}
               />
             </Show>
             <Show when={props.tool.id === 'edit-photo'}>
