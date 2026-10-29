@@ -123,7 +123,16 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             check_params(
                 params,
                 &[
-                    "color", "gradient", "image", "aspect", "padding", "radius", "bg_zoom", "bg_x",
+                    "color",
+                    "gradient",
+                    "image",
+                    "aspect",
+                    "padding",
+                    "radius",
+                    "padding_pct",
+                    "radius_pct",
+                    "bg_zoom",
+                    "bg_x",
                     "bg_y",
                 ],
             )?;
@@ -161,6 +170,13 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     return Err(unsupported(format!(
                         "`{key}` must be a non-negative whole number of pixels"
                     )));
+                }
+            }
+            for key in ["padding_pct", "radius_pct"] {
+                if let Some(v) = number(params, key)?
+                    && (!v.is_finite() || !(0.0..=50.0).contains(&v))
+                {
+                    return Err(unsupported(format!("`{key}` is a percentage from 0 to 50")));
                 }
             }
             Ok(())
@@ -736,8 +752,17 @@ fn add_background(
 ) -> Result<Vec<PathBuf>, JobError> {
     let magick = magick_path(cx)?;
     let (width, height) = image_size(&magick, &job.source, cx)?;
-    let padding = number(params, "padding")?.unwrap_or(0.0) as u32;
-    let radius = number(params, "radius")?.unwrap_or(0.0) as u32;
+    // The dialog sends percentages of the shorter side: a fixed pixel count means
+    // nothing on a 5000 px photo, where 400 px is an 8% border.
+    let shortest = width.min(height).max(1) as f64;
+    let padding = match number(params, "padding_pct")? {
+        Some(pct) => (pct.clamp(0.0, 50.0) / 100.0 * shortest).round() as u32,
+        None => number(params, "padding")?.unwrap_or(0.0).round() as u32,
+    };
+    let radius = match number(params, "radius_pct")? {
+        Some(pct) => (pct.clamp(0.0, 50.0) / 100.0 * shortest).round() as u32,
+        None => number(params, "radius")?.unwrap_or(0.0).round() as u32,
+    };
     let color = string(params, "color")?.unwrap_or("#101418").to_string();
     let gradient = gradient_value(params)?
         .map(|value| crate::gradient::parse(&value))

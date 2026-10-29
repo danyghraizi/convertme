@@ -183,8 +183,8 @@ export default function ToolModal(props: ToolModalProps) {
                 imageZoom={Number(values.bg_zoom ?? 1)}
                 imageX={Number(values.bg_x ?? 0)}
                 imageY={Number(values.bg_y ?? 0)}
-                padding={Number(values.padding ?? 0)}
-                radius={Number(values.radius ?? 0)}
+                paddingPct={Number(values.padding_pct ?? 0)}
+                radiusPct={Number(values.radius_pct ?? 0)}
                 aspect={String(values.aspect ?? 'source')}
                 onPlace={(x, y) => {
                   setValues('bg_x', x);

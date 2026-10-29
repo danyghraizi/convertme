@@ -16,8 +16,9 @@ interface BackgroundPreviewProps {
   imageZoom: number;
   imageX: number;
   imageY: number;
-  padding: number;
-  radius: number;
+  /** Percent of the shorter side, as the dialog shows them. */
+  paddingPct: number;
+  radiusPct: number;
   aspect: string;
   /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
   onPlace?: (x: number, y: number) => void;
@@ -97,7 +98,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const canvasSize = createMemo(() => {
     const source = real() ?? natural();
     const { w, h } = source;
-    const pad = Math.max(0, props.padding);
+    const pad = Math.round((Math.max(0, props.paddingPct) / 100) * Math.min(w, h));
     let canvasW = w + 2 * pad;
     let canvasH = h + 2 * pad;
     const ratio = RATIOS[props.aspect];
@@ -113,7 +114,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     // Draw with the thumbnail's shape, but place the photo by the real proportions.
     const realSize = real();
     const { w, h } = realSize ?? natural();
-    const pad = Math.max(0, props.padding);
+    const pad = (Math.max(0, props.paddingPct) / 100) * Math.min(w, h);
     const ratio = RATIOS[props.aspect];
     // The canvas always holds the photo plus its padding; a ratio only extends the
     // narrower axis, exactly what the engine does.
@@ -132,7 +133,10 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
       photoW,
       photoH,
       padPx: pad * scale,
-      radiusPx: Math.min(props.radius * scale, Math.min(photoW, photoH) / 2),
+      radiusPx: Math.min(
+        (props.radiusPct / 100) * Math.min(w, h) * scale,
+        Math.min(photoW, photoH) / 2,
+      ),
     };
   });
 
