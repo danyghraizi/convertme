@@ -1,4 +1,4 @@
-import { Show, createMemo, createSignal, onMount } from 'solid-js';
+import { Show, createEffect, createMemo, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
 
 /**
@@ -46,12 +46,15 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [real, setReal] = createSignal<{ w: number; h: number } | null>(null);
   const [backdrop, setBackdrop] = createSignal('');
 
-  onMount(() => {
+  // Reloads when the dialog switches file: the preview must follow the arrows.
+  createEffect(() => {
     const path = props.path;
+    setReal(null);
     if (!path) {
       setNote('Preview unavailable; the settings still apply to the saved file.');
       return;
     }
+    setNote('');
     void ipc
       .previewThumb(path, 1024)
       .then((url) => setSrc(ipc.assetUrl(url)))
@@ -141,9 +144,10 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
         (props.radiusPct / 100) * (Math.min(w, h) / 2) * scale,
         Math.min(photoW, photoH) / 2,
       ),
-      // Same numbers the engine uses: sigma 0.22 of the shorter side, offset 0.9 sigma,
-      // and a CSS blur radius of about twice sigma.
-      shadowPx: (props.shadowPct / 100) * Math.min(w, h) * 0.22 * scale,
+      // Same numbers the engine uses: the shadow lives in the padding, sigma grows with
+      // that, the offset is 0.9 sigma and the CSS blur radius about twice sigma.
+      shadowPx: (props.shadowPct / 100) * pad * 0.8 * scale,
+      shadowAlpha: 0.12 + 0.38 * (props.shadowPct / 100),
       shadowAngle: (props.shadowAngle * Math.PI) / 180,
     };
   });
@@ -207,7 +211,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                 'border-radius': `${layout().radiusPx}px`,
                 'box-shadow':
                   layout().shadowPx > 0
-                    ? `${(Math.sin(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(-Math.cos(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(layout().shadowPx * 2).toFixed(1)}px rgba(0, 0, 0, 0.32)`
+                    ? `${(Math.sin(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(-Math.cos(layout().shadowAngle) * layout().shadowPx * 0.9).toFixed(1)}px ${(layout().shadowPx * 2).toFixed(1)}px rgba(0, 0, 0, ${layout().shadowAlpha.toFixed(2)})`
                     : 'none',
               }}
               onLoad={(event) => {
@@ -220,20 +224,6 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
           </div>
         </Show>
       </div>
-      <Show when={props.mode === 'image'}>
-        <label class="preview-zoom">
-          <span>Zoom</span>
-          <input
-            type="range"
-            min="1"
-            max="3"
-            step="0.05"
-            value={props.imageZoom}
-            onInput={(event) => props.onZoom?.(Number(event.currentTarget.value))}
-          />
-          <output>{props.imageZoom.toFixed(1)}×</output>
-        </label>
-      </Show>
       <p class="preview-caption">
         Canvas <strong>{Math.round(canvasSize().w)} × {Math.round(canvasSize().h)}</strong>
         <span class="preview-caption-note">

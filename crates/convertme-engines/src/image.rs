@@ -854,14 +854,16 @@ fn add_background(
     let shadow: Option<PathBuf> = {
         let shadow_pct = number(params, "shadow_pct")?
             .unwrap_or(0.0)
-            .clamp(0.0, 20.0);
+            .clamp(0.0, 100.0);
         if shadow_pct <= 0.0 {
             None
         } else {
             let angle = number(params, "shadow_angle")?
                 .unwrap_or(180.0)
                 .to_radians();
-            let sigma = (shadow_pct / 100.0 * shortest * 0.22).max(1.0);
+            // The shadow lives in the padding, so its size is relative to that: scaling it
+            // by the photo made every percentage saturate the same narrow band.
+            let sigma = (shadow_pct / 100.0 * f64::from(padding) * 0.8).max(1.0);
             let offset = sigma * 0.9;
             // 0 degrees points up, 180 down: the shadow falls opposite the light.
             let dx = angle.sin() * offset;
@@ -901,9 +903,11 @@ fn add_background(
                 os(&shape),
                 os("-blur"),
                 os(format!("0x{sigma_s:.1}")),
+                // Density follows the slider as well as the spread, otherwise 2% and
+                // 100% differ only in how far the same faint grey reaches.
                 os("-evaluate"),
                 os("multiply"),
-                os("0.32"),
+                os(format!("{:.3}", 0.12 + 0.38 * shadow_pct / 100.0)),
                 // The blurred grey has to become the alpha channel: CopyOpacity copies the
                 // source's alpha, not its intensity.
                 os("-alpha"),

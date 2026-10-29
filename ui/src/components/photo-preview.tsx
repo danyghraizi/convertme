@@ -1,4 +1,4 @@
-import { Show, createSignal, onMount } from 'solid-js';
+import { Show, createEffect, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
 
 /**
@@ -20,12 +20,14 @@ export default function PhotoPreview(props: PhotoPreviewProps) {
   const [src, setSrc] = createSignal('');
   const [note, setNote] = createSignal('');
 
-  onMount(() => {
+  // Follows the file the dialog is previewing.
+  createEffect(() => {
     const path = props.path;
     if (!path) {
       setNote('Preview unavailable; the settings still apply to the saved file.');
       return;
     }
+    setNote('');
     void ipc
       .previewThumb(path, 1024)
       .then((url) => setSrc(ipc.assetUrl(url)))

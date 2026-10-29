@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import * as ipc from '../ipc';
 import type { Box } from '../types';
 
@@ -33,7 +33,8 @@ export default function CropEditor(props: CropEditorProps) {
 
   const box = (): Box => draft() ?? props.value ?? { x: 0, y: 0, w: 1, h: 1 };
 
-  onMount(() => {
+  // Reloads when the dialog switches file.
+  createEffect(() => {
     const path = props.previewPath;
     if (!path) {
       setNote('Preview unavailable; the crop can still be set from a rectangle.');

@@ -286,27 +286,35 @@ export default function App() {
     }
   }
 
-  async function submitModal(params: Record<string, unknown>): Promise<void> {
+  async function submitModal(
+    entries: { path: string; params: Record<string, unknown> }[],
+  ): Promise<void> {
     const state = modal();
     if (!state) return;
-    if (state.tool.id === 'crop') {
-      const boxes = Array.isArray(params.boxes) ? (params.boxes as Record<string, number>[]) : [];
-      delete params.boxes;
-      const box = boxes[0];
-      if (box) {
-        params.x = box.x;
-        params.y = box.y;
-        params.w = box.w;
-        params.h = box.h;
+    let announced = 0;
+    for (const entry of entries) {
+      const params = { ...entry.params };
+      if (state.tool.id === 'crop') {
+        const boxes = Array.isArray(params.boxes) ? (params.boxes as Record<string, number>[]) : [];
+        delete params.boxes;
+        const box = boxes[0];
+        if (box) {
+          params.x = box.x;
+          params.y = box.y;
+          params.w = box.w;
+          params.h = box.h;
+        }
+        if (params.aspect === 'free') delete params.aspect;
       }
-      if (params.aspect === 'free') delete params.aspect;
+      const result = await ipc.run([entry.path], state.category, {
+        kind: 'tool',
+        tool: state.tool.id,
+        params,
+      });
+      announceRun(result, state.tool.label);
+      announced += result.jobs.length;
     }
-    const result = await ipc.run(state.files, state.category, {
-      kind: 'tool',
-      tool: state.tool.id,
-      params,
-    });
-    announceRun(result, state.tool.label);
+    if (announced === 0) announceRun({ jobs: [], skipped: [] }, state.tool.label);
     scheduleHistory();
   }
 

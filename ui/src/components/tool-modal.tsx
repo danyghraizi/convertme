@@ -62,7 +62,8 @@ interface ToolModalProps {
   fileSize?: number | null;
   previewPath: string | null;
   onClose: () => void;
-  onSubmit: (params: Record<string, unknown>) => Promise<void>;
+  /** One entry per file: settings can differ unless "same for every file" is ticked. */
+  onSubmit: (entries: { path: string; params: Record<string, unknown> }[]) => Promise<void>;
 }
 
 export default function ToolModal(props: ToolModalProps) {
@@ -72,6 +73,35 @@ export default function ToolModal(props: ToolModalProps) {
   const [submitting, setSubmitting] = createSignal(false);
   // Which file the preview shows; the settings apply to every selected file.
   const [shown, setShown] = createSignal(0);
+  const [shared, setShared] = createSignal(false);
+  // Settings per file, so switching the preview does not silently reuse the last ones.
+  const perFile = new Map<number, Record<string, FieldValue>>();
+
+  const fileList = (): { path: string; label: string }[] => props.files ?? [];
+
+  function seedDefaults(): void {
+    for (const field of props.fields) setValues(field.key, initialValue(field));
+  }
+
+  function keep(valuesForFile: Record<string, FieldValue> | undefined): void {
+    seedDefaults();
+    if (valuesForFile) {
+      for (const [key, value] of Object.entries(valuesForFile)) {
+        setValues(key, value);
+      }
+    }
+  }
+
+  function go(delta: number): void {
+    const count = fileList().length;
+    if (count <= 1) return;
+    const next = (shown() + delta + count) % count;
+    if (!shared()) {
+      perFile.set(shown(), { ...values });
+      keep(perFile.get(next));
+    }
+    setShown(next);
+  }
   const [error, setError] = createSignal('');
   let dialog: HTMLDivElement | undefined;
 
@@ -141,7 +171,16 @@ export default function ToolModal(props: ToolModalProps) {
     setSubmitting(true);
     setError('');
     try {
-      await props.onSubmit(collected());
+      const own = collected();
+      const entries = fileList().map((file, index) => ({
+        path: file.path,
+        params: shared() || index === shown() ? own : (perFile.get(index) ?? { ...own }),
+      }));
+      await props.onSubmit(
+        entries.length > 0
+          ? entries
+          : [{ path: props.previewPath ?? '', params: own }],
+      );
       props.onClose();
     } catch (cause) {
       // The bridge rejects with a plain string; swallowing it produced a message that
@@ -210,20 +249,25 @@ export default function ToolModal(props: ToolModalProps) {
               <span class="modal-file-name" title={props.fileLabel ?? ''}>
                 {props.fileLabel}
               </span>
-              <Show when={(props.files?.length ?? 0) > 1}>
-              <div class="modal-files" role="group" aria-label="Preview which file">
-                <For each={props.files ?? []}>
-                  {(file, index) => (
-                    <button
-                      type="button"
-                      classList={{ 'is-active': shown() === index() }}
-                      title={file.label}
-                      onClick={() => setShown(index())}
-                    >
-                      {index() + 1}. {file.label}
-                    </button>
-                  )}
-                </For>
+              <Show when={fileList().length > 1}>
+              <div class="modal-files" role="group" aria-label="Which file">
+                <button type="button" class="modal-file-step" aria-label="Previous file" onClick={() => go(-1)}>
+                  ‹
+                </button>
+                <span class="modal-file-current" title={fileList()[shown()]?.label}>
+                  {shown() + 1} of {fileList().length} · {fileList()[shown()]?.label}
+                </span>
+                <button type="button" class="modal-file-step" aria-label="Next file" onClick={() => go(1)}>
+                  ›
+                </button>
+                <label class="modal-shared">
+                  <input
+                    type="checkbox"
+                    checked={shared()}
+                    onChange={(event) => setShared(event.currentTarget.checked)}
+                  />
+                  Same settings for every file
+                </label>
               </div>
             </Show>
             <Show when={props.fileSize}>
