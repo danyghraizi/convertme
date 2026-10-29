@@ -118,3 +118,9 @@ is older, and a test compares the embedded page with the built one.
 
 The dialog renders only what `ui/src/field-parse.ts` keeps from the backend payload: a new
 control kind must be added there too, and `npm --prefix ui run test:fields` covers it.
+
+## Working notes
+
+`AGENTS.md` lists the rules that keep this tree honest (build, the UI/backend field
+contract, engine hygiene, how to verify a change). `docs/LESSONS.md` records the failures
+that produced them, with the measurements that exposed each one.
