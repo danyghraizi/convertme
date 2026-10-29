@@ -84,6 +84,8 @@ pub struct AnalyzeOut {
 pub struct Thumb {
     pub path: String,
     pub thumb: String,
+    /// Bytes on disk, so a tool can show what it is working with.
+    pub size: u64,
 }
 
 #[derive(Serialize)]
@@ -134,9 +136,6 @@ pub struct Field {
     pub option_labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_if: Option<ShowIf>,
-    /// A control that drives the form (a mode switch) rather than a job parameter.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub control: bool,
 }
 
 impl Field {
@@ -146,12 +145,6 @@ impl Field {
             key: key.into(),
             equals: equals.into(),
         });
-        self
-    }
-
-    /// Drives other fields; never sent to the backend.
-    fn control(mut self) -> Self {
-        self.control = true;
         self
     }
 
@@ -271,6 +264,7 @@ pub async fn analyze(state: State<'_, AppState>, paths: Vec<String>) -> Result<A
                 out.push(Thumb {
                     path: path.to_string_lossy().into_owned(),
                     thumb: thumb.to_string_lossy().into_owned(),
+                    size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
                 });
             }
         }
@@ -508,20 +502,28 @@ fn checkbox(key: &str, label: &str, default: bool) -> Field {
 fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
     match (category, tool) {
         (Category::Images, ToolId::Compress) => vec![
-            select("mode", "Mode", "percent", &["percent", "target_bytes"])
-                .labelled(&["Reduce by a percentage", "Hit a target size"])
-                .control(),
-            num("percent", "Reduce by", 20.0, 1.0, 95.0, 1.0, "%").when("mode", "percent"),
+            {
+                let mut field = num("quality", "Quality", 80.0, 1.0, 100.0, 1.0, "");
+                field.kind = "range".into();
+                field
+            },
+            select("scale", "Image size", "100", &["100", "75", "50", "25"]).labelled(&[
+                "Keep original dimensions",
+                "75 % of the dimensions",
+                "50 % of the dimensions",
+                "25 % of the dimensions",
+            ]),
+            checkbox("target", "Compress to a target file size", false),
             num(
                 "target_bytes",
                 "Target size",
                 500_000.0,
                 1000.0,
-                200_000_000.0,
+                2_000_000_000.0,
                 1000.0,
                 "bytes",
             )
-            .when("mode", "target_bytes"),
+            .when("target", "true"),
         ],
         (Category::Images, ToolId::Crop) => vec![
             Field {

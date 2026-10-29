@@ -98,7 +98,9 @@ const bool = (value: unknown, fallback = false): boolean =>
   typeof value === 'boolean' ? value : fallback;
 
 function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 function records(value: unknown): Record<string, unknown>[] {
@@ -120,9 +122,7 @@ function readSettings(raw: unknown): Settings {
     tools_key: readKey(o.tools_key, 'control'),
     actions_key: readKey(o.actions_key, 'alt'),
     overwrite:
-      overwrite === 'ask' || overwrite === 'replace' || overwrite === 'never'
-        ? overwrite
-        : 'never',
+      overwrite === 'ask' || overwrite === 'replace' || overwrite === 'never' ? overwrite : 'never',
     history_limit: num(o.history_limit, 100),
     preview_cache_bytes: num(o.preview_cache_bytes, 256 * 1024 * 1024),
     ocr_languages: strings(o.ocr_languages),
@@ -148,7 +148,11 @@ function readSegments(value: unknown): Segment[] {
 }
 
 function readThumbs(value: unknown): AnalyzeResult['thumbs'] {
-  return records(value).map((o) => ({ path: str(o.path), thumb: str(o.thumb) }));
+  return records(value).map((o) => ({
+    path: str(o.path),
+    thumb: str(o.thumb),
+    size: typeof o.size === 'number' ? o.size : 0,
+  }));
 }
 
 function readSkipped(value: unknown): AnalyzeResult['skipped'] {
@@ -243,8 +247,7 @@ function readDetectedBoxes(value: unknown): DetectedBox[] {
     .map((o) => {
       // The backend returns bare Rects; the contract shape nests them under
       // `rect` with a kind and detail, so accept both.
-      const rect =
-        typeof o.rect === 'object' && o.rect !== null ? record(o.rect, 'box') : o;
+      const rect = typeof o.rect === 'object' && o.rect !== null ? record(o.rect, 'box') : o;
       return {
         rect: { x: num(rect.x), y: num(rect.y), w: num(rect.w), h: num(rect.h) },
         kind: str(o.kind, 'region'),
@@ -357,11 +360,7 @@ export async function wheels(category: string, format: string | null): Promise<W
   };
 }
 
-export async function run(
-  paths: string[],
-  category: string,
-  intent: Intent,
-): Promise<RunResult> {
+export async function run(paths: string[], category: string, intent: Intent): Promise<RunResult> {
   if (isMock()) return mock.mockRun(paths, category, intent);
   return readRunResult(await invoke('run', { paths, category, intent }));
 }
@@ -414,11 +413,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
  * through the backend's single `run_action` entry point. Copy and move need a
  * destination chosen in the frontend first.
  */
-export async function runAction(
-  action: string,
-  paths: string[],
-  dest?: string,
-): Promise<void> {
+export async function runAction(action: string, paths: string[], dest?: string): Promise<void> {
   if (isMock()) return;
   await invoke('run_action', { action, paths, dest: dest ?? null });
 }
@@ -490,10 +485,7 @@ export async function overlayClose(): Promise<void> {
 /* -------------------------------------------------------------------------- */
 
 /** Listen to an untyped event (perf handshakes, future additions). */
-export function onAnyEvent(
-  name: string,
-  handler: (payload: unknown) => void,
-): Promise<UnlistenFn> {
+export function onAnyEvent(name: string, handler: (payload: unknown) => void): Promise<UnlistenFn> {
   if (isMock()) return Promise.resolve(noopUnlisten);
   return listen<unknown>(name, (event) => handler(event.payload));
 }
@@ -509,9 +501,7 @@ export function onEvent<K extends keyof AppEvents>(
   handler: (payload: AppEvents[K]) => void,
 ): Promise<UnlistenFn> {
   if (isMock()) {
-    return Promise.resolve(
-      mock.mockOnEvent(name, (payload) => handler(readEvent(name, payload))),
-    );
+    return Promise.resolve(mock.mockOnEvent(name, (payload) => handler(readEvent(name, payload))));
   }
   return listen<unknown>(name, (event) => handler(readEvent(name, event.payload)));
 }

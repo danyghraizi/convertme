@@ -1,13 +1,17 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { createStore } from "solid-js/store";
-import CropEditor from "./crop-editor";
-import FieldEditor from "./field-editor";
-import { initialValue } from "../fields";
-import type { Box, Field, FieldValue, Segment } from "../types";
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { createStore } from 'solid-js/store';
+import CropEditor from './crop-editor';
+import FieldEditor from './field-editor';
+import { initialValue } from '../fields';
+import { formatBytes } from '../format';
+import type { Box, Field, FieldValue, Segment } from '../types';
 
 interface ToolModalProps {
   tool: Segment;
   fields: Field[];
+  /** Shown above the fields: the file the tool will act on, and its size. */
+  fileLabel?: string | null;
+  fileSize?: number | null;
   previewPath: string | null;
   onClose: () => void;
   onSubmit: (params: Record<string, unknown>) => Promise<void>;
@@ -18,34 +22,43 @@ export default function ToolModal(props: ToolModalProps) {
   for (const field of props.fields) seed[field.key] = initialValue(field);
   const [values, setValues] = createStore<Record<string, FieldValue>>(seed);
   const [submitting, setSubmitting] = createSignal(false);
-  const [error, setError] = createSignal("");
+  const [error, setError] = createSignal('');
   let dialog: HTMLDivElement | undefined;
 
   function onKeyDown(event: KeyboardEvent): void {
-    if (event.key === "Escape") {
+    if (event.key === 'Escape') {
       event.preventDefault();
       props.onClose();
     }
   }
 
   onMount(() => {
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener('keydown', onKeyDown);
     dialog?.focus();
-    onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+    onCleanup(() => document.removeEventListener('keydown', onKeyDown));
   });
 
   /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
   function isVisible(field: Field): boolean {
     const rule = field.show_if;
     if (!rule) return true;
-    return String(values[rule.key] ?? "") === rule.equals;
+    return String(values[rule.key] ?? '') === rule.equals;
   }
 
   function collected(): Record<string, unknown> {
     const params: Record<string, unknown> = {};
     for (const field of props.fields) {
-      if (isVisible(field) && !field.control)
-        params[field.key] = values[field.key];
+      if (!isVisible(field)) continue;
+      const value = values[field.key];
+      // A select carries strings; a numeric choice (an image scale, a channel count)
+      // is a number to the backend, and there is no way to tell the two apart from
+      // the value alone, so a finite numeric string becomes a number.
+      if (field.kind === 'select' && typeof value === 'string' && value.trim() !== '') {
+        const numeric = Number(value);
+        params[field.key] = Number.isFinite(numeric) ? numeric : value;
+        continue;
+      }
+      params[field.key] = value;
     }
     return params;
   }
@@ -54,7 +67,7 @@ export default function ToolModal(props: ToolModalProps) {
     event.preventDefault();
     if (submitting()) return;
     setSubmitting(true);
-    setError("");
+    setError('');
     try {
       await props.onSubmit(collected());
       props.onClose();
@@ -64,9 +77,9 @@ export default function ToolModal(props: ToolModalProps) {
       setError(
         cause instanceof Error
           ? cause.message
-          : typeof cause === "string"
-            ? cause.replace(/^unsupported: /, "")
-            : "The backend rejected the request",
+          : typeof cause === 'string'
+            ? cause.replace(/^unsupported: /, '')
+            : 'The backend rejected the request',
       );
     } finally {
       setSubmitting(false);
@@ -91,31 +104,31 @@ export default function ToolModal(props: ToolModalProps) {
         <header class="modal-head">
           <div>
             <h2 id="tool-modal-title">{props.tool.label}</h2>
-            <p class="modal-blurb">{props.tool.blurb ?? ""}</p>
+            <p class="modal-blurb">{props.tool.blurb ?? ''}</p>
           </div>
         </header>
         <form class="modal-form" onSubmit={(event) => void submit(event)}>
+          <Show when={props.fileLabel}>
+            <p class="modal-file">
+              <span class="modal-file-name">{props.fileLabel}</span>
+              <Show when={props.fileSize}>
+                {(size) => <span class="modal-file-size">{formatBytes(size())}</span>}
+              </Show>
+            </p>
+          </Show>
           <div class="modal-fields">
-            <Show when={props.tool.id === "crop"}>
+            <Show when={props.tool.id === 'crop'}>
               <div class="field">
                 <span class="field-label">Area to keep</span>
                 <CropEditor
                   previewPath={props.previewPath}
-                  value={
-                    Array.isArray(values.boxes)
-                      ? ((values.boxes as Box[])[0] ?? null)
-                      : null
-                  }
-                  aspect={String(values.aspect ?? "free")}
-                  onChange={(box) => setValues("boxes", [box])}
+                  value={Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null}
+                  aspect={String(values.aspect ?? 'free')}
+                  onChange={(box) => setValues('boxes', [box])}
                 />
               </div>
             </Show>
-            <For
-              each={props.fields.filter(
-                (field) => isVisible(field) && field.key !== "boxes",
-              )}
-            >
+            <For each={props.fields.filter((field) => isVisible(field) && field.key !== 'boxes')}>
               {(field) => (
                 <FieldEditor
                   field={field}
@@ -130,19 +143,11 @@ export default function ToolModal(props: ToolModalProps) {
             {error()}
           </p>
           <footer class="modal-footer">
-            <button
-              type="button"
-              class="button button-quiet"
-              onClick={() => props.onClose()}
-            >
+            <button type="button" class="button button-quiet" onClick={() => props.onClose()}>
               Cancel
             </button>
-            <button
-              type="submit"
-              class="button button-primary"
-              disabled={submitting()}
-            >
-              {submitting() ? "Starting…" : "Run"}
+            <button type="submit" class="button button-primary" disabled={submitting()}>
+              {submitting() ? 'Starting…' : 'Run'}
             </button>
           </footer>
         </form>

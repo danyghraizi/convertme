@@ -54,23 +54,29 @@ pub fn validate(job: &Job, category: Category) -> Result<(), JobError> {
 fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
     match tool {
         ToolId::Compress => {
-            check_params(params, &["percent", "target_bytes"])?;
+            check_params(params, &["quality", "scale", "percent", "target_bytes"])?;
+            let quality = unsigned(params, "quality")?;
+            let scale = number(params, "scale")?;
             let percent = number(params, "percent")?;
-            let target = unsigned(params, "target_bytes")?;
-            if percent.is_some() && target.is_some() {
-                return Err(unsupported(
-                    "choose either `percent` or `target_bytes`, not both",
-                ));
+            // Zero means "no target": the field is optional and starts empty.
+            let _ = unsigned(params, "target_bytes")?;
+            if scale.is_some() && percent.is_some() {
+                return Err(unsupported("choose either `scale` or `percent`, not both"));
+            }
+            if let Some(q) = quality
+                && !(1..=100).contains(&q)
+            {
+                return Err(unsupported("`quality` must be between 1 and 100"));
+            }
+            if let Some(s) = scale
+                && !(5.0..=100.0).contains(&s)
+            {
+                return Err(unsupported("`scale` must be between 5 and 100"));
             }
             if let Some(p) = percent
-                && !(1.0..=99.0).contains(&p)
+                && !(1.0..=95.0).contains(&p)
             {
-                return Err(unsupported("`percent` must be between 1 and 99"));
-            }
-            if let Some(t) = target
-                && t == 0
-            {
-                return Err(unsupported("`target_bytes` must be greater than zero"));
+                return Err(unsupported("`percent` must be between 1 and 95"));
             }
             Ok(())
         }
@@ -248,21 +254,30 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
     let out = tool_out(job, cx, ToolId::Compress);
     let lossy = is_lossy_ext(ext);
 
-    if let Some(target) = unsigned(params, "target_bytes")? {
+    // Three independent dials, as the tool promises: encode quality, a size cap, and
+    // an optional resize. `percent` is the old spelling of "scale down by this much".
+    let quality = unsigned(params, "quality")?.map(|q| q.clamp(1, 100) as u32);
+    let scale = match number(params, "scale")? {
+        Some(scale) => Some(scale),
+        None => number(params, "percent")?.map(|percent| (100.0 - percent).max(5.0)),
+    };
+    let target = unsigned(params, "target_bytes")?.filter(|t| *t > 0);
+
+    if let Some(target) = target {
         cx.ctx.set_stage("compressing to the target size");
-        let produced = compress_to_target(&magick, &job.source, target, ext, lossy, cx)?;
+        let produced = compress_to_target(&magick, &job.source, target, ext, lossy, scale, cx)?;
         move_into_place(&produced, &out)?;
     } else {
-        let percent = number(params, "percent")?.unwrap_or(20.0);
-        let scale = (100.0 - percent).max(1.0);
         cx.ctx.set_stage("compressing the image");
         cx.ctx.set_progress(0.05);
         let mut args = vec![os(&job.source)];
-        args.push(os("-resize"));
-        args.push(os(format!("{scale:.2}%")));
+        if let Some(scale) = scale {
+            args.push(os("-resize"));
+            args.push(os(format!("{scale:.2}%")));
+        }
         if lossy {
             args.push(os("-quality"));
-            args.push(os("92"));
+            args.push(os(quality.unwrap_or(92).to_string()));
         }
         args.push(os(&out));
         run_magick(&magick, args, cx, Budget::Short)?;
@@ -282,15 +297,59 @@ fn compress_to_target(
     target: u64,
     ext: &str,
     lossy: bool,
+    scale: Option<f64>,
     cx: &Context<'_>,
 ) -> Result<PathBuf, JobError> {
     let mut current = source.to_path_buf();
+    if let Some(scale) = scale {
+        // Resize once, then search quality on the smaller image.
+        let resized = cx.scratch(&format!("compress-scaled.{ext}"));
+        run_magick(
+            magick,
+            vec![
+                os(source),
+                os("-resize"),
+                os(format!("{scale:.2}%")),
+                os(&resized),
+            ],
+            cx,
+            Budget::Short,
+        )?;
+        current = resized;
+    }
     let mut smallest: Option<PathBuf> = None;
     let mut smallest_len = u64::MAX;
     let mut probe = 0usize;
 
     for round in 0..3 {
         cx.ctx.checkpoint()?;
+
+        if !lossy {
+            // A lossless format ignores `-quality`, so the only levers are the palette
+            // and the dimensions. A photograph that has to fit in a few hundred
+            // kilobytes needs both, and this ladder is what made PNG targets reachable
+            // at all.
+            for colors in [256u32, 128, 64, 32, 16] {
+                let path = cx.scratch(&format!("compress-palette-{probe}.{ext}"));
+                let args = vec![
+                    os(&current),
+                    os("-colors"),
+                    os(colors.to_string()),
+                    os("-depth"),
+                    os("8"),
+                    os("-define"),
+                    os("png:compression-level=9"),
+                    os(&path),
+                ];
+                run_magick(magick, args, cx, Budget::Short)?;
+                probe += 1;
+                let len = file_len(&path)?;
+                track_smallest(&path, len, &mut smallest, &mut smallest_len);
+                if len <= target {
+                    return Ok(path);
+                }
+            }
+        }
 
         if lossy {
             let path = cx.scratch(&format!("compress-probe-{probe}.{ext}"));

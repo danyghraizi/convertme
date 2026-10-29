@@ -1,6 +1,6 @@
-import { Show, createSignal, onCleanup, onMount } from "solid-js";
-import * as ipc from "../ipc";
-import type { Box } from "../types";
+import { Show, createSignal, onCleanup, onMount } from 'solid-js';
+import * as ipc from '../ipc';
+import type { Box } from '../types';
 
 /**
  * The crop surface: the whole picture, with the region that will be kept, dragged by
@@ -16,51 +16,46 @@ interface CropEditorProps {
   onChange: (box: Box) => void;
 }
 
-type Handle =
-  "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw" | "new";
+type Handle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | 'new';
 
 const MIN = 0.02;
 
 export default function CropEditor(props: CropEditorProps) {
-  const [preview, setPreview] = createSignal("");
+  const [preview, setPreview] = createSignal('');
   const [natural, setNatural] = createSignal({ w: 0, h: 0 });
-  const [note, setNote] = createSignal("");
+  const [note, setNote] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   let surface: HTMLDivElement | undefined;
   let rect: DOMRect | null = null;
   let anchor: { x: number; y: number } | null = null;
   let start: Box | null = null;
-  let mode: Handle = "new";
+  let mode: Handle = 'new';
 
   const box = (): Box => draft() ?? props.value ?? { x: 0, y: 0, w: 1, h: 1 };
 
   onMount(() => {
     const path = props.previewPath;
     if (!path) {
-      setNote(
-        "Preview unavailable; the crop can still be set from a rectangle.",
-      );
+      setNote('Preview unavailable; the crop can still be set from a rectangle.');
       return;
     }
     void ipc
       .previewThumb(path, 1024)
       .then((url) => {
         const image = new Image();
-        image.onload = () =>
-          setNatural({ w: image.naturalWidth, h: image.naturalHeight });
+        image.onload = () => setNatural({ w: image.naturalWidth, h: image.naturalHeight });
         image.src = ipc.assetUrl(url);
         setPreview(ipc.assetUrl(url));
       })
-      .catch(() => setNote("Preview unavailable."));
+      .catch(() => setNote('Preview unavailable.'));
   });
 
-  onCleanup(() => setPreview(""));
+  onCleanup(() => setPreview(''));
 
   /** The locked width/height ratio, or null when the region is free. */
   function ratio(): number | null {
-    const [a, b] = props.aspect.split(":").map(Number);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0)
-      return null;
+    const [a, b] = props.aspect.split(':').map(Number);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return null;
     // Fractions are of a non-square image, so the pixel ratio has to travel through it.
     const { w, h } = natural();
     if (w === 0 || h === 0) return null;
@@ -87,7 +82,7 @@ export default function CropEditor(props: CropEditorProps) {
     anchor = point(event);
     start = { ...box() };
     surface.setPointerCapture(event.pointerId);
-    if (which === "new") setDraft({ x: anchor.x, y: anchor.y, w: 0, h: 0 });
+    if (which === 'new') setDraft({ x: anchor.x, y: anchor.y, w: 0, h: 0 });
     event.preventDefault();
     event.stopPropagation();
   }
@@ -96,13 +91,13 @@ export default function CropEditor(props: CropEditorProps) {
     let { x, y, w, h } = from;
     const right = x + w;
     const bottom = y + h;
-    if (which.includes("e")) w = clamp01(p.x) - x;
-    if (which.includes("s")) h = clamp01(p.y) - y;
-    if (which.includes("w")) {
+    if (which.includes('e')) w = clamp01(p.x) - x;
+    if (which.includes('s')) h = clamp01(p.y) - y;
+    if (which.includes('w')) {
       x = clamp01(Math.min(p.x, right - MIN));
       w = right - x;
     }
-    if (which.includes("n")) {
+    if (which.includes('n')) {
       y = clamp01(Math.min(p.y, bottom - MIN));
       h = bottom - y;
     }
@@ -113,16 +108,16 @@ export default function CropEditor(props: CropEditorProps) {
     w = Math.min(w, 1 - x);
     h = Math.min(h, 1 - y);
     const locked = ratio();
-    if (locked !== null && which !== "move") {
+    if (locked !== null && which !== 'move') {
       // Grow the region from the corner that is not being dragged.
-      const centreX = which.includes("w") ? x + w : x;
-      const centreY = which.includes("n") ? y + h : y;
+      const centreX = which.includes('w') ? x + w : x;
+      const centreY = which.includes('n') ? y + h : y;
       if (w / locked > h) {
         h = w / locked;
-        y = which.includes("n") ? centreY - h : centreY;
+        y = which.includes('n') ? centreY - h : centreY;
       } else {
         w = h * locked;
-        x = which.includes("w") ? centreX - w : centreX;
+        x = which.includes('w') ? centreX - w : centreX;
       }
       x = Math.max(0, Math.min(x, 1 - w));
       y = Math.max(0, Math.min(y, 1 - h));
@@ -135,7 +130,7 @@ export default function CropEditor(props: CropEditorProps) {
   function move(event: PointerEvent): void {
     if (!anchor || !start) return;
     const p = point(event);
-    if (mode === "move") {
+    if (mode === 'move') {
       const dx = p.x - anchor.x;
       const dy = p.y - anchor.y;
       const x = Math.min(1 - start.w, Math.max(0, start.x + dx));
@@ -143,9 +138,8 @@ export default function CropEditor(props: CropEditorProps) {
       setDraft({ ...start, x, y });
       return;
     }
-    const from =
-      mode === "new" ? { x: anchor.x, y: anchor.y, w: 0, h: 0 } : start;
-    setDraft(resize(from, mode === "new" ? "se" : mode, p));
+    const from = mode === 'new' ? { x: anchor.x, y: anchor.y, w: 0, h: 0 } : start;
+    setDraft(resize(from, mode === 'new' ? 'se' : mode, p));
   }
 
   function end(event: PointerEvent): void {
@@ -158,13 +152,13 @@ export default function CropEditor(props: CropEditorProps) {
     setDraft(null);
     if (rectBox && rectBox.w >= MIN && rectBox.h >= MIN) {
       props.onChange(rectBox);
-      setNote("");
+      setNote('');
     }
   }
 
   function reset(): void {
     props.onChange({ x: 0, y: 0, w: 1, h: 1 });
-    setNote("");
+    setNote('');
   }
 
   const pixels = () => {
@@ -179,31 +173,28 @@ export default function CropEditor(props: CropEditorProps) {
   };
 
   const handles: { id: Handle; style: Record<string, string> }[] = [
-    { id: "nw", style: { left: "0%", top: "0%" } },
-    { id: "n", style: { left: "50%", top: "0%" } },
-    { id: "ne", style: { left: "100%", top: "0%" } },
-    { id: "e", style: { left: "100%", top: "50%" } },
-    { id: "se", style: { left: "100%", top: "100%" } },
-    { id: "s", style: { left: "50%", top: "100%" } },
-    { id: "sw", style: { left: "0%", top: "100%" } },
-    { id: "w", style: { left: "0%", top: "50%" } },
+    { id: 'nw', style: { left: '0%', top: '0%' } },
+    { id: 'n', style: { left: '50%', top: '0%' } },
+    { id: 'ne', style: { left: '100%', top: '0%' } },
+    { id: 'e', style: { left: '100%', top: '50%' } },
+    { id: 'se', style: { left: '100%', top: '100%' } },
+    { id: 's', style: { left: '50%', top: '100%' } },
+    { id: 'sw', style: { left: '0%', top: '100%' } },
+    { id: 'w', style: { left: '0%', top: '50%' } },
   ];
 
   return (
     <div class="crop-editor">
       <div
         class="crop-surface"
-        classList={{ "is-empty": preview().length === 0 }}
+        classList={{ 'is-empty': preview().length === 0 }}
         ref={surface}
-        onPointerDown={(event) => begin(event, "new")}
+        onPointerDown={(event) => begin(event, 'new')}
         onPointerMove={move}
         onPointerUp={end}
         onPointerCancel={end}
       >
-        <Show
-          when={preview()}
-          fallback={<p class="crop-placeholder">Preview unavailable</p>}
-        >
+        <Show when={preview()} fallback={<p class="crop-placeholder">Preview unavailable</p>}>
           <img src={preview()} alt="" draggable={false} />
           <span class="crop-shade" />
           <div
@@ -217,7 +208,7 @@ export default function CropEditor(props: CropEditorProps) {
             onPointerDown={(event) =>
               // With the whole picture selected there is nothing to move; a drag
               // inside starts a new region instead, as the reference does.
-              begin(event, box().w > 0.99 && box().h > 0.99 ? "new" : "move")
+              begin(event, box().w > 0.99 && box().h > 0.99 ? 'new' : 'move')
             }
             onPointerMove={move}
             onPointerUp={end}

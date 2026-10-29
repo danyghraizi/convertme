@@ -1,8 +1,8 @@
-export type WheelKey = "shift" | "control" | "alt" | "meta";
+export type WheelKey = 'shift' | 'control' | 'alt' | 'meta';
 
-export type OverwritePolicy = "never" | "ask" | "replace";
+export type OverwritePolicy = 'never' | 'ask' | 'replace';
 
-export type DragBackend = "auto" | "windows" | "x11" | "wayland";
+export type DragBackend = 'auto' | 'windows' | 'x11' | 'wayland';
 
 export interface Settings {
   convert_key: WheelKey;
@@ -70,6 +70,8 @@ export type WheelGroup = keyof WheelContents;
 export interface Thumb {
   path: string;
   thumb: string;
+  /** Bytes on disk. */
+  size: number;
 }
 
 export interface SkippedFile {
@@ -93,17 +95,9 @@ export interface Box {
 }
 
 export type FieldKind =
-  | "number"
-  | "text"
-  | "range"
-  | "color"
-  | "select"
-  | "checkbox"
-  | "boxes"
-  | "order";
+  'number' | 'text' | 'range' | 'color' | 'select' | 'checkbox' | 'boxes' | 'order';
 
-export type FieldValue =
-  string | number | boolean | number[] | string[] | Box[];
+export type FieldValue = string | number | boolean | number[] | string[] | Box[];
 
 export interface Field {
   key: string;
@@ -119,17 +113,15 @@ export interface Field {
   option_labels?: string[];
   /** Render this field only while another field holds a given value. */
   show_if?: { key: string; equals: string };
-  /** A form control (a mode switch), never sent to the backend. */
-  control?: boolean;
 }
 
 export interface ConvertIntent {
-  kind: "convert";
+  kind: 'convert';
   target: string;
 }
 
 export interface ToolIntent {
-  kind: "tool";
+  kind: 'tool';
   tool: string;
   params: Record<string, unknown>;
 }
@@ -141,8 +133,7 @@ export interface RunResult {
   skipped: SkippedFile[];
 }
 
-export type JobStatus =
-  "queued" | "running" | "done" | "failed" | "cancelled" | "interrupted";
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface HistoryRow {
   id: string;
@@ -163,19 +154,13 @@ export interface DetectedBox {
 }
 
 export type DragSignal =
-  | { kind: "modifier"; key: string; active: boolean }
-  | { kind: "shortcut"; key: string }
-  | { kind: "drag"; active: boolean }
-  | { kind: "unavailable"; reason: string };
+  | { kind: 'modifier'; key: string; active: boolean }
+  | { kind: 'shortcut'; key: string }
+  | { kind: 'drag'; active: boolean }
+  | { kind: 'unavailable'; reason: string };
 
 export type JobEventKind =
-  | "queued"
-  | "started"
-  | "progress"
-  | "finished"
-  | "failed"
-  | "cancelled"
-  | "idle";
+  'queued' | 'started' | 'progress' | 'finished' | 'failed' | 'cancelled' | 'idle';
 
 export interface JobError {
   code: string;
@@ -192,7 +177,7 @@ export interface JobEvent {
 }
 
 export interface ProgressState {
-  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   fraction: number;
   stage?: string;
 }

@@ -1,7 +1,7 @@
-import { For, Match, Show, Switch, createSignal, onMount } from "solid-js";
-import * as ipc from "../ipc";
-import { asBool, asBoxes, asNumber, asOrder, asText } from "../fields";
-import type { Box, Field, FieldValue } from "../types";
+import { For, Match, Show, Switch, createSignal, onMount } from 'solid-js';
+import * as ipc from '../ipc';
+import { asBool, asBoxes, asNumber, asOrder, asText } from '../fields';
+import type { Box, Field, FieldValue } from '../types';
 
 interface FieldEditorProps {
   field: Field;
@@ -21,10 +21,10 @@ interface BoxesEditorProps {
 }
 
 function BoxesEditor(props: BoxesEditorProps) {
-  const [preview, setPreview] = createSignal("");
+  const [preview, setPreview] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   const [detecting, setDetecting] = createSignal(false);
-  const [note, setNote] = createSignal("");
+  const [note, setNote] = createSignal('');
   let surface: HTMLDivElement | undefined;
   let surfaceRect: DOMRect | null = null;
   let origin: { x: number; y: number } | null = null;
@@ -37,15 +37,10 @@ function BoxesEditor(props: BoxesEditorProps) {
     void ipc
       .previewThumb(path, 640)
       .then((url) => setPreview(ipc.assetUrl(url)))
-      .catch(() =>
-        setNote("Preview unavailable; regions can still be entered."),
-      );
+      .catch(() => setNote('Preview unavailable; regions can still be entered.'));
   });
 
-  function localPoint(
-    event: PointerEvent,
-    rect: DOMRect,
-  ): { x: number; y: number } {
+  function localPoint(event: PointerEvent, rect: DOMRect): { x: number; y: number } {
     return {
       x: clampUnit((event.clientX - rect.left) / rect.width),
       y: clampUnit((event.clientY - rect.top) / rect.height),
@@ -80,7 +75,7 @@ function BoxesEditor(props: BoxesEditorProps) {
     }
     if (rect && rect.w > 0.01 && rect.h > 0.01) {
       props.onChange([...boxes(), rect]);
-      setNote("");
+      setNote('');
     }
     setDraft(null);
     origin = null;
@@ -94,23 +89,17 @@ function BoxesEditor(props: BoxesEditorProps) {
     try {
       const found = await ipc.detectBoxes(path, faces);
       if (found.length === 0) {
-        setNote("Nothing detected.");
+        setNote('Nothing detected.');
       } else {
-        const strokes = new Set(
-          boxes().map((box) => `${box.x},${box.y},${box.w},${box.h}`),
-        );
+        const strokes = new Set(boxes().map((box) => `${box.x},${box.y},${box.w},${box.h}`));
         const added = found
           .map((item) => item.rect)
-          .filter(
-            (rect) => !strokes.has(`${rect.x},${rect.y},${rect.w},${rect.h}`),
-          );
+          .filter((rect) => !strokes.has(`${rect.x},${rect.y},${rect.w},${rect.h}`));
         props.onChange([...boxes(), ...added]);
-        setNote(
-          `${found.length} region${found.length === 1 ? "" : "s"} detected.`,
-        );
+        setNote(`${found.length} region${found.length === 1 ? '' : 's'} detected.`);
       }
     } catch (error) {
-      setNote(error instanceof Error ? error.message : "Detection failed.");
+      setNote(error instanceof Error ? error.message : 'Detection failed.');
     } finally {
       setDetecting(false);
     }
@@ -147,17 +136,14 @@ function BoxesEditor(props: BoxesEditorProps) {
       </div>
       <div
         class="boxes-surface"
-        classList={{ "is-empty": preview().length === 0 }}
+        classList={{ 'is-empty': preview().length === 0 }}
         ref={surface}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <Show
-          when={preview()}
-          fallback={<p class="boxes-placeholder">Preview unavailable</p>}
-        >
+        <Show when={preview()} fallback={<p class="boxes-placeholder">Preview unavailable</p>}>
           <img src={preview()} alt="Preview" draggable={false} />
         </Show>
         <For each={boxes()}>
@@ -250,9 +236,7 @@ function OrderEditor(props: OrderEditorProps) {
                 type="button"
                 class="button button-quiet"
                 onClick={() =>
-                  props.onChange(
-                    pages().filter((_, position) => position !== index()),
-                  )
+                  props.onChange(pages().filter((_, position) => position !== index()))
                 }
                 aria-label={`Remove page ${page}`}
               >
@@ -271,17 +255,17 @@ function OrderEditor(props: OrderEditorProps) {
 
 export default function FieldEditor(props: FieldEditorProps) {
   const id = (): string => `field-${props.field.key}`;
-  const unit = (): string => props.field.unit ?? "";
+  const unit = (): string => props.field.unit ?? '';
 
   return (
     <div class="field field-editor">
-      <Show when={props.field.kind !== "checkbox"}>
+      <Show when={props.field.kind !== 'checkbox'}>
         <label class="field-label" for={id()}>
           {props.field.label}
         </label>
       </Show>
       <Switch>
-        <Match when={props.field.kind === "number"}>
+        <Match when={props.field.kind === 'number'}>
           <span class="number-row">
             <input
               id={id()}
@@ -303,7 +287,7 @@ export default function FieldEditor(props: FieldEditorProps) {
             </Show>
           </span>
         </Match>
-        <Match when={props.field.kind === "range"}>
+        <Match when={props.field.kind === 'range'}>
           <span class="range-row">
             <input
               id={id()}
@@ -312,9 +296,7 @@ export default function FieldEditor(props: FieldEditorProps) {
               max={props.field.max ?? 100}
               step={props.field.step ?? 1}
               value={asNumber(props.value)}
-              onInput={(event) =>
-                props.onChange(event.currentTarget.valueAsNumber)
-              }
+              onInput={(event) => props.onChange(event.currentTarget.valueAsNumber)}
             />
             <output for={id()}>
               {asNumber(props.value)}
@@ -322,7 +304,7 @@ export default function FieldEditor(props: FieldEditorProps) {
             </output>
           </span>
         </Match>
-        <Match when={props.field.kind === "text"}>
+        <Match when={props.field.kind === 'text'}>
           <input
             id={id()}
             type="text"
@@ -330,18 +312,18 @@ export default function FieldEditor(props: FieldEditorProps) {
             onInput={(event) => props.onChange(event.currentTarget.value)}
           />
         </Match>
-        <Match when={props.field.kind === "color"}>
+        <Match when={props.field.kind === 'color'}>
           <span class="color-row">
             <input
               id={id()}
               type="color"
-              value={asText(props.value, "#111111")}
+              value={asText(props.value, '#111111')}
               onInput={(event) => props.onChange(event.currentTarget.value)}
             />
             <output>{asText(props.value)}</output>
           </span>
         </Match>
-        <Match when={props.field.kind === "select"}>
+        <Match when={props.field.kind === 'select'}>
           <select
             id={id()}
             value={asText(props.value)}
@@ -349,14 +331,12 @@ export default function FieldEditor(props: FieldEditorProps) {
           >
             <For each={props.field.options ?? []}>
               {(option, index) => (
-                <option value={option}>
-                  {props.field.option_labels?.[index()] ?? option}
-                </option>
+                <option value={option}>{props.field.option_labels?.[index()] ?? option}</option>
               )}
             </For>
           </select>
         </Match>
-        <Match when={props.field.kind === "checkbox"}>
+        <Match when={props.field.kind === 'checkbox'}>
           <label class="field checkbox-row" for={id()}>
             <input
               id={id()}
@@ -367,14 +347,14 @@ export default function FieldEditor(props: FieldEditorProps) {
             <span class="field-label">{props.field.label}</span>
           </label>
         </Match>
-        <Match when={props.field.kind === "boxes"}>
+        <Match when={props.field.kind === 'boxes'}>
           <BoxesEditor
             value={props.value}
             previewPath={props.previewPath}
             onChange={props.onChange}
           />
         </Match>
-        <Match when={props.field.kind === "order"}>
+        <Match when={props.field.kind === 'order'}>
           <OrderEditor value={props.value} onChange={props.onChange} />
         </Match>
       </Switch>
