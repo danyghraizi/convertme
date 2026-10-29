@@ -664,6 +664,15 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("shadow_pct", "Shadow", 2.0, 0.0, 20.0, 0.5, "%"),
+            ranged(
+                "shadow_angle",
+                "Shadow angle",
+                180.0,
+                0.0,
+                360.0,
+                5.0,
+                "\u{00b0}",
+            ),
             {
                 // Every ratio visible, as in the reference, and "Auto" means the
                 // engine's own default: the photo plus equal padding.
@@ -1106,6 +1115,7 @@ mod field_payload {
         assert_eq!(kind("padding_pct"), "range");
         assert_eq!(kind("radius_pct"), "range");
         assert_eq!(kind("shadow_pct"), "range");
+        assert_eq!(kind("shadow_angle"), "range");
         let aspect = fields.iter().find(|f| f.key == "aspect").unwrap();
         assert_eq!(
             aspect.option_labels.as_deref(),

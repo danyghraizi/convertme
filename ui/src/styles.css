@@ -2432,3 +2432,12 @@ select:focus {
     inset 0 0 0 1px rgba(255, 255, 255, 0.28),
     0 1px 3px rgba(0, 0, 0, 0.35);
 }
+
+.fill-preset-image {
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1;
+}

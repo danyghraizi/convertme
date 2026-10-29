@@ -20,6 +20,7 @@ interface BackgroundPreviewProps {
   paddingPct: number;
   radiusPct: number;
   shadowPct: number;
+  shadowAngle: number;
   aspect: string;
   /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
   onPlace?: (x: number, y: number) => void;
@@ -141,6 +142,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
         Math.min(photoW, photoH) / 2,
       ),
       shadowPx: (props.shadowPct / 100) * Math.min(w, h) * scale,
+      shadowAngle: (props.shadowAngle * Math.PI) / 180,
     };
   });
 
@@ -203,7 +205,7 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                 'border-radius': `${layout().radiusPx}px`,
                 'box-shadow':
                   layout().shadowPx > 0
-                    ? `0 ${(layout().shadowPx * 0.6).toFixed(1)}px ${layout().shadowPx.toFixed(1)}px rgba(0, 0, 0, 0.45)`
+                    ? `${(Math.sin(layout().shadowAngle) * layout().shadowPx * 0.6).toFixed(1)}px ${(-Math.cos(layout().shadowAngle) * layout().shadowPx * 0.6).toFixed(1)}px ${layout().shadowPx.toFixed(1)}px rgba(0, 0, 0, 0.45)`
                     : 'none',
               }}
               onLoad={(event) => {

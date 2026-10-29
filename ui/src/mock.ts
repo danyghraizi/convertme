@@ -336,6 +336,16 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       unit: '%',
     },
     {
+      key: 'shadow_angle',
+      label: 'Shadow angle',
+      kind: 'range',
+      default: 180,
+      min: 0,
+      max: 360,
+      step: 5,
+      unit: '°',
+    },
+    {
       key: 'radius_pct',
       label: 'Corner radius',
       kind: 'range',

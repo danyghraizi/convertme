@@ -198,6 +198,7 @@ export default function ToolModal(props: ToolModalProps) {
                 paddingPct={Number(values.padding_pct ?? 0)}
                 radiusPct={Number(values.radius_pct ?? 0)}
                 shadowPct={Number(values.shadow_pct ?? 0)}
+                shadowAngle={Number(values.shadow_angle ?? 180)}
                 aspect={String(values.aspect ?? 'source')}
                 onPlace={(x, y) => {
                   setValues('bg_x', x);
@@ -219,6 +220,15 @@ export default function ToolModal(props: ToolModalProps) {
             </Show>
             <Show when={props.tool.id === 'add-background' && values.mode !== 'image'}>
               <div class="fill-presets" role="group" aria-label="Ready-made backgrounds">
+                <button
+                  type="button"
+                  class="fill-preset fill-preset-image"
+                  title="Another image"
+                  aria-label="Another image"
+                  onClick={() => setValues('mode', 'image')}
+                >
+                  <span aria-hidden="true">▧</span>
+                </button>
                 <For each={FILL_PRESETS}>
                   {(preset) => (
                     <button

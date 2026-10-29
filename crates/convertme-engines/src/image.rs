@@ -132,6 +132,7 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     "padding_pct",
                     "radius_pct",
                     "shadow_pct",
+                    "shadow_angle",
                     "bg_zoom",
                     "bg_x",
                     "bg_y",
@@ -182,6 +183,11 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 && (!v.is_finite() || !(0.0..=20.0).contains(&v))
             {
                 return Err(unsupported("`shadow_pct` is a percentage from 0 to 20"));
+            }
+            if let Some(v) = number(params, "shadow_angle")?
+                && (!v.is_finite() || !(0.0..=360.0).contains(&v))
+            {
+                return Err(unsupported("`shadow_angle` is degrees from 0 to 360"));
             }
             if let Some(v) = number(params, "radius_pct")?
                 && (!v.is_finite() || !(0.0..=100.0).contains(&v))
@@ -842,8 +848,9 @@ fn add_background(
         job.source.clone().into_os_string()
     };
 
-    // A soft drop shadow under the photo, sized from the same reference as the
-    // padding. It is a separate layer so the photo itself stays exactly centred.
+    // A soft drop shadow, built from an explicit shape mask: the photo may be opaque
+    // (no alpha to extract), and this ImageMagick ignores `-shadow`'s own offset, so the
+    // mask is generated, blurred at reduced resolution, shifted, and scaled back.
     let shadow: Option<PathBuf> = {
         let shadow_pct = number(params, "shadow_pct")?
             .unwrap_or(0.0)
@@ -851,22 +858,84 @@ fn add_background(
         if shadow_pct <= 0.0 {
             None
         } else {
-            let sigma = (shadow_pct / 100.0 * shortest * 0.35).max(1.0);
-            let offset = (sigma * 1.2).round();
+            let angle = number(params, "shadow_angle")?
+                .unwrap_or(180.0)
+                .to_radians();
+            let sigma = (shadow_pct / 100.0 * shortest * 0.15).max(1.0);
+            let offset = sigma * 2.6;
+            // 0 degrees points up, 180 down: the shadow falls opposite the light.
+            let dx = angle.sin() * offset;
+            let dy = -angle.cos() * offset;
+            let scale = (900.0 / f64::from(width.max(height))).min(1.0);
+            let small_w = (f64::from(width) * scale).round().max(1.0);
+            let small_h = (f64::from(height) * scale).round().max(1.0);
+            let sigma_s = sigma * scale;
+            let dx_s = dx * scale;
+            let dy_s = dy * scale;
+            let margin_x = dx_s.abs().ceil() + (sigma_s * 3.0).ceil();
+            let margin_y = dy_s.abs().ceil() + (sigma_s * 3.0).ceil();
+            let canvas_w = small_w + margin_x * 2.0;
+            let canvas_h = small_h + margin_y * 2.0;
+            let place_x = (margin_x + dx_s).round();
+            let place_y = (margin_y + dy_s).round();
+
+            // White inside the photo's shape, black outside; blurring this gives the
+            // shadow's alpha directly.
+            let shape = cx.scratch("photo-shape.png");
+            let mut shape_args = vec![
+                os("-depth"),
+                os("8"),
+                os("-size"),
+                os(format!("{small_w}x{small_h}")),
+                os("xc:black"),
+            ];
+            if radius > 0 {
+                let r = f64::from(radius) * scale;
+                shape_args.extend([
+                    os("-fill"),
+                    os("white"),
+                    os("-draw"),
+                    os(format!(
+                        "roundrectangle 0,0 {},{},{r:.1},{r:.1}",
+                        small_w - 1.0,
+                        small_h - 1.0
+                    )),
+                ]);
+            } else {
+                shape_args.extend([
+                    os("-fill"),
+                    os("white"),
+                    os("-draw"),
+                    os(format!("rectangle 0,0 {},{}", small_w - 1.0, small_h - 1.0)),
+                ]);
+            }
+            shape_args.push(os(&shape));
+            run_magick(&magick, shape_args, cx, Budget::Short)?;
+
             let path = cx.scratch("photo-shadow.png");
             let args = vec![
                 os("-depth"),
                 os("8"),
-                os(&photo),
+                // Transparent black, not opaque: CopyOpacity leaves the area the mask
+                // does not cover untouched, and an opaque canvas there became a slab.
+                os("-size"),
+                os(format!("{canvas_w}x{canvas_h}")),
+                os("xc:none"),
                 os("("),
-                os("+clone"),
-                os("-background"),
-                os("black"),
-                os("-shadow"),
-                os(format!("55x{sigma:.1}+0+{offset:.0}")),
+                os(&shape),
+                os("-blur"),
+                os(format!("0x{sigma_s:.1}")),
+                os("-evaluate"),
+                os("multiply"),
+                os("0.55"),
                 os(")"),
-                os("-delete"),
-                os("0"),
+                os("-geometry"),
+                os(format!("{place_x:+.0}{place_y:+.0}")),
+                os("-compose"),
+                os("CopyOpacity"),
+                os("-composite"),
+                os("-resize"),
+                os(format!("{:.3}%", 100.0 / scale)),
                 os(&path),
             ];
             run_magick(&magick, args, cx, Budget::Short)?;
