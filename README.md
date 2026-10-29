@@ -115,3 +115,6 @@ described there.
 `cargo build` embeds `crates/convertme-gui/ui-dist` as it stands. After changing anything
 under `ui/src`, run `npm --prefix ui run build` first: the build script fails if the bundle
 is older, and a test compares the embedded page with the built one.
+
+The dialog renders only what `ui/src/field-parse.ts` keeps from the backend payload: a new
+control kind must be added there too, and `npm --prefix ui run test:fields` covers it.

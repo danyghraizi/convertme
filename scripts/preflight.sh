@@ -34,6 +34,7 @@ step "front end"
 npm --prefix ui ci --no-audit --no-fund >/dev/null
 npm --prefix ui run typecheck
 npm --prefix ui run test:geometry
+npm --prefix ui run test:fields
 npm --prefix ui run build
 
 step "clippy"

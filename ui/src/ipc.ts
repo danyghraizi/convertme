@@ -4,14 +4,15 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as mock from './mock';
+import { readFields } from './field-parse';
+
+export { readFields };
 import type {
   AnalyzeResult,
   BootInfo,
-  Box,
   DetectedBox,
   DragSignal,
   Field,
-  FieldValue,
   HistoryRow,
   Intent,
   JobEvent,
@@ -157,60 +158,6 @@ function readThumbs(value: unknown): AnalyzeResult['thumbs'] {
 
 function readSkipped(value: unknown): AnalyzeResult['skipped'] {
   return records(value).map((o) => ({ path: str(o.path), message: str(o.message) }));
-}
-
-function readFields(value: unknown): Field[] {
-  return records(value).map((o) => {
-    const kind = str(o.kind);
-    const field: Field = {
-      key: str(o.key),
-      label: str(o.label),
-      kind: 'text',
-      default: readFieldValue(kind, o.default),
-    };
-    if (
-      kind === 'number' ||
-      kind === 'text' ||
-      kind === 'range' ||
-      kind === 'color' ||
-      kind === 'select' ||
-      kind === 'checkbox' ||
-      kind === 'boxes' ||
-      kind === 'order'
-    ) {
-      field.kind = kind;
-    }
-    if (typeof o.min === 'number') field.min = o.min;
-    if (typeof o.max === 'number') field.max = o.max;
-    if (typeof o.step === 'number') field.step = o.step;
-    if (typeof o.unit === 'string') field.unit = o.unit;
-    if (Array.isArray(o.options)) field.options = strings(o.options);
-    return field;
-  });
-}
-
-function readBoxes(value: unknown): Box[] {
-  return records(value)
-    .map((o) => ({ x: num(o.x), y: num(o.y), w: num(o.w), h: num(o.h) }))
-    .filter((box) => box.w > 0 && box.h > 0);
-}
-
-function readFieldValue(kind: string, value: unknown): FieldValue {
-  switch (kind) {
-    case 'number':
-    case 'range':
-      return num(value, 0);
-    case 'checkbox':
-      return bool(value, false);
-    case 'boxes':
-      return readBoxes(value);
-    case 'order':
-      return Array.isArray(value)
-        ? value.filter((item): item is number => typeof item === 'number')
-        : [];
-    default:
-      return str(value);
-  }
 }
 
 function readHistoryRow(raw: unknown): HistoryRow {
@@ -366,7 +313,8 @@ export async function run(paths: string[], category: string, intent: Intent): Pr
 }
 
 export async function toolFields(category: string, tool: string): Promise<Field[]> {
-  if (isMock()) return mock.mockToolFields(category, tool);
+  // The mock is parsed by the same reader the app uses, so a dropped kind fails here too.
+  if (isMock()) return readFields(mock.mockToolFields(category, tool));
   return readFields(await invoke('tool_fields', { category, tool }));
 }
 
