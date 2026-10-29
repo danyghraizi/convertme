@@ -129,7 +129,9 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             {
                 return Err(unsupported("`color` cannot be empty"));
             }
-            gradient_param(params)?;
+            gradient_value(params)?
+                .map(|value| crate::gradient::parse(&value))
+                .transpose()?;
             if let Some(image) = string(params, "image")?
                 && image.trim().is_empty()
             {
@@ -727,7 +729,9 @@ fn add_background(
     let padding = number(params, "padding")?.unwrap_or(0.0) as u32;
     let radius = number(params, "radius")?.unwrap_or(0.0) as u32;
     let color = string(params, "color")?.unwrap_or("#101418").to_string();
-    let gradient = gradient_param(params)?;
+    let gradient = gradient_value(params)?
+        .map(|value| crate::gradient::parse(&value))
+        .transpose()?;
     let background_image = string(params, "image")?
         .map(PathBuf::from)
         .filter(|path| path.is_file());
@@ -762,10 +766,11 @@ fn add_background(
     cx.ctx.set_stage("composing the background");
     cx.ctx.set_progress(0.05);
     let mut args: Vec<OsString> = Vec::new();
-    if let Some((from, to)) = gradient {
-        args.push(os("-size"));
-        args.push(os(&size));
-        args.push(os(format!("gradient:{from}-{to}")));
+    if let Some(spec) = &gradient {
+        let paint = cx.scratch("background-gradient.ppm");
+        crate::gradient::write_ppm(&paint, canvas_w, canvas_h, spec)
+            .map_err(|e| convertme_core::error::JobError::io("writing the gradient", &e))?;
+        args.push(os(&paint));
         args.push(os(&job.source));
         args.push(os("-gravity"));
         args.push(os("center"));
@@ -831,29 +836,29 @@ fn add_background(
     Ok(vec![out])
 }
 
-fn gradient_param(params: &ToolParams) -> Result<Option<(String, String)>, JobError> {
+/// The gradient as the dialog sends it: a single string, so the plan, the history
+/// row and the CLI all carry it unchanged. Parsing lives in `crate::gradient`.
+fn gradient_value(params: &ToolParams) -> Result<Option<String>, JobError> {
     match params.get("gradient") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => {
-            let (from, to) = value
-                .split_once(',')
-                .ok_or_else(|| unsupported("`gradient` must be \"<from>,<to>\" or two colours"))?;
-            if from.trim().is_empty() || to.trim().is_empty() {
-                return Err(unsupported("`gradient` colours cannot be empty"));
+            if value.trim().is_empty() {
+                return Err(unsupported("`gradient` cannot be empty"));
             }
-            Ok(Some((from.trim().to_string(), to.trim().to_string())))
+            Ok(Some(value.clone()))
         }
-        Some(Value::Array(items)) if items.len() == 2 => {
-            let from = items[0]
-                .as_str()
-                .ok_or_else(|| unsupported("`gradient` colours must be strings"))?;
-            let to = items[1]
-                .as_str()
-                .ok_or_else(|| unsupported("`gradient` colours must be strings"))?;
-            Ok(Some((from.to_string(), to.to_string())))
+        Some(Value::Array(items)) if items.len() >= 2 => {
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items {
+                let colour = item
+                    .as_str()
+                    .ok_or_else(|| unsupported("`gradient` colours must be strings"))?;
+                parts.push(colour.to_string());
+            }
+            Ok(Some(parts.join(",")))
         }
         Some(_) => Err(unsupported(
-            "`gradient` must be \"<from>,<to>\" or two colours",
+            "`gradient` must be a colour list or at least two colours",
         )),
     }
 }

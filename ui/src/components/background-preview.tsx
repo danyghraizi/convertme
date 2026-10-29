@@ -26,7 +26,7 @@ const RATIOS: Record<string, number> = {
 };
 
 const MAX_WIDTH = 430;
-const MAX_HEIGHT = 200;
+const MAX_HEIGHT = 160;
 
 export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');

@@ -1947,7 +1947,7 @@ body.wheel-body {
   overflow: hidden;
   /* Fixed height so the fill, the sliders and the ratio all fit on one panel,
      as in the reference: the preview never pushes the controls off screen. */
-  height: 232px;
+  height: 188px;
   padding: 16px;
 }
 
@@ -2030,4 +2030,230 @@ body.wheel-body {
   background: var(--surface);
   color: var(--ink);
   box-shadow: var(--shadow-sm);
+}
+
+/* Colour picker: square, hue strip, hex, presets. */
+.colour-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  flex-wrap: wrap;
+}
+
+.colour-trigger {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--rule-2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+}
+
+.colour-hex {
+  width: 96px;
+  font-variant-numeric: tabular-nums;
+}
+
+.colour-popover {
+  position: absolute;
+  top: 38px;
+  left: 0;
+  z-index: 40;
+  width: 240px;
+  padding: 12px;
+  border-radius: var(--r-2);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg), 0 0 0 1px var(--rule);
+  display: grid;
+  gap: 10px;
+}
+
+.sv-square {
+  position: relative;
+  height: 132px;
+  border-radius: 8px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sv-knob {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.hue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hue-bar {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  border-radius: 999px;
+  cursor: ew-resize;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+}
+
+.hue-knob {
+  position: absolute;
+  top: -3px;
+  width: 8px;
+  height: 20px;
+  margin-left: -4px;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.hue-row input[type='number'] {
+  width: 62px;
+}
+
+.hex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hex-row span {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.hex-row input {
+  flex: 1;
+  font-family: var(--font-mono);
+}
+
+/* Gradient editor. */
+.gradient-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.gradient-strip {
+  height: 40px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--rule-2);
+}
+
+.angle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.angle-row span {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.angle-row input[type='range'] {
+  flex: 1;
+}
+
+.angle-row output {
+  width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.stops {
+  display: grid;
+  gap: 8px;
+}
+
+.stop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stop-row input[type='range'] {
+  flex: 1;
+}
+
+.stop-row output {
+  width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.stop-remove {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.stop-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stop-add {
+  justify-self: start;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--rule-2);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.stop-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A path field with its picker. */
+.file-row {
+  display: flex;
+  gap: 8px;
+}
+
+.file-row input {
+  flex: 1;
+}
+
+.file-row button {
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--rule-2);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
 }

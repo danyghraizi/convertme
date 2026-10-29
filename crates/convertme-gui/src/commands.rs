@@ -614,14 +614,22 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 key: "gradient".into(),
                 label: "Gradient".into(),
                 kind: "gradient".into(),
-                default: serde_json::json!("#f6c26b,#e4572e"),
+                default: serde_json::json!("linear|0|#f6c26b@0,#e4572e@100"),
                 show_if: Some(ShowIf {
                     key: "mode".into(),
                     equals: "gradient".into(),
                 }),
                 ..Default::default()
             },
-            text("image", "Background image", "", Some("path")).when("mode", "image"),
+            {
+                let mut field = text("image", "Background image", "", Some("path"));
+                field.kind = "file".into();
+                field.show_if = Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "image".into(),
+                });
+                field
+            },
             ranged("padding", "Padding", 64.0, 0.0, 400.0, 2.0, "px"),
             ranged("radius", "Corner radius", 24.0, 0.0, 200.0, 1.0, "px"),
             {
@@ -629,7 +637,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 // engine's own default: the photo plus equal padding.
                 let mut field = select(
                     "aspect",
-                    "Canvas",
+                    "Canvas ratio",
                     "free",
                     &["free", "1:1", "16:9", "4:3", "9:16", "3:4"],
                 )

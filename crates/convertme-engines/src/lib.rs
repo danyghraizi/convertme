@@ -14,6 +14,7 @@ pub mod archives;
 pub mod av;
 pub mod docs;
 pub mod face;
+pub mod gradient;
 pub mod image;
 pub mod metadata;
 pub mod pdf;

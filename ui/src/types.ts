@@ -101,6 +101,7 @@ export type FieldKind =
   | 'color'
   | 'gradient'
   | 'segmented'
+  | 'file'
   | 'select'
   | 'checkbox'
   | 'boxes'

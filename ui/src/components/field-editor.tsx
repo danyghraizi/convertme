@@ -1,5 +1,8 @@
 import { For, Match, Show, Switch, createSignal, onMount } from 'solid-js';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import * as ipc from '../ipc';
+import ColourPicker from './colour-picker';
+import GradientEditor from './gradient-editor';
 import { asBool, asBoxes, asNumber, asOrder, asText } from '../fields';
 import type { Box, Field, FieldValue } from '../types';
 
@@ -8,6 +11,26 @@ interface FieldEditorProps {
   value: FieldValue;
   previewPath: string | null;
   onChange: (value: FieldValue) => void;
+}
+
+/** The native picker, so a background image is chosen rather than typed. */
+async function pickImage(): Promise<string | null> {
+  if (ipc.isMock()) return null;
+  try {
+    const picked = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [
+        {
+          name: 'Images',
+          extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'heic', 'tif', 'tiff', 'bmp', 'gif'],
+        },
+      ],
+    });
+    return typeof picked === 'string' ? picked : null;
+  } catch {
+    return null;
+  }
 }
 
 function clampUnit(value: number): number {
@@ -253,50 +276,6 @@ function OrderEditor(props: OrderEditorProps) {
   );
 }
 
-/** Swatches that cover the useful neutrals and accents, so a colour is one click. */
-const SWATCHES = [
-  '#101418',
-  '#ffffff',
-  '#9aa5b1',
-  '#f6c26b',
-  '#e4572e',
-  '#2f855a',
-  '#2b6cb0',
-  '#6b46c1',
-];
-
-function GradientEditor(props: { id: string; value: FieldValue; onChange: (value: FieldValue) => void }) {
-  const parts = (): [string, string] => {
-    const [from, to] = asText(props.value, '#f6c26b,#e4572e').split(',');
-    return [from || '#f6c26b', to || '#e4572e'];
-  };
-  const set = (index: 0 | 1, colour: string): void => {
-    const next: [string, string] = parts();
-    next[index] = colour;
-    props.onChange(`${next[0]},${next[1]}`);
-  };
-  return (
-    <div class="gradient-row">
-      <input
-        id={props.id}
-        type="color"
-        value={parts()[0]}
-        onInput={(event) => set(0, event.currentTarget.value)}
-      />
-      <input
-        type="color"
-        aria-label="To colour"
-        value={parts()[1]}
-        onInput={(event) => set(1, event.currentTarget.value)}
-      />
-      <span
-        class="gradient-chip"
-        style={{ background: `linear-gradient(120deg, ${parts()[0]}, ${parts()[1]})` }}
-      />
-    </div>
-  );
-}
-
 export default function FieldEditor(props: FieldEditorProps) {
   const id = (): string => `field-${props.field.key}`;
   const unit = (): string => props.field.unit ?? '';
@@ -357,33 +336,34 @@ export default function FieldEditor(props: FieldEditorProps) {
           />
         </Match>
         <Match when={props.field.kind === 'color'}>
-          <span class="color-row">
-            <input
-              id={id()}
-              type="color"
-              value={asText(props.value, '#111111')}
-              onInput={(event) => props.onChange(event.currentTarget.value)}
-            />
-            <span class="swatches" role="group" aria-label="Presets">
-              <For each={SWATCHES}>
-                {(colour) => (
-                  <button
-                    type="button"
-                    class="swatch"
-                    classList={{ 'is-active': asText(props.value).toLowerCase() === colour }}
-                    style={{ background: colour }}
-                    aria-label={colour}
-                    title={colour}
-                    onClick={() => props.onChange(colour)}
-                  />
-                )}
-              </For>
-            </span>
-            <output>{asText(props.value)}</output>
-          </span>
+          <ColourPicker
+            label={props.field.label}
+            value={asText(props.value, '#111111')}
+            onChange={props.onChange}
+          />
         </Match>
         <Match when={props.field.kind === 'gradient'}>
-          <GradientEditor id={id()} value={props.value} onChange={props.onChange} />
+          <GradientEditor value={asText(props.value)} onChange={props.onChange} />
+        </Match>
+        <Match when={props.field.kind === 'file'}>
+          <span class="file-row">
+            <input
+              id={id()}
+              type="text"
+              value={asText(props.value)}
+              onInput={(event) => props.onChange(event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                void pickImage().then((path) => {
+                  if (path) props.onChange(path);
+                });
+              }}
+            >
+              Choose…
+            </button>
+          </span>
         </Match>
         <Match when={props.field.kind === 'segmented'}>
           <span class="segmented" role="group" aria-label={props.field.label}>
