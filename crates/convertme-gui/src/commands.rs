@@ -1052,3 +1052,44 @@ pub fn toggle_preview(app: tauri::AppHandle, path: String) -> Result<(), String>
 pub fn emit_json(app: &tauri::AppHandle, event: &str, payload: serde_json::Value) {
     let _ = app.emit(event, payload);
 }
+
+#[cfg(test)]
+mod field_payload {
+    /// The dialog can only be right if the payload names the controls it renders: this
+    /// is the contract between the Rust field table and the SolidJS switch.
+    #[test]
+    fn add_background_describes_its_controls() {
+        let fields = super::tool_fields("images".into(), "add-background".into());
+        let kind = |key: &str| {
+            fields
+                .iter()
+                .find(|f| f.key == key)
+                .map(|f| f.kind.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(kind("gradient"), "gradient");
+        assert_eq!(kind("image"), "file");
+        assert_eq!(kind("aspect"), "segmented");
+        assert_eq!(kind("color"), "color");
+        assert_eq!(kind("padding"), "range");
+        assert_eq!(kind("radius"), "range");
+        let aspect = fields.iter().find(|f| f.key == "aspect").unwrap();
+        assert_eq!(
+            aspect.option_labels.as_deref(),
+            Some(
+                ["Auto", "1:1", "16:9", "4:3", "9:16", "3:4"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        let mode = fields.iter().find(|f| f.key == "mode").unwrap();
+        assert_eq!(
+            mode.option_labels.as_deref(),
+            Some(
+                ["A colour", "A gradient", "Another image"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+    }
+}

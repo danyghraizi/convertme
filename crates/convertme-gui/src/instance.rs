@@ -9,12 +9,20 @@
 //!   `Global\convertme-single` on Windows.
 //! * Endpoint: `$XDG_RUNTIME_DIR/convertme/ipc.sock` (or the `/tmp` fallback) on
 //!   Linux; `\\.\pipe\convertme-ipc` on Windows.
-//! * Framing: one JSON array of paths per line, UTF-8.
+//! * Framing: one JSON object per line, `{"build": "<stamp>", "paths": [...]}`, UTF-8.
+//!   A plain array is still accepted from an older build.
+//!
+//! A launch whose bundle differs from the one already running is not forwarded: the
+//! running window is out of date, so it quits and the new process takes the lock. That
+//! is what makes "rebuild, relaunch" actually show the new interface.
 
 use convertme_core::identity;
 use convertme_core::paths;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+
+/// The bundle embedded in this binary. Changes with every frontend build.
+pub const BUILD_STAMP: &str = env!("UI_BUILD_STAMP");
 
 #[derive(Debug)]
 pub enum InstanceError {
@@ -98,16 +106,33 @@ impl Drop for InstanceLock {
 
 /// Send paths to the instance that owns the socket/pipe. Used by the second
 /// launch, which then exits 0 without opening a window.
-pub fn forward(paths: &[PathBuf]) -> Result<(), InstanceError> {
-    let line = serde_json::to_string(paths)
+pub fn forward(paths: &[PathBuf]) -> Result<Forward, InstanceError> {
+    let payload = serde_json::json!({ "build": BUILD_STAMP, "paths": paths });
+    let line = serde_json::to_string(&payload)
         .map_err(|e| InstanceError::Io(std::io::Error::other(format!("serialising argv: {e}"))))?;
     imp::send(&format!("{line}\n")).map_err(InstanceError::Io)
 }
 
-/// Accept connections forever, calling `handler` with each forwarded path list.
+/// What the running instance said about a forwarded launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forward {
+    /// The running instance is this build: it took the paths.
+    Accepted,
+    /// The running instance is an older build and is shutting down.
+    Stale,
+}
+
+/// A forwarded message, as the running instance sees it.
+#[derive(Debug, Clone)]
+pub struct Forwarded {
+    pub paths: Vec<PathBuf>,
+    pub build: String,
+}
+
+/// Accept connections forever, calling `handler` with each forwarded launch.
 pub fn serve<F>(handler: F) -> std::io::Result<std::thread::JoinHandle<()>>
 where
-    F: Fn(Vec<PathBuf>) + Send + 'static,
+    F: Fn(Forwarded) + Send + 'static,
 {
     imp::serve(Box::new(handler))
 }
@@ -117,15 +142,22 @@ mod imp {
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
 
-    pub fn send(payload: &str) -> std::io::Result<()> {
+    pub fn send(payload: &str) -> std::io::Result<Forward> {
         let path = identity::socket_path();
         let mut stream = UnixStream::connect(&path)?;
         stream.write_all(payload.as_bytes())?;
-        stream.flush()
+        stream.flush()?;
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply)?;
+        Ok(if reply.trim() == "stale" {
+            Forward::Stale
+        } else {
+            Forward::Accepted
+        })
     }
 
     pub fn serve(
-        handler: Box<dyn Fn(Vec<PathBuf>) + Send>,
+        handler: Box<dyn Fn(Forwarded) + Send>,
     ) -> std::io::Result<std::thread::JoinHandle<()>> {
         let path = identity::socket_path();
         if let Some(dir) = path.parent() {
@@ -139,13 +171,43 @@ mod imp {
             .spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(stream) = stream else { continue };
+                    let mut reply = stream.try_clone().ok();
                     let reader = BufReader::new(stream);
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
-                        match serde_json::from_str::<Vec<PathBuf>>(line.trim()) {
-                            Ok(paths) => handler(paths),
-                            Err(_) => continue,
+                        let Ok(text) = serde_json::from_str::<serde_json::Value>(line.trim())
+                        else {
+                            continue;
+                        };
+                        let forwarded = match &text {
+                            serde_json::Value::Array(items) => Forwarded {
+                                paths: serde_json::from_value(serde_json::Value::Array(
+                                    items.clone(),
+                                ))
+                                .unwrap_or_default(),
+                                build: BUILD_STAMP.to_string(),
+                            },
+                            serde_json::Value::Object(map) => {
+                                let paths = map
+                                    .get("paths")
+                                    .cloned()
+                                    .and_then(|v| serde_json::from_value(v).ok())
+                                    .unwrap_or_default();
+                                let build = map
+                                    .get("build")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                Forwarded { paths, build }
+                            }
+                            _ => continue,
+                        };
+                        let stale = !forwarded.build.is_empty() && forwarded.build != BUILD_STAMP;
+                        if let Some(mut socket) = reply.take() {
+                            let _ = socket.write_all(if stale { b"stale\n" } else { b"ok\n" });
+                            let _ = socket.flush();
                         }
+                        handler(forwarded);
                     }
                 }
             })
@@ -167,7 +229,7 @@ mod imp {
         HSTRING::from(name)
     }
 
-    pub fn send(payload: &str) -> std::io::Result<()> {
+    pub fn send(payload: &str) -> std::io::Result<Forward> {
         // SAFETY: opening the client end of our own pipe; every handle is closed.
         unsafe {
             let handle = windows::Win32::Storage::FileSystem::CreateFileW(
@@ -187,11 +249,13 @@ mod imp {
             let _ = CloseHandle(handle);
             res.map_err(|e| std::io::Error::other(format!("WriteFile: {e}")))?;
         }
-        Ok(())
+        // The pipe is inbound-only, so a Windows launch cannot be told that the running
+        // window is an older build; it forwards as before.
+        Ok(Forward::Accepted)
     }
 
     pub fn serve(
-        handler: Box<dyn Fn(Vec<PathBuf>) + Send>,
+        handler: Box<dyn Fn(Forwarded) + Send>,
     ) -> std::io::Result<std::thread::JoinHandle<()>> {
         let handle_w = wide(identity::PIPE);
         std::thread::Builder::new()

@@ -306,6 +306,9 @@ export default function SettingsPanel(props: SettingsPanelProps) {
               {props.about?.version}.
             </p>
           </Show>
+          {/* The interface build. A window showing an older one than ui-dist is a stale
+              process, which otherwise looks exactly like a design that was ignored. */}
+          <p class="settings-help">Interface build {__BUILD_ID__}.</p>
           <Show
             when={props.missing.length > 0}
             fallback={<p class="settings-help">All optional tools were found.</p>}

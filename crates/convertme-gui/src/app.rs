@@ -36,7 +36,8 @@ pub fn run() -> i32 {
     // A crashed run must not leave work directories behind.
     convertme_core::queue::sweep_temp_dirs();
 
-    // Second launch: hand the paths over and exit without a window.
+    // Second launch: hand the paths over and exit without a window — unless the running
+    // window is an older build, in which case it closes and this one takes over.
     match instance::acquire() {
         Ok(lock) => std::mem::forget(lock), // held for the process lifetime
         Err(instance::InstanceError::Busy) => {
@@ -47,16 +48,35 @@ pub fn run() -> i32 {
                 "another instance owns the lock; forwarding {} path(s)",
                 initial_paths.len()
             );
-            return match instance::forward(&initial_paths) {
-                Ok(()) => 0,
+            match instance::forward(&initial_paths) {
+                Ok(instance::Forward::Accepted) => return 0,
+                Ok(instance::Forward::Stale) => {
+                    logln!("the running window is an older build; taking over");
+                    let mut taken = false;
+                    for _ in 0..60 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        if let Ok(lock) = instance::acquire() {
+                            std::mem::forget(lock);
+                            taken = true;
+                            break;
+                        }
+                    }
+                    if !taken {
+                        eprintln!(
+                            "{}: the older window did not close; close it and try again",
+                            identity::APP_NAME
+                        );
+                        return 1;
+                    }
+                }
                 Err(e) => {
                     eprintln!(
                         "{}: the running instance did not accept the files: {e}",
                         identity::APP_NAME
                     );
-                    1
+                    return 1;
                 }
-            };
+            }
         }
         Err(e) => {
             eprintln!("{}: {e}", identity::APP_NAME);
@@ -520,7 +540,19 @@ fn start_ipc(app: tauri::AppHandle) {
         "ipc endpoint at {}",
         convertme_core::identity::socket_path().display()
     );
-    let served = instance::serve(move |paths| {
+    let served = instance::serve(move |forwarded| {
+        let paths = forwarded.paths;
+        // An older window must not keep serving a newer build: release the lock and
+        // let the process that was just launched take over.
+        if !forwarded.build.is_empty() && forwarded.build != instance::BUILD_STAMP {
+            logln!(
+                "a newer build was launched ({} != {}); closing this window",
+                forwarded.build,
+                instance::BUILD_STAMP
+            );
+            handle.exit(0);
+            return;
+        }
         if let Some(state) = handle.try_state::<AppState>() {
             state.selection.lock().set(paths.clone());
             state.pending.lock().extend(paths.clone());

@@ -22,9 +22,23 @@ fn main() {
     // Per-file, not per-directory: Vite rewrites existing files in place, which leaves
     // the directory mtime untouched, so a rebuilt bundle was never re-embedded and the
     // window kept showing the previous design.
-    for file in files_under(Path::new("ui-dist")) {
+    let mut files = files_under(Path::new("ui-dist"));
+    files.sort();
+    for file in &files {
         println!("cargo:rerun-if-changed={}", file.display());
     }
+    // A stamp of the bundle actually embedded, so a running window can be told apart
+    // from the build on disk.
+    let mut stamp = 0u64;
+    for file in &files {
+        if let Ok(meta) = std::fs::metadata(file)
+            && let Ok(modified) = meta.modified()
+            && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            stamp = stamp.wrapping_add(since.as_secs()).wrapping_add(meta.len());
+        }
+    }
+    println!("cargo:rustc-env=UI_BUILD_STAMP={stamp:x}");
     tauri_build::build();
 }
 

@@ -50,5 +50,16 @@ mod embedded_bundle {
             embedded, built,
             "the binary embeds an older page: rebuild the frontend and this crate"
         );
+
+        // The bundle itself, not just its name: this is what the window executes.
+        let script = context
+            .assets()
+            .get(&AssetKey::from(embedded.as_str()))
+            .expect("the embedded bundle exists");
+        let code = String::from_utf8_lossy(script.as_ref());
+        assert!(
+            code.contains("colour-trigger") && code.contains("gradient-strip"),
+            "the embedded bundle predates the colour picker and the gradient editor"
+        );
     }
 }
