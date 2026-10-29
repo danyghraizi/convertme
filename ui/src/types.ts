@@ -115,6 +115,8 @@ export interface Field {
   show_if?: { key: string; equals: string };
   /** Section heading when the controls are grouped. */
   group?: string;
+  /** A form control (a mode switch), never sent to the backend. */
+  control?: boolean;
 }
 
 export interface ConvertIntent {

@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import BackgroundPreview from './background-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor from './field-editor';
@@ -52,7 +53,7 @@ export default function ToolModal(props: ToolModalProps) {
   function collected(): Record<string, unknown> {
     const params: Record<string, unknown> = {};
     for (const field of props.fields) {
-      if (!isVisible(field)) continue;
+      if (!isVisible(field) || field.control) continue;
       const value = values[field.key];
       // A select carries strings; a numeric choice (an image scale, a channel count)
       // is a number to the backend, and there is no way to tell the two apart from
@@ -131,6 +132,18 @@ export default function ToolModal(props: ToolModalProps) {
                   onChange={(box) => setValues('boxes', [box])}
                 />
               </div>
+            </Show>
+            <Show when={props.tool.id === 'add-background'}>
+              <BackgroundPreview
+                path={props.previewPath}
+                mode={String(values.mode ?? 'colour')}
+                color={String(values.color ?? '#101418')}
+                gradient={String(values.gradient ?? '')}
+                image={values.image ? String(values.image) : null}
+                padding={Number(values.padding ?? 0)}
+                radius={Number(values.radius ?? 0)}
+                aspect={String(values.aspect ?? 'source')}
+              />
             </Show>
             <Show when={props.tool.id === 'edit-photo'}>
               <PhotoPreview

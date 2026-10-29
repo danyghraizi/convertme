@@ -139,6 +139,9 @@ pub struct Field {
     /// Section heading, when a tool's controls fall into groups.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// A control that drives the form (a mode switch) rather than a job parameter.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control: bool,
 }
 
 impl Field {
@@ -148,6 +151,12 @@ impl Field {
             key: key.into(),
             equals: equals.into(),
         });
+        self
+    }
+
+    /// Drives other fields; never sent to the backend.
+    fn control(mut self) -> Self {
+        self.control = true;
         self
     }
 
@@ -561,7 +570,19 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             text("color", "Ink colour", "#f5f5f5", None),
         ],
         (Category::Images, ToolId::AddBackground) => vec![
-            text("color", "Background", "#101418", None),
+            select(
+                "mode",
+                "Background",
+                "colour",
+                &["colour", "gradient", "image"],
+            )
+            .labelled(&["A colour", "A gradient", "Another image"])
+            .control(),
+            text("color", "Colour", "#101418", None).when("mode", "colour"),
+            // The engine's spelling, so the field cannot teach a value it will refuse.
+            text("gradient", "Gradient", "#f6c26b,#e4572e", Some("#from,#to"))
+                .when("mode", "gradient"),
+            text("image", "Background image", "", Some("path")).when("mode", "image"),
             num("padding", "Padding", 64.0, 0.0, 2000.0, 1.0, "px"),
             num("radius", "Corner radius", 24.0, 0.0, 500.0, 1.0, "px"),
             select(
@@ -569,7 +590,14 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 "Canvas",
                 "1:1",
                 &["1:1", "4:3", "16:9", "9:16", "source"],
-            ),
+            )
+            .labelled(&[
+                "Square (1:1)",
+                "Landscape (4:3)",
+                "Wide (16:9)",
+                "Portrait (9:16)",
+                "Same as the photo",
+            ]),
         ],
         (Category::Images, ToolId::EditPhoto) => vec![
             range("exposure", "Exposure", -3.0, 3.0, 0.1, "EV").group("Light"),
