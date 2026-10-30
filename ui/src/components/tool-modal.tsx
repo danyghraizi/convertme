@@ -6,7 +6,7 @@ import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor from './field-editor';
 import { collectParams, initialValue, visibleIn } from '../fields';
-import { formatBytes } from '../format';
+import { formatBytes, isLosslessSelection } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
 
 interface FillPreset {
@@ -143,7 +143,24 @@ export default function ToolModal(props: ToolModalProps) {
   }
 
   const visibleFields = (): Field[] =>
-    props.fields.filter((field) => isVisible(field) && field.key !== 'boxes');
+    activeFields().filter((field) => isVisible(field) && field.key !== 'boxes');
+
+  /**
+   * Lossless encoders ignore `quality` (and the target-size search ignores it too),
+   * so the control would do nothing: hide it, and keep it out of the parameters.
+   */
+  function activeFields(): Field[] {
+    if (props.tool.id !== 'compress' || props.category !== 'images') return props.fields;
+    const paths =
+      fileList().length > 0
+        ? fileList().map((file) => file.path)
+        : props.previewPath
+          ? [props.previewPath]
+          : [];
+    return isLosslessSelection(paths)
+      ? props.fields.filter((field) => field.key !== 'quality')
+      : props.fields;
+  }
 
   /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
   function isVisible(field: Field): boolean {
@@ -151,7 +168,7 @@ export default function ToolModal(props: ToolModalProps) {
   }
 
   function collected(from: Record<string, FieldValue> = values): Record<string, unknown> {
-    return collectParams(props.fields, from);
+    return collectParams(activeFields(), from);
   }
 
   async function submit(event: SubmitEvent): Promise<void> {

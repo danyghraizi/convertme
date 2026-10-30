@@ -2033,6 +2033,18 @@ mod tests {
     }
 
     #[test]
+    fn lossy_extension_list_matches_the_dialog() {
+        // The dialog hides the quality slider for exactly the extensions this returns
+        // false for (`ui/src/format.ts`); keep the two lists in step.
+        for ext in ["jpg", "jpeg", "webp", "avif", "heic", "heif"] {
+            assert!(is_lossy_ext(ext), "{ext} should accept a quality");
+        }
+        for ext in ["png", "bmp", "tif", "tiff", "svg", "ico", "gif"] {
+            assert!(!is_lossy_ext(ext), "{ext} ignores quality");
+        }
+    }
+
+    #[test]
     fn compress_preview_changes_with_the_parameters() {
         let Some(f) = fixture() else { return };
         let input = make_image(

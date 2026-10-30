@@ -102,6 +102,7 @@ jobs:
       - run: npm ci --prefix ui
       - run: npm --prefix ui run typecheck
       - run: npm --prefix ui run test:geometry
+      - run: npm --prefix ui run test:format
       - run: npm --prefix ui run build
       - uses: actions/upload-artifact@v4
         with:

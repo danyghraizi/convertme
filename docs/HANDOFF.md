@@ -17,7 +17,7 @@ settings exist as described in the plan; the GUI is usable end to end on this ma
 
 | Control | Behaviour |
 |---|---|
-| Quality | 1–100, encoder quality for lossy formats |
+| Quality | 1–100, encoder quality for lossy formats; hidden when every selected image is lossless (PNG/BMP/TIFF/SVG), where it cannot change a byte |
 | Image size | 100 / 75 / 50 / 25 % of the dimensions |
 | Target file size | quality search, then up to three downscale rounds; the smallest result when the target is unreachable (lossless also drops the palette) |
 | Preview | the **real encoded file**: true size, true dimensions, percent saved, and a picture of the result. Re-encodes 400 ms after the last edit, with stale responses dropped |

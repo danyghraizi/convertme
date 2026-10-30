@@ -223,7 +223,10 @@ ignored it and wrote the same file back. Both "worked" and did nothing.
 **Rule.** Every field in the table must be read by that category's engine code. Split a
 shared field table per category instead of offering controls one branch drops. When an
 operation cannot honour the control for a format (a bitrate on lossless audio), refuse
-with a message naming a format that can — never silently no-op.
+with a message naming a format that can — never silently no-op. When the control is dead
+only for some inputs, hide it for those inputs: image compress hides Quality when every
+selected file is lossless (PNG/BMP/TIFF/SVG); the engine pins the same list in
+`lossy_extension_list_matches_the_dialog`.
 
 ## 22. A relative target must respect the encoder's floor
 

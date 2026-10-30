@@ -3,6 +3,36 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** Lowercase extension without the dot, or '' when there is none. */
+export function extensionOf(path: string): string {
+  const name = baseName(path);
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * Image encoders that ignore `-quality`. Mirrors the inverse of `is_lossy_ext` in
+ * `crates/convertme-engines/src/image.rs`; the engine pins that list in a test.
+ */
+const LOSSLESS_IMAGE_EXTENSIONS: Record<string, true> = {
+  png: true,
+  bmp: true,
+  tif: true,
+  tiff: true,
+  svg: true,
+  ico: true,
+};
+
+/** True when the quality slider cannot change the encoded bytes. */
+export function isLosslessImage(path: string): boolean {
+  return LOSSLESS_IMAGE_EXTENSIONS[extensionOf(path)] === true;
+}
+
+/** True when every selected file is lossless (an empty selection is not). */
+export function isLosslessSelection(paths: string[]): boolean {
+  return paths.length > 0 && paths.every(isLosslessImage);
+}
+
 /** The backend stores seconds; fixtures may use milliseconds. */
 export function epochMillis(value: number): number {
   return value < 1e12 ? value * 1000 : value;

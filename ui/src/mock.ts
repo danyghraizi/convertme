@@ -1,4 +1,5 @@
 import { ACTIONS, FALLBACK_TARGETS, FALLBACK_TOOLS } from './catalog';
+import { baseName, extensionOf, isLosslessImage } from './format';
 import type {
   AnalyzeResult,
   BootInfo,
@@ -117,17 +118,6 @@ const EXTENSIONS: Record<string, { category: string; format: string }> = {
   '7z': { category: 'archives', format: '7Z' },
   rar: { category: 'archives', format: 'RAR' },
 };
-
-function baseName(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts[parts.length - 1] || path;
-}
-
-function extensionOf(path: string): string {
-  const name = baseName(path);
-  const dot = name.lastIndexOf('.');
-  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
-}
 
 function svgDataUrl(title: string, width: number, height: number): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#e8e8e6"/><line x1="0" y1="0" x2="${width}" y2="${height}" stroke="#c6c6c2" stroke-width="2"/><line x1="${width}" y1="0" x2="0" y2="${height}" stroke="#c6c6c2" stroke-width="2"/><text x="${Math.round(width / 2)}" y="${Math.round(height / 2)}" font-family="sans-serif" font-size="${Math.round(Math.min(width, height) / 12)}" fill="#5a5a56" text-anchor="middle">${title}</text></svg>`;
@@ -651,7 +641,9 @@ export function mockCompressPreview(
   const target = Number(params.target_bytes ?? 0) || 0;
   const width = Math.max(1, Math.round((4032 * scale) / 100));
   const height = Math.max(1, Math.round((3024 * scale) / 100));
-  const factor = Math.min(0.95, Math.max(0.02, (quality / 100) ** 2 * (scale / 100) ** 2));
+  const factor = isLosslessImage(path)
+    ? Math.min(1, (scale / 100) ** 2)
+    : Math.min(0.95, Math.max(0.02, (quality / 100) ** 2 * (scale / 100) ** 2));
   const bytes = target > 0 ? Math.min(Math.round(target), source) : Math.round(source * factor);
   return {
     path: svgDataUrl(baseName(path), 512, Math.max(1, Math.round((512 * height) / width))),
