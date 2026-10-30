@@ -2055,6 +2055,12 @@ body.wheel-body {
   color: var(--ink-3);
 }
 
+.compress-target-miss {
+  margin: 4px 0 0;
+  font-size: var(--t-2xs);
+  color: var(--warn-ink);
+}
+
 /* Background composition stage. */
 .background-stage {
   display: grid;

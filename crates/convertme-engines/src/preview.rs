@@ -234,8 +234,6 @@ impl PreviewCache {
                 .arg("thumbnail=n=100,scale=320:-2,select='not(mod(n\\,100))'")
                 .arg("-frames:v")
                 .arg(frames.to_string())
-                .arg("-vsync")
-                .arg("vfr")
                 .arg(&out_pattern)
                 .budget(proc::Budget::Long),
             &ctx,

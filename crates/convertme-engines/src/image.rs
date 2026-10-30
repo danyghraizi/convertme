@@ -54,12 +54,16 @@ pub fn validate(job: &Job, category: Category) -> Result<(), JobError> {
 fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
     match tool {
         ToolId::Compress => {
-            check_params(params, &["quality", "scale", "percent", "target_bytes"])?;
+            check_params(
+                params,
+                &["quality", "scale", "percent", "target_bytes", "colours"],
+            )?;
             let quality = unsigned(params, "quality")?;
             let scale = number(params, "scale")?;
             let percent = number(params, "percent")?;
             // Zero means "no target": the field is optional and starts empty.
             let _ = unsigned(params, "target_bytes")?;
+            let colours = unsigned(params, "colours")?;
             if scale.is_some() && percent.is_some() {
                 return Err(unsupported("choose either `scale` or `percent`, not both"));
             }
@@ -77,6 +81,11 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 && !(1.0..=95.0).contains(&p)
             {
                 return Err(unsupported("`percent` must be between 1 and 95"));
+            }
+            if let Some(c) = colours
+                && !(2..=256).contains(&c)
+            {
+                return Err(unsupported("`colours` must be between 2 and 256"));
             }
             Ok(())
         }
@@ -332,11 +341,7 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
         return Ok(vec![out]);
     }
 
-    let produced = optimize_png(
-        prefer_smaller(job, encode_compress(job, cx, params)?, ext, cx)?,
-        ext,
-        cx,
-    )?;
+    let produced = produce_compress(job, cx, params, ext)?;
     if let Some(cache) = cx.preview {
         // A cache that cannot be written must not fail a job that already succeeded.
         let _ = cache.store_artifact(
@@ -355,7 +360,9 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 
 /// Bump when the encoder output for the same request changes: the key otherwise only
 /// covers the source file and the parameters, so an old preview would be reused.
-const COMPRESS_CACHE_VERSION: &str = "v4";
+/// v5: PNG target searches use imagequant, and a small palette falls back to a flat
+/// remap when dithering made it larger than the lossless encode.
+const COMPRESS_CACHE_VERSION: &str = "v5";
 
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
@@ -396,10 +403,20 @@ fn encode_compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<P
         None => number(params, "percent")?.map(|percent| (100.0 - percent).max(5.0)),
     };
     let target = unsigned(params, "target_bytes")?.filter(|t| *t > 0);
+    let colours = unsigned(params, "colours")?.map(|c| c.clamp(2, 256) as u32);
 
     if let Some(target) = target {
         cx.ctx.set_stage("compressing to the target size");
-        return compress_to_target(&magick, &job.source, target, ext, lossy, scale, cx);
+        return TargetSearch {
+            magick: &magick,
+            source: &job.source,
+            target,
+            ext,
+            lossy,
+            scale,
+            colours,
+        }
+        .run(cx);
     }
 
     cx.ctx.set_stage("compressing the image");
@@ -430,6 +447,149 @@ fn encode_compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<P
     Ok(out)
 }
 
+/// One compression pipeline for both the preview and the job, so the two cannot
+/// disagree: encode, optionally reduce the palette, refuse to grow the file, then let
+/// a real PNG optimizer try the row filters and deflate strategies.
+fn produce_compress(
+    job: &Job,
+    cx: &Context<'_>,
+    params: &ToolParams,
+    ext: &str,
+) -> Result<PathBuf, JobError> {
+    let colours = unsigned(params, "colours")?;
+    if colours.is_some() && ext != "png" {
+        return Err(unsupported("reducing colours needs a PNG output"));
+    }
+    let target = unsigned(params, "target_bytes")?.filter(|t| *t > 0);
+
+    let encoded = encode_compress(job, cx, params)?;
+    // The target search already quantizes PNGs: it must, or a 1 KB target would be
+    // judged against ImageMagick's weak `-colors` and return a larger file than a
+    // plain palette pass. Re-quantizing that result would only lose quality.
+    let reduced = if target.is_some() {
+        encoded
+    } else {
+        reduce_colours(encoded, ext, params, cx)?
+    };
+    optimize_png(prefer_smaller(job, reduced, ext, cx)?, ext, cx)
+}
+
+/// Lossy palette reduction with libimagequant, the quantizer behind pngquant, writing
+/// an indexed PNG. Absent `colours` leaves the encoder output untouched: the default
+/// stays lossless. ImageMagick's own `-colors` is deliberately not used; its quantizer
+/// is much weaker (74 KB at 256 colours where this reaches 18 KB on the same poster).
+fn reduce_colours(
+    path: PathBuf,
+    ext: &str,
+    params: &ToolParams,
+    cx: &Context<'_>,
+) -> Result<PathBuf, JobError> {
+    let Some(colours) = unsigned(params, "colours")?.map(|c| c.clamp(2, 256) as u32) else {
+        return Ok(path);
+    };
+    if ext != "png" {
+        return Err(unsupported("reducing colours needs a PNG output"));
+    }
+
+    let baseline = file_len(&path)?;
+    let dithered = cx.scratch("compress-reduced.png");
+    quantize_png(&path, colours, 1.0, &dithered, cx)?;
+    if file_len(&dithered)? < baseline {
+        return Ok(dithered);
+    }
+    // Dithering is what makes a small palette exceed the lossless encode on a smooth
+    // gradient (16 colours on the poster did). A flat remap is worse to look at but
+    // actually smaller, which is the point of a compressor. Keep whichever is smaller.
+    let flat = cx.scratch("compress-reduced-flat.png");
+    quantize_png(&path, colours, 0.0, &flat, cx)?;
+    Ok(if file_len(&flat)? < file_len(&dithered)? {
+        flat
+    } else {
+        dithered
+    })
+}
+
+/// Quantize a PNG to an indexed palette and write it to `out`. `dithering` is 0–1;
+/// libimagequant's 1.0 spreads the palette error, 0.0 picks the nearest colour.
+fn quantize_png(
+    input: &Path,
+    colours: u32,
+    dithering: f32,
+    out: &Path,
+    cx: &Context<'_>,
+) -> Result<(), JobError> {
+    cx.ctx.checkpoint()?;
+    cx.ctx.set_stage("reducing the palette");
+    let bytes = std::fs::read(input)
+        .map_err(|e| JobError::io(format!("reading {}", input.display()), &e))?;
+    let decoded = load_image(&bytes).map_err(|e| {
+        JobError::new(
+            ErrorCode::EngineFailed,
+            format!("decoding the PNG for colour reduction: {e}"),
+        )
+    })?;
+    let (width, height) = (decoded.width(), decoded.height());
+    // libimagequant works on 8-bit RGBA; a 16-bit source is reduced here, which is
+    // exactly what the palette is for.
+    let rgba = decoded.to_rgba8();
+    let pixels: Vec<imagequant::RGBA> = rgba
+        .pixels()
+        .map(|p| imagequant::RGBA::new(p[0], p[1], p[2], p[3]))
+        .collect();
+
+    let quantize_error = |e: imagequant::Error| {
+        JobError::new(ErrorCode::EngineFailed, format!("reducing colours: {e}"))
+    };
+    let mut attributes = imagequant::new();
+    attributes.set_max_colors(colours).map_err(quantize_error)?;
+    // 0 as the minimum means "do not give up": the request is the palette size.
+    attributes.set_quality(0, 100).map_err(quantize_error)?;
+    attributes.set_speed(4).map_err(quantize_error)?;
+    let mut image = attributes
+        .new_image(pixels, width as usize, height as usize, 0.0)
+        .map_err(quantize_error)?;
+    let mut result = attributes.quantize(&mut image).map_err(quantize_error)?;
+    result
+        .set_dithering_level(dithering)
+        .map_err(quantize_error)?;
+    let (palette, indices) = result.remapped(&mut image).map_err(quantize_error)?;
+
+    let mut rgb = Vec::with_capacity(palette.len() * 3);
+    let mut alpha = Vec::with_capacity(palette.len());
+    for entry in &palette {
+        rgb.extend([entry.r, entry.g, entry.b]);
+        alpha.push(entry.a);
+    }
+    // tRNS may stop at the last non-opaque entry; the rest is implicitly opaque.
+    let transparency = alpha
+        .iter()
+        .rposition(|a| *a != 255)
+        .map_or(0, |last| last + 1);
+
+    let mut file = std::fs::File::create(out)
+        .map_err(|e| JobError::io(format!("creating {}", out.display()), &e))?;
+    let mut encoder = png::Encoder::new(&mut file, width, height);
+    encoder.set_color(png::ColorType::Indexed);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_palette(rgb);
+    if transparency > 0 {
+        encoder.set_trns(alpha[..transparency].to_vec());
+    }
+    encoder.set_compression(png::Compression::High);
+    // imagequant works in sRGB; say so instead of leaving the viewer to guess.
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let write_error = |e: png::EncodingError| {
+        JobError::new(
+            ErrorCode::EngineFailed,
+            format!("writing the indexed PNG: {e}"),
+        )
+    };
+    let mut writer = encoder.write_header().map_err(write_error)?;
+    writer.write_image_data(&indices).map_err(write_error)?;
+    writer.finish().map_err(write_error)?;
+    Ok(())
+}
+
 /// What the dialog shows before the user commits: the encoded file itself, with its
 /// real size and dimensions. The artifact is stored in the shared cache, so the job
 /// with the identical request copies it instead of encoding a second time.
@@ -458,11 +618,7 @@ pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, 
     let path = match compress_cache_hit(cx, &job.source, params, ext) {
         Some(hit) => hit,
         None => {
-            let produced = optimize_png(
-                prefer_smaller(job, encode_compress(job, cx, params)?, ext, cx)?,
-                ext,
-                cx,
-            )?;
+            let produced = produce_compress(job, cx, params, ext)?;
             cache.store_artifact(
                 &job.source,
                 "compress",
@@ -488,121 +644,162 @@ pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, 
 /// Quality search then downscale, at most three rounds. The smallest image the
 /// engine produced is returned even when the target is unreachable — shrinking
 /// as far as the format allows is still the useful result.
-fn compress_to_target(
-    magick: &Path,
-    source: &Path,
+struct TargetSearch<'a> {
+    magick: &'a Path,
+    source: &'a Path,
     target: u64,
-    ext: &str,
+    ext: &'a str,
     lossy: bool,
     scale: Option<f64>,
-    cx: &Context<'_>,
-) -> Result<PathBuf, JobError> {
-    let mut current = source.to_path_buf();
-    if let Some(scale) = scale {
-        // Resize once, then search quality on the smaller image.
-        let resized = cx.scratch(&format!("compress-scaled.{ext}"));
-        run_magick(
+    colours: Option<u32>,
+}
+
+impl TargetSearch<'_> {
+    fn run(&self, cx: &Context<'_>) -> Result<PathBuf, JobError> {
+        let Self {
             magick,
-            vec![
-                os(source),
-                os("-resize"),
-                os(format!("{scale:.2}%")),
-                os(&resized),
-            ],
-            cx,
-            Budget::Short,
-        )?;
-        current = resized;
-    }
-    let mut smallest: Option<PathBuf> = None;
-    let mut smallest_len = u64::MAX;
-    let mut probe = 0usize;
+            source,
+            target,
+            ext,
+            lossy,
+            scale,
+            colours,
+        } = *self;
+        let mut current = source.to_path_buf();
+        if let Some(scale) = scale {
+            // Resize once, then search quality on the smaller image.
+            let resized = cx.scratch(&format!("compress-scaled.{ext}"));
+            run_magick(
+                magick,
+                vec![
+                    os(source),
+                    os("-resize"),
+                    os(format!("{scale:.2}%")),
+                    os(&resized),
+                ],
+                cx,
+                Budget::Short,
+            )?;
+            current = resized;
+        }
+        let mut smallest: Option<PathBuf> = None;
+        let mut smallest_len = u64::MAX;
+        let mut probe = 0usize;
 
-    for round in 0..3 {
-        cx.ctx.checkpoint()?;
+        for round in 0..3 {
+            cx.ctx.checkpoint()?;
+            // The lossless encoding of this round is a candidate too: a target above it
+            // needs no palette at all, and it keeps the search from returning a lossy file
+            // larger than the plain encode.
+            let current_len = file_len(&current)?;
+            track_smallest(&current, current_len, &mut smallest, &mut smallest_len);
+            if current_len <= target {
+                return Ok(current);
+            }
 
-        if !lossy {
-            // A lossless format ignores `-quality`, so the only levers are the palette
-            // and the dimensions. A photograph that has to fit in a few hundred
-            // kilobytes needs both, and this ladder is what made PNG targets reachable
-            // at all.
-            for colors in [256u32, 128, 64, 32, 16] {
-                let path = cx.scratch(&format!("compress-palette-{probe}.{ext}"));
-                let args = vec![
-                    os(&current),
-                    os("-colors"),
-                    os(colors.to_string()),
-                    os("-depth"),
-                    os("8"),
-                    os("-define"),
-                    os("png:compression-level=9"),
-                    os(&path),
-                ];
-                run_magick(magick, args, cx, Budget::Short)?;
-                probe += 1;
-                let len = file_len(&path)?;
-                track_smallest(&path, len, &mut smallest, &mut smallest_len);
-                if len <= target {
-                    return Ok(path);
+            if !lossy {
+                // A lossless format ignores `-quality`, so the only levers are the palette
+                // and the dimensions. PNG gets the real quantizer, starting at the palette
+                // the user chose (or 256): ImageMagick's `-colors` reached 74 KB at 256
+                // colours where libimagequant reaches 17 KB, which made a small target
+                // unreachable and ignored "Reduce colours" inside the search.
+                if ext == "png" {
+                    let mut palette = colours.unwrap_or(256).clamp(2, 256);
+                    loop {
+                        let path = cx.scratch(&format!("compress-palette-{probe}.png"));
+                        quantize_png(&current, palette, 0.0, &path, cx)?;
+                        let path = optimize_png(path, ext, cx)?;
+                        probe += 1;
+                        let len = file_len(&path)?;
+                        track_smallest(&path, len, &mut smallest, &mut smallest_len);
+                        if len <= target {
+                            return Ok(path);
+                        }
+                        if palette <= 2 {
+                            break;
+                        }
+                        palette = (palette / 2).max(2);
+                    }
+                } else {
+                    for colors in [256u32, 128, 64, 32, 16] {
+                        let path = cx.scratch(&format!("compress-palette-{probe}.{ext}"));
+                        let args = vec![
+                            os(&current),
+                            os("-colors"),
+                            os(colors.to_string()),
+                            os("-depth"),
+                            os("8"),
+                            os("-define"),
+                            os("png:compression-level=9"),
+                            os(&path),
+                        ];
+                        run_magick(magick, args, cx, Budget::Short)?;
+                        probe += 1;
+                        let len = file_len(&path)?;
+                        track_smallest(&path, len, &mut smallest, &mut smallest_len);
+                        if len <= target {
+                            return Ok(path);
+                        }
+                    }
                 }
             }
-        }
 
-        if lossy {
-            let path = cx.scratch(&format!("compress-probe-{probe}.{ext}"));
-            let len = probe_quality(magick, &current, 95, &path, cx)?;
-            probe += 1;
-            cx.ctx
-                .set_progress((probe as f64 / 21.0).max((round as f64) * 0.25));
-            if len <= target {
-                return Ok(path);
-            }
-            track_smallest(&path, len, &mut smallest, &mut smallest_len);
-
-            let mut low = 20i64;
-            let mut high = 94i64;
-            let mut best: Option<PathBuf> = None;
-            let mut probes = 1usize;
-            while low <= high && probes < 6 {
-                let quality = (low + high) / 2;
+            if lossy {
                 let path = cx.scratch(&format!("compress-probe-{probe}.{ext}"));
-                let len = probe_quality(magick, &current, quality as u32, &path, cx)?;
+                let len = probe_quality(magick, &current, 95, &path, cx)?;
                 probe += 1;
-                probes += 1;
                 cx.ctx
                     .set_progress((probe as f64 / 21.0).max((round as f64) * 0.25));
                 if len <= target {
-                    best = Some(path);
-                    low = quality + 1;
-                } else {
-                    track_smallest(&path, len, &mut smallest, &mut smallest_len);
-                    high = quality - 1;
+                    return Ok(path);
+                }
+                track_smallest(&path, len, &mut smallest, &mut smallest_len);
+
+                let mut low = 20i64;
+                let mut high = 94i64;
+                let mut best: Option<PathBuf> = None;
+                let mut probes = 1usize;
+                while low <= high && probes < 6 {
+                    let quality = (low + high) / 2;
+                    let path = cx.scratch(&format!("compress-probe-{probe}.{ext}"));
+                    let len = probe_quality(magick, &current, quality as u32, &path, cx)?;
+                    probe += 1;
+                    probes += 1;
+                    cx.ctx
+                        .set_progress((probe as f64 / 21.0).max((round as f64) * 0.25));
+                    if len <= target {
+                        best = Some(path);
+                        low = quality + 1;
+                    } else {
+                        track_smallest(&path, len, &mut smallest, &mut smallest_len);
+                        high = quality - 1;
+                    }
+                }
+                if let Some(path) = best {
+                    return Ok(path);
                 }
             }
-            if let Some(path) = best {
-                return Ok(path);
+
+            if round == 2 {
+                break;
             }
+
+            let scaled = cx.scratch(&format!("compress-scale-{round}.{ext}"));
+            let mut args = vec![os(&current), os("-resize"), os("85%")];
+            if lossy {
+                args.push(os("-quality"));
+                args.push(os("95"));
+            }
+            args.push(os(&scaled));
+            run_magick(magick, args, cx, Budget::Short)?;
+            ensure_file(&scaled, "the image encoder")?;
+            let len = file_len(&scaled)?;
+            track_smallest(&scaled, len, &mut smallest, &mut smallest_len);
+            current = scaled;
         }
 
-        if round == 2 {
-            break;
-        }
-
-        let scaled = cx.scratch(&format!("compress-scale-{round}.{ext}"));
-        let mut args = vec![os(&current), os("-resize"), os("85%")];
-        if lossy {
-            args.push(os("-quality"));
-            args.push(os("95"));
-        }
-        args.push(os(&scaled));
-        run_magick(magick, args, cx, Budget::Short)?;
-        ensure_file(&scaled, "the image encoder")?;
-        let len = file_len(&scaled)?;
-        track_smallest(&scaled, len, &mut smallest, &mut smallest_len);
-        current = scaled;
+        Ok(smallest.unwrap_or(current))
     }
-
-    Ok(smallest.unwrap_or(current))
 }
 
 fn probe_quality(
@@ -2296,6 +2493,246 @@ mod tests {
             original.as_raw() == output.as_raw(),
             "PNG optimisation changed pixels"
         );
+    }
+
+    /// Colour type, palette length and dimensions of a PNG, read without decoding
+    /// pixels: the indexed writer must produce a palette, not an RGB re-encode.
+    fn indexed_png(path: &Path) -> (png::ColorType, usize, (u32, u32)) {
+        let file = std::fs::File::open(path).expect("open the PNG");
+        let decoder = png::Decoder::new(std::io::BufReader::new(file));
+        let reader = decoder.read_info().expect("read the PNG info");
+        let info = reader.info();
+        (
+            info.color_type,
+            info.palette.as_ref().map_or(0, |palette| palette.len() / 3),
+            (info.width, info.height),
+        )
+    }
+
+    /// "Reduce colours" is opt-in and lossy: it must write an indexed PNG that is
+    /// smaller than the lossless encode, keep the dimensions, and actually change pixels.
+    #[test]
+    fn reducing_colours_writes_a_smaller_indexed_png() {
+        let Some(f) = fixture() else { return };
+        let source = noisy_400(&f, "palette-source.png");
+        let compress = |extra: Value| {
+            let mut all = json!({});
+            all.as_object_mut()
+                .expect("object")
+                .extend(extra.as_object().cloned().unwrap_or_default());
+            let job = Job::new(
+                source.clone(),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params(all),
+                },
+            );
+            run_engine(&f, &job).expect("compress")
+        };
+
+        let lossless = compress(json!({}));
+        let reduced = compress(json!({ "colours": 16 }));
+        let lossless_bytes = std::fs::metadata(&lossless[0]).expect("metadata").len();
+        let reduced_bytes = std::fs::metadata(&reduced[0]).expect("metadata").len();
+        assert!(
+            reduced_bytes < lossless_bytes,
+            "16 colours ({reduced_bytes} B) did not beat lossless ({lossless_bytes} B)"
+        );
+
+        let (colour_type, palette_len, dims) = indexed_png(&reduced[0]);
+        assert_eq!(colour_type, png::ColorType::Indexed);
+        assert!(
+            (1..=16).contains(&palette_len),
+            "palette has {palette_len} entries"
+        );
+        assert_eq!(dims, (400, 400), "palette reduction resized the image");
+
+        let before = ::image::open(&source).expect("decode source").to_rgb8();
+        let after = ::image::open(&reduced[0]).expect("decode output").to_rgb8();
+        assert!(
+            before.as_raw() != after.as_raw(),
+            "a 16-colour palette must lose some colour: the request was lossy"
+        );
+    }
+
+    /// A smooth gradient is where dithering makes a small palette larger than the
+    /// lossless encode. It must fall back to a flat remap rather than to the source:
+    /// choosing 16 colours has to change the file, not reproduce the lossless result.
+    #[test]
+    fn sixteen_colours_beat_the_lossless_fallback_on_a_gradient() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "flat-gradient.png",
+            vec![os("-size"), os("600x400"), os("gradient:#2ea8a0-#12161b")],
+        );
+        let compress = |extra: Value| {
+            let job = Job::new(
+                source.clone(),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params(extra),
+                },
+            );
+            run_engine(&f, &job).expect("compress")
+        };
+        let lossless = compress(json!({}));
+        let reduced = compress(json!({ "colours": 16 }));
+        let lossless_bytes = std::fs::metadata(&lossless[0]).expect("metadata").len();
+        let reduced_bytes = std::fs::metadata(&reduced[0]).expect("metadata").len();
+        assert!(
+            reduced_bytes < lossless_bytes,
+            "16 colours ({reduced_bytes} B) did not beat lossless ({lossless_bytes} B)"
+        );
+        let (colour_type, palette_len, dims) = indexed_png(&reduced[0]);
+        assert_eq!(colour_type, png::ColorType::Indexed);
+        assert!((2..=16).contains(&palette_len), "palette {palette_len}");
+        assert_eq!(dims, (600, 400));
+    }
+
+    /// Target size and Reduce colours are one search, not two stages: the target ladder
+    /// quantizes with imagequant and downscales, so "both options" cannot return a file
+    /// larger than either option alone.
+    #[test]
+    fn target_and_colours_are_searched_together() {
+        let Some(f) = fixture() else { return };
+        let source = noisy_400(&f, "combined.png");
+        let compress = |extra: Value| {
+            let job = Job::new(
+                source.clone(),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params(extra),
+                },
+            );
+            run_engine(&f, &job).expect("compress")
+        };
+        let reduce_only = compress(json!({ "colours": 256 }));
+        let target_only = compress(json!({ "target_bytes": 1_000 }));
+        let both = compress(json!({ "colours": 256, "target_bytes": 1_000 }));
+        let len = |paths: &[PathBuf]| std::fs::metadata(&paths[0]).expect("metadata").len();
+        let (reduce_bytes, target_bytes, both_bytes) =
+            (len(&reduce_only), len(&target_only), len(&both));
+        assert!(
+            both_bytes < reduce_bytes,
+            "the target search ({both_bytes} B) did not beat palette-only ({reduce_bytes} B)"
+        );
+        assert!(
+            both_bytes <= target_bytes,
+            "choosing the same 256 colours made the target result larger ({both_bytes} B vs {target_bytes} B)"
+        );
+        let (colour_type, palette_len, _) = indexed_png(&both[0]);
+        assert_eq!(colour_type, png::ColorType::Indexed);
+        assert!(palette_len <= 256, "palette {palette_len}");
+
+        // The dialog's preview is the same search. It must report the bytes the job
+        // publishes, or "Run" looks like it ignored the options.
+        let job = Job::new(
+            source.clone(),
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "colours": 256, "target_bytes": 1_000 })),
+            },
+        );
+        let cache = crate::preview::PreviewCache::new(f._dir.path().join("previews"), 64 << 20);
+        let preview = preview_engine(&f, &job, &cache).expect("preview");
+        assert_eq!(preview.bytes, both_bytes, "preview and job disagree");
+        let artifacts = run_engine_with(&f, &job, Some(&cache)).expect("compress");
+        assert_eq!(
+            std::fs::read(&artifacts[0]).expect("read output"),
+            std::fs::read(&preview.path).expect("read preview"),
+            "the job must publish the previewed result"
+        );
+    }
+
+    /// The preview and the job share `produce_compress`; for the palette path that also
+    /// means the quantization must be deterministic, or the job would re-encode under
+    /// the preview's key and produce different bytes.
+    #[test]
+    fn reduced_colour_preview_is_reused_by_the_job() {
+        let Some(f) = fixture() else { return };
+        let source = noisy_400(&f, "palette-preview.png");
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "colours": 64 })),
+            },
+        );
+        let cache = crate::preview::PreviewCache::new(f._dir.path().join("previews"), 64 << 20);
+        let preview = preview_engine(&f, &job, &cache).expect("preview");
+        let again = preview_engine(&f, &job, &cache).expect("second preview");
+        assert_eq!(
+            again.path, preview.path,
+            "the same request must hit the cache"
+        );
+
+        let artifacts = run_engine_with(&f, &job, Some(&cache)).expect("compress");
+        assert_eq!(
+            std::fs::read(&artifacts[0]).expect("read output"),
+            std::fs::read(&preview.path).expect("read preview"),
+            "the job must publish the previewed palette artifact"
+        );
+    }
+
+    /// The indexed writer is the only place that emits tRNS; a transparency bug here
+    /// would turn a transparent corner opaque.
+    #[test]
+    fn reducing_colours_keeps_transparency() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "cutout.png",
+            vec![
+                os("-size"),
+                os("200x200"),
+                os("xc:none"),
+                os("-fill"),
+                os("#2ea8a0"),
+                os("-draw"),
+                os("circle 100,100 100,20"),
+            ],
+        );
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "colours": 16 })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        let (colour_type, _, _) = indexed_png(&artifacts[0]);
+        assert_eq!(colour_type, png::ColorType::Indexed);
+        let output = ::image::open(&artifacts[0])
+            .expect("decode output")
+            .to_rgba8();
+        assert_eq!(output.get_pixel(0, 0)[3], 0, "the corner lost its alpha");
+        assert_eq!(
+            output.get_pixel(100, 100)[3],
+            255,
+            "the disc became transparent"
+        );
+    }
+
+    /// The dialog hides the controls for non-PNG selections; the engine rejects the
+    /// parameter rather than writing a palette PNG under a .jpg name.
+    #[test]
+    fn reducing_colours_refuses_a_non_png_output() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "photo.jpg",
+            vec![os("-size"), os("64x64"), os("xc:red")],
+        );
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "colours": 16 })),
+            },
+        );
+        let err = run_engine(&f, &job).expect_err("must reject");
+        assert_eq!(err.code, ErrorCode::Unsupported);
     }
 
     /// SVG is read-only and rasterises to PNG; the result must be a real PNG, not a copy

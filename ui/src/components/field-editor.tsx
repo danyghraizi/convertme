@@ -43,7 +43,7 @@ interface BoxesEditorProps {
   onChange: (value: FieldValue) => void;
 }
 
-function BoxesEditor(props: BoxesEditorProps) {
+export function BoxesEditor(props: BoxesEditorProps) {
   const [preview, setPreview] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   const [detecting, setDetecting] = createSignal(false);

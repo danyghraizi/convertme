@@ -11,6 +11,11 @@ by the Rust tests and the CLI.
 Writes <category>-main.png and <category>-<tool>.png plus report.json. Exit code
 is non-zero when a tool dialog is missing fields, overflows the modal, or its
 preview image fails to load.
+
+The Images pass also opens Compress with "Reduce colours" and a target size both
+on, asserts the Colours select appears, and asserts the unreachable-target note
+is shown for a 1,000 B target. The mock models a PNG size floor for that check;
+the real encode is covered by the engine tests and the CLI.
 """
 from __future__ import annotations
 
@@ -283,6 +288,40 @@ def main() -> int:
                         failures.append("images-lossless/compress: Quality is shown for a lossless selection")
                     if lossless.get("preview") and not lossless.get("previewLoaded"):
                         failures.append("images-lossless/compress: preview did not load")
+                    # Both options at once, with a target no PNG can reach: the palette
+                    # control appears and the dialog says the target is out of reach.
+                    m.js("""
+                    const rows = [...document.querySelectorAll('.checkbox-row')];
+                    for (const prefix of ['Reduce colours', 'Compress to a target']) {
+                      const row = rows.find((r) => r.innerText.trim().startsWith(prefix));
+                      if (row && !row.querySelector('input').checked) row.click();
+                    }
+                    const input = document.querySelector('.modal input[type=number]');
+                    if (input) {
+                      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                      setter.call(input, '1000');
+                      input.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
+                    return true;
+                    """)
+                    noted = m.wait_for("document.querySelector('.compress-target-miss')", 6)
+                    time.sleep(0.3)
+                    combined = measure_modal(m)
+                    combined.update({
+                        "category": "images-lossless",
+                        "tool": "compress-combined",
+                        "screenshot": "images-lossless-compress-combined.png",
+                        "note": m.js("const n = document.querySelector('.compress-target-miss'); "
+                                     "return n ? n.innerText.trim() : null;"),
+                    })
+                    m.screenshot(out / combined["screenshot"])
+                    report.append(combined)
+                    if not noted:
+                        failures.append("images-lossless/compress: no out-of-reach target note")
+                    if "Colours" not in combined.get("labels", []):
+                        failures.append("images-lossless/compress: Colours did not appear with Reduce colours")
+                    if combined.get("preview") and not combined.get("previewLoaded"):
+                        failures.append("images-lossless/compress-combined: preview did not load")
                     click_cancel(m)
                 else:
                     failures.append("images-lossless/compress: no dialog")

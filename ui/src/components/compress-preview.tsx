@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { assetUrl, compressPreview } from '../ipc';
-import { formatBytes } from '../format';
+import { formatBytes, unreachableTarget } from '../format';
 import type { CompressPreview as PreviewData } from '../types';
 
 interface CompressPreviewProps {
@@ -18,6 +18,9 @@ interface CompressPreviewProps {
 export default function CompressPreview(props: CompressPreviewProps) {
   const [data, setData] = createSignal<PreviewData | null>(null);
   const [busy, setBusy] = createSignal(false);
+  // The fields changed but the shown artifact is still the previous request's. A note
+  // computed from the new target and the old bytes would be momentarily wrong.
+  const [stale, setStale] = createSignal(true);
   const [error, setError] = createSignal('');
   let seq = 0;
   let lastKey = '';
@@ -29,11 +32,13 @@ export default function CompressPreview(props: CompressPreviewProps) {
     if (!path) {
       lastKey = '';
       setData(null);
+      setStale(false);
       setError('');
       return;
     }
     if (key === lastKey) return;
     lastKey = key;
+    setStale(true);
     setError('');
     // Encoding is real work: wait for the pointer to settle before spending it.
     const timer = setTimeout(() => {
@@ -43,10 +48,12 @@ export default function CompressPreview(props: CompressPreviewProps) {
         .then((result) => {
           if (mine !== seq) return;
           setData(result);
+          setStale(false);
         })
         .catch((cause) => {
           if (mine !== seq) return;
           setData(null);
+          setStale(false);
           setError(
             cause instanceof Error
               ? cause.message
@@ -66,6 +73,12 @@ export default function CompressPreview(props: CompressPreviewProps) {
   const saved = (preview: PreviewData): number => {
     if (preview.source_bytes <= 0) return 0;
     return Math.round(((preview.bytes - preview.source_bytes) / preview.source_bytes) * 100);
+  };
+
+  const missed = (): number | null => {
+    const preview = data();
+    if (!preview || stale()) return null;
+    return unreachableTarget(preview.bytes, props.params);
   };
 
   return (
@@ -116,6 +129,13 @@ export default function CompressPreview(props: CompressPreviewProps) {
           )}
         </Show>
       </div>
+      <Show when={missed()}>
+        {(target) => (
+          <p class="compress-target-miss">
+            The target of {formatBytes(target())} is out of reach; this is the smallest result.
+          </p>
+        )}
+      </Show>
     </div>
   );
 }

@@ -4,9 +4,9 @@ import BackgroundPreview from './background-preview';
 import CompressPreview from './compress-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
-import FieldEditor from './field-editor';
+import FieldEditor, { BoxesEditor } from './field-editor';
 import { collectParams, initialValue, visibleIn } from '../fields';
-import { formatBytes, isLosslessSelection } from '../format';
+import { formatBytes, isLosslessSelection, isPngSelection } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
 
 interface FillPreset {
@@ -157,9 +157,15 @@ export default function ToolModal(props: ToolModalProps) {
         : props.previewPath
           ? [props.previewPath]
           : [];
-    return isLosslessSelection(paths)
-      ? props.fields.filter((field) => field.key !== 'quality')
-      : props.fields;
+    const lossless = isLosslessSelection(paths);
+    const png = isPngSelection(paths);
+    return props.fields.filter((field) => {
+      if (lossless && field.key === 'quality') return false;
+      // Palette reduction writes an indexed PNG; for any other output the engine
+      // rejects `colours`, so the controls must not be shown (or collected).
+      if (!png && (field.key === 'reduce' || field.key === 'colours')) return false;
+      return true;
+    });
   }
 
   /** A field hidden by its `show_if` must not travel: the backend rejects pairs. */
@@ -296,6 +302,18 @@ export default function ToolModal(props: ToolModalProps) {
                   value={Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null}
                   aspect={String(values.aspect ?? 'free')}
                   onChange={(box) => setValues('boxes', [box])}
+                />
+              </div>
+            </Show>
+            <Show when={props.tool.id === 'redact'}>
+              <div class="field">
+                <span class="field-label">
+                  {props.category === 'video' ? 'Areas to blur' : 'Areas to fill'}
+                </span>
+                <BoxesEditor
+                  value={Array.isArray(values.boxes) ? (values.boxes as FieldValue) : []}
+                  previewPath={props.previewPath}
+                  onChange={(next) => setValues('boxes', next)}
                 />
               </div>
             </Show>

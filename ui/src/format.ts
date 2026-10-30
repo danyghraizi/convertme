@@ -33,6 +33,25 @@ export function isLosslessSelection(paths: string[]): boolean {
   return paths.length > 0 && paths.every(isLosslessImage);
 }
 
+/**
+ * Reduce-colours writes an indexed PNG, so it is offered only when every selected file
+ * is a PNG. The engine rejects `colours` for any other output (`reduce_colours`).
+ */
+export function isPngSelection(paths: string[]): boolean {
+  return paths.length > 0 && paths.every((path) => extensionOf(path) === 'png');
+}
+
+/**
+ * The target the encoder could not reach, or null when there is none. A target above
+ * the artifact is honoured; below it the engine returns the smallest file it can make,
+ * and the dialog must say so instead of leaving the user to compare bytes.
+ */
+export function unreachableTarget(bytes: number, params: Record<string, unknown>): number | null {
+  const target = params.target_bytes;
+  if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) return null;
+  return bytes > target ? target : null;
+}
+
 /** The backend stores seconds; fixtures may use milliseconds. */
 export function epochMillis(value: number): number {
   return value < 1e12 ? value * 1000 : value;

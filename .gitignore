@@ -20,3 +20,6 @@
 __pycache__/
 *.pyc
 /sidecars/pdf/.venv/
+
+# real-app harness output (screenshots + JSON reports)
+/artifacts/

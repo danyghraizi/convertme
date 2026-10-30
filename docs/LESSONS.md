@@ -318,3 +318,233 @@ row; nothing in the app was at fault.
 Marionette (clicks in the DOM, screenshots to files). Reserve OS-level input for a
 one-off, supervised check. A screenshot harness must assert numbers (modal inside the
 viewport, no horizontal overflow, preview image loaded), not only save pictures.
+
+## 30. A lossy option needs its own writer, its own default and its own format gate
+
+**Trap.** "Reduce colours" looks like a flag to pass to the encoder. ImageMagick's
+`-colors` is a weak quantizer (74 KB at 256 colours on the poster where libimagequant
+reaches 17 KB) and still writes a truecolour PNG unless asked for an indexed one. Feeding
+its output back through oxipng cannot recover the palette space it never used.
+
+**Rule.** Use the real quantizer (imagequant, the libimagequant behind pngquant) and write
+the indexed stream yourself with an explicit palette, tRNS for partial alpha and an sRGB
+chunk. Keep the option **off by default** and hide it unless every selected file is a PNG;
+the engine rejects `colours` for any other output rather than writing palette bytes under
+a `.jpg` name. Run the palette step **before** the never-grow comparison, so a smaller
+lossy artifact wins but a palette that grew still falls back to the source. One
+`produce_compress` function feeds both the preview and the job, so the two cannot drift.
+
+**Evidence.** 2,000×3,000 16-bit poster: lossless 96,910 → 81,917 B; ≤256 colours (162
+used) 16,955 B; 64 colours 16,802 B. Tests pin colour type 3, palette ≤ the requested
+size, dimensions unchanged, changed pixels, and alpha through tRNS.
+
+**Trap.** Dithering a small palette over a smooth gradient can exceed the *lossless*
+encode. The never-grow rule then copies the source, and choosing 16 colours appears to do
+nothing (81,917 B out, same as lossless). The target search had the same shape: it ran
+first with ImageMagick's quantizer and only reduced the palette afterwards, so it picked a
+42 KB downscaled file while the palette pass could have made 11 KB at full size.
+
+**Rule.** When a palette artifact is not smaller, retry the remap with dithering 0 and
+keep the smaller result; a compressor may prefer less dithering to a larger file. When a
+target and a palette are both requested, one search must own both — quantize at the chosen
+palette, downscale, repeat, and keep the lossless candidate — not two stages that each
+pick a local optimum. Then compare the final artifact with the source exactly once.
+
+**Evidence.** Poster, 16 colours: 81,917 → 11,083 B. Target 1,000 B: 42,423 → 1,597 B
+(1,445×2,168, 2 colours); 256+target and 16+target both 1,597 B. Tests pin the flat
+fallback on a gradient, target+palette ordering, and preview bytes == job bytes.
+
+## 31. A note about the preview must wait for that preview
+
+**Trap.** The "target out of reach" note was computed from the *new* `target_bytes` and the
+*previous* preview's byte count. During the 400 ms debounce it compared 1,000 B with the
+old 1.4 MB artifact while the facts still showed 1.4 MB. Reactive values mixed two
+generations of data.
+
+**Rule.** Every preview carries a stale flag: set it when the request key changes, clear
+it only when that request's result arrives. Anything derived from the artifact (notes,
+warnings, comparisons) is suppressed while stale. Do not use a debounce timer as the
+staleness signal; the timer starts *after* the user edits.
+
+**Evidence.** Headless harness: after ticking both options and typing 1000, the note and
+the facts now agree (`4032×3024 · 8.8 KB · −99 %`, note present), modal 640×786, no
+overflow. Before the flag, the note appeared while the facts still read 1.4 MB.
+
+## 32. A harness that fakes the backend can only prove the fake
+
+**Trap.** The headless harness drove every dialog and asserted modal geometry, field
+labels, preview loading and even the unreachable-target note — all against the mock. It
+reported the target as met while the real engine returned 42 KB, and had no way to see
+that a both-options run wrote 81 KB. The screenshots and the report were green; the
+artifact was wrong.
+
+**Rule.** Keep two layers, and name what each proves. The mock harness proves rendering,
+field collection, visibility and layout. The real-app harness must launch the release
+binary, drive the real window, run the job, and validate the **published file**: magic
+bytes, dimensions, colour type, palette, alpha, sampled pixels, pages/frames/streams,
+metadata, and never-grow. Preview numbers are only evidence when they equal the job's
+bytes. Every scenario records a screenshot plus a machine-readable result, and a skip is
+reported with a reason, never omitted.
+
+**Evidence.** The user's report was the missing test: target 1,000 B, 16 colours, both
+options. Only running the engine CLI on the exact poster exposed the dithering fallback
+(81,917 B) and the weak target search (42,423 B). The mock could not have caught either.
+
+**Implementation note.** `WebKitWebDriver` is not shipped by `webkit2gtk-4.1` and
+`tauri-driver` has nothing to attach to, so the harness uses AT-SPI under Xvfb. The
+probe's first reading — "tool cards are unnamed list items" — was wrong: the list item
+is the wrapper, the child is a named push button (§33). `scripts/app-e2e.py` now drives
+the real window, runs the jobs and validates the artifacts; the recipe (export
+`AT_SPI_BUS_ADDRESS`, start `/usr/lib/at-spi2-registryd`, launch with `NO_AT_BRIDGE=0
+GTK_A11Y=1`) and its environment gotchas are in `docs/HANDOFF.md`, "Real-app end-to-end
+harness".
+
+## 33. The accessibility tree is the GUI test API
+
+**Trap.** `WebKitWebDriver` is absent on this machine, and the first probe reported the
+tool cards as unnamed `list item`s. That read as "the GUI cannot be driven". The
+unnamed node is only the wrapping `<li>`; its child is a named push button
+(`"01 Compress Hit a target size…"`) with a `press` action.
+
+**Rule.** Dump roles, names, states and actions before concluding a toolkit is
+untestable. Drive buttons through the AT-SPI action interface, keep a virtual-display
+coordinate click only as a fallback, and read text with
+`Atspi.Text.get_text(iface, 0, count)`: in PyGObject `Accessible.get_text()` is a
+deprecated interface accessor, not the string.
+
+**Evidence.** `button '01 Compress …'` + `do_action(0)` opened the real dialog; the
+category toggles, target buttons, check boxes, sliders and entries all expose names and
+actions, enough to run and validate the jobs without WebDriver.
+
+## 34. A fallback card is not a registered tool
+
+**Trap.** The UI renders `FALLBACK_TOOLS` when `wheels()` returns no tools. Those cards
+look identical to real ones, but the backend has no field table or engine for them.
+Clicking Compress on Documents runs an empty-parameter job. Images → Metadata did the
+same because `fields_for` had no `(Images, Metadata)` arm; the card failed
+`unsupported: nothing to change` until the table was added.
+
+**Rule.** Derive matrix coverage from the backend registry, not from the cards on
+screen. Distinguish an intentional zero-field tool (Mute, Merge, Extract) from a missing
+field table; report the latter as a finding/skip with the observed error. A card that
+looks runnable but has no fields is a product gap, not a harness detail.
+
+**Evidence.** `dialogs-documents` … `dialogs-subtitles` skip with "backend registers no
+tools"; `dialogs-images` used to fail on Metadata with
+`metadata · failed / unsupported`, and now passes after the field table was added
+(`tool-image-metadata`). Without engines, the app shows fallback labels
+(`Compress to size`, `Edit metadata`) and Settings names the missing tool.
+
+## 35. Never-grow must compare the bytes you publish
+
+**Trap.** Scale 50 % on the 16-bit indexed screenshot returned the original at
+1600×1000. The resized ImageMagick encode was 122,328 B, larger than the 112,129 B
+source, so `prefer_smaller` copied the source; `optimize_png` then shrank that copy to
+67,606 B. The optimized resize would have been 96,639 B — comfortably below the source.
+The comparison ran on an intermediate, so a user control was silently ignored.
+
+**Rule.** Order the pipeline so the size decision sees the final bytes: encode →
+optional palette → optimize → compare with the source → publish (or copy the source).
+A never-grow rule that runs before the optimizer can discard a legitimate resize.
+
+**Evidence.** `convertme tool shot.png --tool compress --params '{"scale":50}'` →
+1600×1000, 67,606 B. The harness's shared multi-file run scaled the poster but not this
+file; `multi-file` pins the failure.
+
+## 36. Capture state before the modal, and wait for the artifact
+
+**Trap.** Two timing errors made the full suite report 19 false failures while each
+scenario passed alone:
+
+- History rows behind an open modal are not exposed by AT-SPI. `before_rows = []`, so
+  every old failed row was "new" after Run.
+- Zero-field tools start the job on the card press. Snapshotting the work directory after
+  the dialog wait missed the published folder.
+
+**Rule.** Read history and snapshot the work directory **before** opening a dialog or
+pressing a job-starting card. Do not toggle Activity behind a modal. Wait for the new
+artifact's own bytes/dimensions (or the terminal history row), not for derived text: the
+compress note can render one frame before the preview effect marks the artifact stale,
+pairing the new target with the old size.
+
+**Evidence.** `history_after_show` had rows, `history_before` was empty behind the
+dialog; capturing before the dialog removed the false failures. `extract-archive` went
+from 180 s timeout to 6 s once the pre-click snapshot was used. The poster milestone only
+settled when waiting for `1445 × 2168`.
+
+## 37. Isolate HOME, but mirror the tool roots it points at
+
+**Trap.** `target/release/qpdf` is a wrapper that execs
+`$HOME/.local/opt/qpdf/bin/qpdf`. Under the throwaway profile, PDF merge/split failed
+with "No such file or directory" while the same jobs work in the real session.
+
+**Rule.** Isolate app state (HOME/XDG), then symlink the real `~/.local/opt/<tool>`
+roots into the profile and record what was linked. The profile is disposable; the
+machine's external tools are part of what is under test.
+
+**Evidence.** Without the links, `merge · failed / engine_failed: … qpdf: … No such file
+or directory`; with them, PDF merge kept all 8 pages and split wrote 5 files.
+
+## 38. Build identity is a chain, not a screenshot
+
+**Trap.** Settings showing an interface build id does not prove which binary answered,
+and the Tauri asset is compressed, so `grep "Interface build" target/release/convertme`
+finds nothing.
+
+**Rule.** Compute the UI stamp with `build.rs`'s algorithm from `ui-dist`, assert those
+stamp bytes are in the release binary, read the interface build id from the running
+Settings page, and compare `/proc/<pid>/exe` with the launched path. All four must agree;
+a screenshot alone is not evidence.
+
+**Evidence.** stamp `29568232a6` in the binary; Settings `2026-10-30 14:20` equals the
+bundle literal; `/proc/<pid>/exe` is `target/release/convertme`; `--version` 0.1.0 equals
+the Settings line.
+
+
+## 39. A field that is filtered out of the renderer is a dead control
+
+**Trap.** ToolModal's `visibleFields` drops every `boxes` field (`key !== 'boxes'`) and
+only Crop had a dedicated editor. Redact therefore opened a complete-looking dialog with
+a colour field and a no-op "Find text automatically" checkbox (since removed), but no way to mark a region;
+every run failed "no boxes to redact". The dialog matrix passed because the dialog
+opened and Cancel worked.
+
+**Rule.** If a renderer filters a field kind, every tool that owns that kind needs its
+own editor. A dialog opening is not evidence that a tool works: run each tool's job.
+Export and reuse the shared editor (the same `BoxesEditor` now serves Crop's sibling
+Redact) rather than leaving the field invisible.
+
+**Evidence.** Redact's a11y tree had only Fill colour and the checkbox; after rendering
+`BoxesEditor`, the Detect faces/text buttons and a Preview image appear, and
+`tool-image-redact` (OCR + drawn region) and `tool-video-redact` pass.
+
+## 40. A removed upstream option breaks the sidecar path silently
+
+**Trap.** The filmstrip command passed `-vsync vfr`. ffmpeg 9 removed `-vsync`; the
+command exited 8 with "Unrecognized option 'vsync'", so the filmstrip cache stayed
+empty. Video previews fell back to "Preview unavailable", and the Redact canvas could
+not be used. ImageMagick also hung trying to decode the video before the fallback ran.
+
+**Rule.** Pin and record the sidecar versions in the harness report, exercise the
+preview/filmstrip paths (not just the final job), and use options that exist in the
+bundled version. For a video preview, ask the video path (filmstrip) directly instead of
+letting a still-image decoder fail first.
+
+**Evidence.** The exact ffmpeg invocation returned rc 8 with `[]`; removing `-vsync`
+produced `frame001.jpg`; `preview_thumb` now uses `filmstrip` for `Category::Video`, and
+`tool-video-redact` passes.
+
+## 41. Mutually exclusive edits must be sent as one representation
+
+**Trap.** CropEditor fits the preview box to the selected aspect ratio and calls
+`onChange`, so the dialog held both `boxes` and `aspect`. `submitModal` forwarded the
+rectangle as x/y/w/h alongside the ratio, and the engine rejected every aspect crop:
+"use either a crop rectangle or an aspect ratio, not both". The control looked
+functional; only running it exposed the conflict.
+
+**Rule.** When two representations describe the same edit, submit exactly one. Make the
+branch explicit (free crop → rectangle; fixed ratio → aspect only) and test both. A
+preview-fitted rectangle is not user input and must not travel as one.
+
+**Evidence.** `tool-image-crop` failed before the fix; after it, 1:1 produces
+2,000×2,000. `tool-video-crop` exercises the same branch.

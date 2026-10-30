@@ -641,6 +641,23 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 "50 % of the dimensions",
                 "25 % of the dimensions",
             ]),
+            // Lossy, so it stays off by default: the lossless path is what PNG normally
+            // means. Drives `colours`, a control, so it never travels as a parameter.
+            checkbox("reduce", "Reduce colours (lossy)", false).control(),
+            select(
+                "colours",
+                "Colours",
+                "256",
+                &["256", "128", "64", "32", "16"],
+            )
+            .labelled(&[
+                "256 colours",
+                "128 colours",
+                "64 colours",
+                "32 colours",
+                "16 colours",
+            ])
+            .when("reduce", "true"),
             // Drives `target_bytes`; a control, so it never travels as a parameter.
             checkbox("target", "Compress to a target file size", false).control(),
             num(
@@ -784,8 +801,19 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             range("saturation", "Saturation", -100.0, 100.0, 1.0, "").group("Colour"),
             range("hue", "Hue", -180.0, 180.0, 1.0, "°").group("Colour"),
         ],
+        (Category::Images, ToolId::Metadata) => {
+            // The common subset every writable image container accepts: PNG/WEBP/
+            // TIFF go through ImageMagick, JPG/HEIC through the EXIF writer.
+            let tags = ["Title", "Description", "Artist", "Copyright"];
+            let mut fields: Vec<Field> = tags
+                .iter()
+                .map(|tag| text(&format!("set.{tag}"), tag, "", None))
+                .collect();
+            fields.push(checkbox("strip", "Remove all tags", false));
+            fields
+        }
         (Category::Images, ToolId::Redact) => {
-            let mut fields = vec![
+            let fields = vec![
                 Field {
                     key: "boxes".into(),
                     label: "Areas to fill".into(),
@@ -795,7 +823,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 },
                 text("color", "Fill colour", "#000000", None),
             ];
-            fields.push(checkbox("detect_text", "Find text automatically", true));
+            // Region detection lives in the boxes editor's Detect faces/text
+            // buttons; a no-op checkbox here would not do anything at run time.
             fields
         }
         (Category::Video, ToolId::Compress) => vec![
@@ -1070,10 +1099,22 @@ pub async fn preview_thumb(
     let cap = state.settings.lock().preview_cache_bytes;
     tauri::async_runtime::spawn_blocking(move || {
         let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
-        cache
-            .thumbnail(Path::new(&path), size)
-            .map(|p| p.to_string_lossy().into_owned())
-            .map_err(err_to_string)
+        let source = Path::new(&path);
+        // A video has no still frame for ImageMagick. Ask the filmstrip for one
+        // directly: letting ImageMagick fail first can block the dialog on a decode
+        // attempt, and the redaction/trim preview stays "unavailable".
+        let is_video = Registry::detect(source)
+            .map(|format| format.category == Category::Video)
+            .unwrap_or(false);
+        let thumb = if is_video {
+            let mut frames = cache.filmstrip(source, 1).map_err(err_to_string)?;
+            frames
+                .pop()
+                .ok_or_else(|| "the video produced no preview frame".to_string())?
+        } else {
+            cache.thumbnail(source, size).map_err(err_to_string)?
+        };
+        Ok(thumb.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1256,6 +1297,23 @@ mod field_payload {
         );
     }
 
+    /// Images Metadata once had no field table, so the card ran a job with `{}` and
+    /// failed "nothing to change". These are the tags both image writers accept.
+    #[test]
+    fn image_metadata_exposes_writable_tags() {
+        let fields = super::tool_fields("images".into(), "metadata".into());
+        for tag in ["Title", "Description", "Artist", "Copyright"] {
+            let field = fields
+                .iter()
+                .find(|f| f.key == format!("set.{tag}"))
+                .unwrap_or_else(|| panic!("missing set.{tag}"));
+            assert_eq!(field.kind, "text");
+        }
+        let strip = fields.iter().find(|f| f.key == "strip").unwrap();
+        assert_eq!(strip.kind, "checkbox");
+        assert_eq!(strip.default, serde_json::json!(false));
+    }
+
     /// A switch that drives `show_if` must be a control or it travels as a parameter;
     /// that exact leak rejected every image compress run.
     #[test]
@@ -1332,6 +1390,22 @@ mod field_payload {
             .expect("the target switch exists");
         assert!(target.control, "the target switch must not travel");
 
+        let reduce = fields
+            .iter()
+            .find(|f| f.key == "reduce")
+            .expect("the reduce-colours switch exists");
+        assert!(reduce.control, "the reduce-colours switch must not travel");
+        let colours = fields
+            .iter()
+            .find(|f| f.key == "colours")
+            .expect("the palette size exists");
+        assert_eq!(
+            colours.show_if.as_ref().map(|rule| rule.key.as_str()),
+            Some("reduce"),
+            "the palette size is shown only while reduce is on"
+        );
+        assert_eq!(colours.default, serde_json::json!("256"));
+
         let job = |params: serde_json::Value| {
             Job::new(
                 PathBuf::from("/tmp/photo.jpg"),
@@ -1345,7 +1419,8 @@ mod field_payload {
             &job(serde_json::json!({
                 "quality": 80,
                 "scale": 50,
-                "target_bytes": 500_000
+                "target_bytes": 500_000,
+                "colours": 64
             })),
             Category::Images,
         )
@@ -1357,6 +1432,14 @@ mod field_payload {
             )
             .is_err(),
             "a leaked control must be rejected, which is why it is marked as one"
+        );
+        assert!(
+            convertme_engines::image::validate(
+                &job(serde_json::json!({ "colours": 1 })),
+                Category::Images
+            )
+            .is_err(),
+            "a palette below two colours cannot be indexed meaningfully"
         );
     }
 

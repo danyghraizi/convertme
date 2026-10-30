@@ -223,6 +223,22 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       ],
     },
     {
+      key: 'reduce',
+      label: 'Reduce colours (lossy)',
+      kind: 'checkbox',
+      default: false,
+      control: true,
+    },
+    {
+      key: 'colours',
+      label: 'Colours',
+      kind: 'select',
+      default: '256',
+      options: ['256', '128', '64', '32', '16'],
+      option_labels: ['256 colours', '128 colours', '64 colours', '32 colours', '16 colours'],
+      show_if: { key: 'reduce', equals: 'true' },
+    },
+    {
       key: 'target',
       label: 'Compress to a target file size',
       kind: 'checkbox',
@@ -663,7 +679,13 @@ export function mockCompressPreview(
   const factor = isLosslessImage(path)
     ? Math.min(1, (scale / 100) ** 2)
     : Math.min(0.95, Math.max(0.02, (quality / 100) ** 2 * (scale / 100) ** 2));
-  const bytes = target > 0 ? Math.min(Math.round(target), source) : Math.round(source * factor);
+  // A real PNG has a floor (the 16-bit poster cannot reach 1 KB); without one the mock
+  // would claim every target is met and the unreachable-target note would never render.
+  const floor = isLosslessImage(path) ? 9_000 : 1_024;
+  const bytes =
+    target > 0
+      ? Math.max(Math.min(Math.round(target), source), Math.min(floor, source))
+      : Math.round(source * factor);
   return {
     path: svgDataUrl(baseName(path), 512, Math.max(1, Math.round((512 * height) / width))),
     bytes,

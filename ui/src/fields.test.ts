@@ -71,6 +71,15 @@ test('the compress target switch never becomes a job parameter', () => {
       default: '100',
       options: ['100', '75', '50', '25'],
     },
+    { key: 'reduce', label: 'Reduce colours (lossy)', kind: 'checkbox', default: false, control: true },
+    {
+      key: 'colours',
+      label: 'Colours',
+      kind: 'select',
+      default: '256',
+      options: ['256', '128', '64', '32', '16'],
+      show_if: { key: 'reduce', equals: 'true' },
+    },
     { key: 'target', label: 'Compress to a target file size', kind: 'checkbox', default: false, control: true },
     {
       key: 'target_bytes',
@@ -87,4 +96,24 @@ test('the compress target switch never becomes a job parameter', () => {
     target_bytes: 500000,
   });
   assert.deepEqual(params, { quality: 80, scale: 100, target_bytes: 500000 });
+});
+
+/**
+ * Reduce colours is opt-in: unchecked, the lossless request must not carry `colours`
+ * (the engine would switch to a lossy palette). Checked, the choice travels as a number.
+ */
+test('reduce colours only travels when it is switched on', () => {
+  const compress: Field[] = [
+    { key: 'reduce', label: 'Reduce colours (lossy)', kind: 'checkbox', default: false, control: true },
+    {
+      key: 'colours',
+      label: 'Colours',
+      kind: 'select',
+      default: '256',
+      options: ['256', '128', '64', '32', '16'],
+      show_if: { key: 'reduce', equals: 'true' },
+    },
+  ];
+  assert.deepEqual(collectParams(compress, { reduce: false, colours: '256' }), {});
+  assert.deepEqual(collectParams(compress, { reduce: true, colours: '64' }), { colours: 64 });
 });
