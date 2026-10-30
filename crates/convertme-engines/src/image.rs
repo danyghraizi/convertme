@@ -332,7 +332,7 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
         return Ok(vec![out]);
     }
 
-    let produced = encode_compress(job, cx, params)?;
+    let produced = prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?;
     if let Some(cache) = cx.preview {
         // A cache that cannot be written must not fail a job that already succeeded.
         let _ = cache.store_artifact(
@@ -349,6 +349,10 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
     Ok(vec![out])
 }
 
+/// Bump when the encoder output for the same request changes: the key otherwise only
+/// covers the source file and the parameters, so an old preview would be reused.
+const COMPRESS_CACHE_VERSION: &str = "v2";
+
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
 fn compress_signature(params: &ToolParams, ext: &str) -> String {
@@ -358,7 +362,7 @@ fn compress_signature(params: &ToolParams, ext: &str) -> String {
         .into_iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
-    format!("{ext}|{}", rendered.join(","))
+    format!("{COMPRESS_CACHE_VERSION}|{ext}|{}", rendered.join(","))
 }
 
 /// The artifact the dialog already encoded for this exact request, when it is still
@@ -405,6 +409,16 @@ fn encode_compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<P
     if lossy {
         args.push(os("-quality"));
         args.push(os(quality.unwrap_or(92).to_string()));
+    } else {
+        // A plain re-encode uses the encoder defaults and often changes nothing. Ask
+        // for the format's best lossless settings: PNG zlib level 9 (~2–3 % on an
+        // ordinary PNG), TIFF LZW (~half of an uncompressed TIFF). BMP has no
+        // lossless compression to ask for.
+        match ext {
+            "png" => args.extend([os("-define"), os("png:compression-level=9")]),
+            "tif" | "tiff" => args.extend([os("-compress"), os("lzw")]),
+            _ => {}
+        }
     }
     args.push(os(&out));
     run_magick(&magick, args, cx, Budget::Short)?;
@@ -440,7 +454,7 @@ pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, 
     let path = match compress_cache_hit(cx, &job.source, params, ext) {
         Some(hit) => hit,
         None => {
-            let produced = encode_compress(job, cx, params)?;
+            let produced = prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?;
             cache.store_artifact(
                 &job.source,
                 "compress",
@@ -1536,6 +1550,22 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), JobError> {
         .map_err(|e| JobError::io(format!("copying {}", to.display()), &e))
 }
 
+/// Keep the original when the encoder produced something larger. A compressor that
+/// grows a file is not a compressor; the AV and PDF tools use the same rule.
+fn prefer_smaller(
+    source: &Path,
+    produced: PathBuf,
+    ext: &str,
+    cx: &Context<'_>,
+) -> Result<PathBuf, JobError> {
+    if file_len(&produced)? < file_len(source)? {
+        return Ok(produced);
+    }
+    let copy = cx.scratch(&format!("compress-original.{ext}"));
+    copy_file(source, &copy)?;
+    Ok(copy)
+}
+
 fn move_into_place(from: &Path, to: &Path) -> Result<(), JobError> {
     std::fs::rename(from, to)
         .or_else(|e| {
@@ -2077,6 +2107,111 @@ mod tests {
             "quality 20 ({} B) is not smaller than quality 90 ({} B)",
             low.bytes,
             high.bytes
+        );
+    }
+
+    /// PNG/BMP/TIFF are lossless: compress may only re-encode the same pixels more
+    /// efficiently (or keep the original), never change the image.
+    #[test]
+    fn lossless_compression_keeps_every_pixel() {
+        let Some(f) = fixture() else { return };
+        let png = make_image(
+            &f,
+            "gradient.png",
+            vec![os("-size"), os("600x400"), os("gradient:#2ea8a0-#12161b")],
+        );
+        let tiff = make_image(
+            &f,
+            "gradient.tif",
+            vec![os("-size"), os("600x400"), os("gradient:#2ea8a0-#12161b")],
+        );
+        for (source, name) in [(png, "png"), (tiff, "tiff")] {
+            let before = std::fs::metadata(&source).expect("metadata").len();
+            let job = Job::new(
+                source.clone(),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params(json!({})),
+                },
+            );
+            let artifacts = run_engine(&f, &job).expect("compress");
+            let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+            assert!(after <= before, "{name}: {before} bytes grew to {after}");
+
+            let original = ::image::open(&source).expect("decode source").to_rgb8();
+            let output = ::image::open(&artifacts[0])
+                .expect("decode output")
+                .to_rgb8();
+            assert_eq!(original.dimensions(), output.dimensions(), "{name}");
+            assert!(
+                original.as_raw() == output.as_raw(),
+                "{name}: lossless compression changed pixels"
+            );
+        }
+    }
+
+    /// The TIFF encoder defaults to no compression: asking for LZW is the whole point.
+    #[test]
+    fn tiff_compress_actually_shrinks() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "smooth.tif",
+            vec![os("-size"), os("800x600"), os("gradient:#2ea8a0-#12161b")],
+        );
+        let before = std::fs::metadata(&source).expect("metadata").len();
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({})),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+        assert!(
+            after < before,
+            "an uncompressed TIFF was not compressed: {before} -> {after}"
+        );
+    }
+
+    /// q100 asks for more fidelity than the source has; the re-encode is larger, so the
+    /// tool must return the original rather than inflate the file.
+    #[test]
+    fn compression_never_grows_a_jpeg() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "small.jpg",
+            vec![
+                os("-size"),
+                os("400x400"),
+                os("xc:gray"),
+                os("+noise"),
+                os("Random"),
+                os("-quality"),
+                os("60"),
+            ],
+        );
+        let original = std::fs::read(&source).expect("read source");
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "quality": 100 })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        let result = std::fs::read(&artifacts[0]).expect("read output");
+        assert!(
+            result.len() <= original.len(),
+            "q100 grew {} bytes into {}",
+            original.len(),
+            result.len()
+        );
+        assert_eq!(
+            result, original,
+            "the result must be the original, not a larger encode"
         );
     }
 

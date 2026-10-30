@@ -248,3 +248,27 @@ Found by running the compress matrix from a temporary folder with a relative nam
 
 **Rule.** Normalise a path's parent to `"."` before asking whether it is writable, and test
 the CLI with a relative filename, not only with absolute fixture paths.
+
+## 24. Quality is fidelity, not compression
+
+**Trap.** The Compress dialog's slider reads 1–100, which invites "100 % = smallest".
+It is encoder quality: at 100 a 5.4 MB JPEG was re-encoded to 17.9 MB (+239 %), because
+the source had been saved at a much lower quality. A re-encode cannot recover detail; it
+only spends bytes.
+
+**Rule.** A tool called Compress never returns a larger file. Compare the artifact with
+the source and keep the source when the encoder grew it (video, audio, PDF and images now
+all do this). Say "no change" in the preview instead of a negative saving. When the source
+is lossless, ask the encoder for its best *lossless* settings first — PNG zlib 9 (a few
+percent), TIFF LZW (~half an uncompressed TIFF) — rather than a plain re-encode that
+changes nothing.
+
+## 25. A cache key must cover the code that produced it
+
+**Trap.** Preview artifacts are keyed by source identity plus parameters. After the image
+compressor changed (lossless settings, never-grow), the same request produced different
+bytes while the old artifact still matched the key — the dialog would keep showing the old
+17.9 MB preview.
+
+**Rule.** Version the key when output behaviour changes (`COMPRESS_CACHE_VERSION`), or
+clear the cache. The source mtime covers the input, never the algorithm.

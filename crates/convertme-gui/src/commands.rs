@@ -1401,5 +1401,20 @@ mod field_payload {
         let second = run();
         assert_eq!(second.path, first.path);
         assert_eq!(second.bytes, first.bytes);
+
+        // q100 on this already-compressed fixture is larger; the preview must show the
+        // original instead of a growth.
+        let unchanged = super::preview_compress_blocking(
+            &tools,
+            cache.path().to_path_buf(),
+            64 << 20,
+            &fixture,
+            serde_json::json!({ "quality": 100 }),
+        )
+        .expect("preview");
+        assert_eq!(
+            unchanged.bytes, unchanged.source_bytes,
+            "the preview promised a larger file"
+        );
     }
 }

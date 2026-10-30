@@ -17,7 +17,9 @@ settings exist as described in the plan; the GUI is usable end to end on this ma
 
 | Control | Behaviour |
 |---|---|
-| Quality | 1–100, encoder quality for lossy formats; hidden when every selected image is lossless (PNG/BMP/TIFF/SVG), where it cannot change a byte |
+| Quality | encoder fidelity for lossy formats (100 = maximum fidelity, which can be *larger* than the source); hidden when every selected image is lossless |
+| Lossless files | PNG re-encodes at zlib 9 (~2–3 % on an ordinary PNG, ~0 on a photo PNG), TIFF writes LZW (~47 % off an uncompressed TIFF), BMP has no lossless compression. Pixels stay identical |
+| Never larger | if the encode would grow the file, the result is a copy of the source (same rule as video/audio/PDF); the preview shows “no change” |
 | Image size | 100 / 75 / 50 / 25 % of the dimensions |
 | Target file size | quality search, then up to three downscale rounds; the smallest result when the target is unreachable (lossless also drops the palette) |
 | Preview | the **real encoded file**: true size, true dimensions, percent saved, and a picture of the result. Re-encodes 400 ms after the last edit, with stale responses dropped |
@@ -79,15 +81,16 @@ Engine notes worth knowing:
 ## Verification status
 
 - `./scripts/preflight.sh` passes: identity gate, fmt, clippy `-D warnings`, all workspace
-  tests (75 engine tests, 17 GUI tests), node tests for the field reader and the parameter
+  tests (79 engine tests, 17 GUI tests), node tests for the field reader and the parameter
   collector, UI typecheck/build, clean-checkout builds.
 - Composition tests pin: proportional padding/corners, rounding belongs to the photo,
   background placement stays inside the frame at -100/0/100, shadow darkens the band.
 - Compress tests pin: a preview's bytes equal the job's artifact, the job completes with
   the **source unreadable** (proving reuse rather than a second encode), different
-  qualities produce different artifacts, the artifact key keeps its extension, and the
-  command body reports the real fixture file and resolves a repeat request to the same
-  cached artifact.
+  qualities produce different artifacts, the artifact key keeps its extension, lossless
+  compression keeps every pixel and TIFF actually shrinks, q100 on a small JPEG returns
+  the original, and the command body reports the real fixture file and resolves a repeat
+  request to the same cached artifact.
 - Contract tests pin: the field payload names the kinds the UI renders and marks the
   compress target switch as a control; the binary embeds the built bundle; the reader
   keeps every kind and property; controls and hidden fields never become backend
