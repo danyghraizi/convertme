@@ -332,7 +332,11 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
         return Ok(vec![out]);
     }
 
-    let produced = prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?;
+    let produced = optimize_png(
+        prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?,
+        ext,
+        cx,
+    )?;
     if let Some(cache) = cx.preview {
         // A cache that cannot be written must not fail a job that already succeeded.
         let _ = cache.store_artifact(
@@ -351,7 +355,7 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 
 /// Bump when the encoder output for the same request changes: the key otherwise only
 /// covers the source file and the parameters, so an old preview would be reused.
-const COMPRESS_CACHE_VERSION: &str = "v2";
+const COMPRESS_CACHE_VERSION: &str = "v3";
 
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
@@ -454,7 +458,11 @@ pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, 
     let path = match compress_cache_hit(cx, &job.source, params, ext) {
         Some(hit) => hit,
         None => {
-            let produced = prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?;
+            let produced = optimize_png(
+                prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?,
+                ext,
+                cx,
+            )?;
             cache.store_artifact(
                 &job.source,
                 "compress",
@@ -1566,6 +1574,36 @@ fn prefer_smaller(
     Ok(copy)
 }
 
+/// A real PNG optimizer, run after the encoder. ImageMagick's PNG stream leaves row
+/// filters and the deflate strategy on the table; oxipng tries them losslessly, which
+/// matters most for screenshots and flat graphics. A failure keeps the encoder output.
+fn optimize_png(path: PathBuf, ext: &str, cx: &Context<'_>) -> Result<PathBuf, JobError> {
+    if ext != "png" {
+        return Ok(path);
+    }
+    cx.ctx.checkpoint()?;
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(path);
+    };
+    // Bound memory and time: this is an improvement, not worth stalling a huge job.
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Ok(path);
+    }
+    cx.ctx.set_stage("optimising the PNG");
+    let mut opts = oxipng::Options::from_preset(2);
+    opts.timeout = Some(std::time::Duration::from_secs(4));
+    opts.strip = oxipng::StripChunks::None;
+    opts.scale_16 = false;
+    let Ok(optimized) = oxipng::optimize_from_memory(&bytes, &opts) else {
+        return Ok(path);
+    };
+    if optimized.len() < bytes.len() {
+        std::fs::write(&path, optimized)
+            .map_err(|e| JobError::io("writing the optimised PNG", &e))?;
+    }
+    Ok(path)
+}
+
 fn move_into_place(from: &Path, to: &Path) -> Result<(), JobError> {
     std::fs::rename(from, to)
         .or_else(|e| {
@@ -2212,6 +2250,46 @@ mod tests {
         assert_eq!(
             result, original,
             "the result must be the original, not a larger encode"
+        );
+    }
+
+    /// ImageMagick's encoder leaves a lot on the table; a stored-quality PNG must shrink
+    /// without touching a pixel.
+    #[test]
+    fn png_optimizer_fixes_an_uncompressed_file() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "stored.png",
+            vec![
+                os("-size"),
+                os("800x600"),
+                os("gradient:#2ea8a0-#12161b"),
+                os("-define"),
+                os("png:compression-level=0"),
+            ],
+        );
+        let before = std::fs::metadata(&source).expect("metadata").len();
+        let job = Job::new(
+            source.clone(),
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({})),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+        assert!(
+            after * 4 < before,
+            "stored PNG {before} bytes only reached {after}"
+        );
+        let original = ::image::open(&source).expect("decode source").to_rgb8();
+        let output = ::image::open(&artifacts[0])
+            .expect("decode output")
+            .to_rgb8();
+        assert!(
+            original.as_raw() == output.as_raw(),
+            "PNG optimisation changed pixels"
         );
     }
 

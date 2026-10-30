@@ -272,3 +272,16 @@ bytes while the old artifact still matched the key — the dialog would keep sho
 
 **Rule.** Version the key when output behaviour changes (`COMPRESS_CACHE_VERSION`), or
 clear the cache. The source mtime covers the input, never the algorithm.
+
+## 26. ImageMagick is not a PNG optimizer
+
+**Trap.** PNG compress wrote the stream ImageMagick's encoder produced (zlib 9 at best)
+and called it done: 96,910 bytes for a 2000×3000 gradient. A real optimizer (oxipng,
+trying row filters and deflate strategies) reached 81,917 without changing a pixel; a
+screenshot went 112,129 → 67,606. The encoder was the bottleneck, not the image.
+
+**Rule.** For PNG, run a real optimizer over the encoded file (oxipng, in-process, with a
+timeout and a size cap) and keep the smaller result. Do not compare against a website's
+number without checking whether it is lossless: a 16-bit 2000×3000 poster shrank to 18 KB
+there by reducing it to a 177-colour palette — lossy colour reduction, not compression.
+If that is wanted, make it an explicit "reduce colours" choice.

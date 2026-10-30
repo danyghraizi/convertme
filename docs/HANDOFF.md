@@ -18,7 +18,7 @@ settings exist as described in the plan; the GUI is usable end to end on this ma
 | Control | Behaviour |
 |---|---|
 | Quality | encoder fidelity for lossy formats (100 = maximum fidelity, which can be *larger* than the source); hidden when every selected image is lossless |
-| Lossless files | PNG re-encodes at zlib 9 (~2–3 % on an ordinary PNG, ~0 on a photo PNG), TIFF writes LZW (~47 % off an uncompressed TIFF), BMP has no lossless compression. Pixels stay identical |
+| Lossless files | PNG: zlib 9 plus oxipng (row filters + deflate), measured 96.9→81.9 KB on the 16-bit poster, 112.1→67.6 KB on a screenshot, 44.5→35.6 KB on an 8-bit gradient; TIFF: LZW (5.76→3.08 MB); BMP: nothing to ask for. Pixels stay identical |
 | Never larger | if the encode would grow the file, the result is a copy of the source (same rule as video/audio/PDF); the preview shows “no change” |
 | Image size | 100 / 75 / 50 / 25 % of the dimensions |
 | Target file size | quality search, then up to three downscale rounds; the smallest result when the target is unreachable (lossless also drops the palette) |
@@ -81,7 +81,7 @@ Engine notes worth knowing:
 ## Verification status
 
 - `./scripts/preflight.sh` passes: identity gate, fmt, clippy `-D warnings`, all workspace
-  tests (79 engine tests, 17 GUI tests), node tests for the field reader and the parameter
+  tests (80 engine tests, 17 GUI tests), node tests for the field reader and the parameter
   collector, UI typecheck/build, clean-checkout builds.
 - Composition tests pin: proportional padding/corners, rounding belongs to the photo,
   background placement stays inside the frame at -100/0/100, shadow darkens the band.
