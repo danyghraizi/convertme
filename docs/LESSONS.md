@@ -306,3 +306,15 @@ extension with SVG bytes.
 **Rule.** Apply the never-grow rule only when the container is unchanged. A format change
 (SVG→PNG) has no comparable size, and an artifact must always be in its stated format;
 test the magic bytes, not just the name.
+
+## 29. Drive the UI without the desktop
+
+**Trap.** Clicking the real Tauri window through X11 (XTest) looked possible, but the
+pointer belongs to the live session: the user's mouse moved between warp and click, and
+the prewarmed transparent wheel window sat above the app. Two clicks landed on the wrong
+row; nothing in the app was at fault.
+
+**Rule.** For repeatable UI checks, drive the built front end in headless Firefox over
+Marionette (clicks in the DOM, screenshots to files). Reserve OS-level input for a
+one-off, supervised check. A screenshot harness must assert numbers (modal inside the
+viewport, no horizontal overflow, preview image loaded), not only save pictures.

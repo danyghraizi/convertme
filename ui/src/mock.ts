@@ -17,6 +17,24 @@ import type {
 /** Fixture paths used by `pick_files` and by the wheel's browser demo. */
 export const MOCK_DEMO_PATHS = ['/fixtures/photo.jpg', '/fixtures/poster.png'];
 
+/**
+ * Files the picker returns for a category, selected with `?mock-files=<category>`.
+ * They do not exist on disk; the mock only needs the extensions to pick a category.
+ */
+const DEMO_FILES: Record<string, string[]> = {
+  images: MOCK_DEMO_PATHS,
+  'images-lossless': ['/fixtures/poster.png'],
+  video: ['/fixtures/clip.mp4'],
+  audio: ['/fixtures/speech.mp3'],
+  pdf: ['/fixtures/report-5-pages.pdf'],
+  documents: ['/fixtures/report.docx'],
+  slides: ['/fixtures/deck.pptx'],
+  spreadsheets: ['/fixtures/sales.csv'],
+  epub: ['/fixtures/report.epub'],
+  subtitles: ['/fixtures/cues.srt'],
+  archives: ['/fixtures/project.zip'],
+};
+
 const DEFAULT_SETTINGS: Settings = {
   convert_key: 'shift',
   tools_key: 'control',
@@ -87,6 +105,7 @@ const EXTENSIONS: Record<string, { category: string; format: string }> = {
   bmp: { category: 'images', format: 'BMP' },
   gif: { category: 'images', format: 'GIF' },
   ico: { category: 'images', format: 'ICO' },
+  svg: { category: 'images', format: 'SVG' },
   mp4: { category: 'video', format: 'MP4' },
   mkv: { category: 'video', format: 'MKV' },
   webm: { category: 'video', format: 'WEBM' },
@@ -471,13 +490,13 @@ export function mockToolFields(category: string, tool: string): Field[] {
 const VIDEO_COMPRESS_FIELDS: Field[] = [
   {
     key: 'percent',
-    label: 'Size',
+    label: 'Size (% of the original)',
     kind: 'range',
     default: 50,
     min: 5,
     max: 100,
     step: 1,
-    unit: '% of the original',
+    unit: '%',
   },
   {
     key: 'size_target',
@@ -684,5 +703,9 @@ export function mockDetectBoxes(path: string, faces: boolean): DetectedBox[] {
 }
 
 export function mockPickFiles(): string[] {
-  return [...MOCK_DEMO_PATHS];
+  const category =
+    typeof location === 'undefined'
+      ? null
+      : new URLSearchParams(location.search).get('mock-files');
+  return [...(DEMO_FILES[category ?? 'images'] ?? MOCK_DEMO_PATHS)];
 }

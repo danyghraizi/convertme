@@ -803,12 +803,12 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             // 62 KB clip into 131 KB.
             ranged(
                 "percent",
-                "Size",
+                "Size (% of the original)",
                 50.0,
                 5.0,
                 100.0,
                 1.0,
-                "% of the original",
+                "%",
             ),
             checkbox("size_target", "Or a target file size", false).control(),
             num(
@@ -825,12 +825,12 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
         (Category::Audio, ToolId::Compress) => vec![
             ranged(
                 "percent",
-                "Size",
+                "Size (% of the original)",
                 50.0,
                 5.0,
                 100.0,
                 1.0,
-                "% of the original",
+                "%",
             ),
             checkbox("bitrate_set", "Or a bitrate", false).control(),
             num("bitrate", "Bitrate", 128.0, 8.0, 512.0, 1.0, "kbps").when("bitrate_set", "true"),

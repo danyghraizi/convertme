@@ -106,6 +106,20 @@ Engine notes worth knowing:
   `4032 × 3024 · 886 KB · −36% · from 1.4 MB`, and ticking the target switch re-encoded to
   `488 KB · −65%` within the debounce.
 
+## UI screenshots, without the desktop
+
+```bash
+./scripts/ui-shots.py --out "/path/to/shots"     # --build rebuilds the bundle first
+```
+
+Headless Firefox drives the built front end through WebDriver (Marionette): it opens every
+tool in every category, writes `<category>-main.png` and `<category>-<tool>.png`, plus
+`report.json` with field labels, control values and modal/preview rectangles. It fails on
+a modal larger than the viewport, a field overflowing the modal, or a preview image that
+does not load. It runs against the **mock**, so it exercises rendering and field logic,
+not the Rust engine; engine behaviour is covered by the tests and the CLI. Tools whose
+mock field table is missing run without a dialog (the report marks `"dialog": false`).
+
 ## Running it
 
 ```bash
