@@ -461,6 +461,82 @@ pub fn image_size(path: String) -> Option<(u32, u32)> {
     convertme_engines::image_dimensions(std::path::Path::new(&path))
 }
 
+#[derive(Serialize)]
+pub struct CompressPreviewOut {
+    pub path: String,
+    pub bytes: u64,
+    pub source_bytes: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Encode the file once at the dialog's settings, so the size and the picture it shows
+/// are the real result. The artifact lands in the shared cache, and the job with the
+/// identical request copies it instead of encoding again.
+#[tauri::command]
+pub async fn compress_preview(
+    state: State<'_, AppState>,
+    path: String,
+    params: Value,
+) -> Result<CompressPreviewOut, String> {
+    let tools = state.tools.clone();
+    let cache_root = state.cache.root().to_path_buf();
+    let cap = state.settings.lock().preview_cache_bytes;
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_compress_blocking(&tools, cache_root, cap, Path::new(&path), params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The body of [`compress_preview`], without Tauri, so the whole path (normalize →
+/// encode → cache → reported numbers) can be exercised with a real file.
+fn preview_compress_blocking(
+    tools: &convertme_engines::Toolset,
+    cache_root: PathBuf,
+    cap: u64,
+    path: &Path,
+    params: Value,
+) -> Result<CompressPreviewOut, String> {
+    let params = params.as_object().cloned().unwrap_or_default();
+    let params = convertme_core::params::normalize(Category::Images, ToolId::Compress, params)?;
+    let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Named like the queue's work dirs (`convertme-<pid>-…`) so a crashed preview is
+    // swept: the sweeper reads the pid and skips names it cannot parse.
+    let work = convertme_core::job::WorkDir::create(
+        std::env::temp_dir().join(format!("convertme-{}-p{stamp}", std::process::id())),
+    )
+    .map_err(|e| e.to_string())?;
+    let jc = convertme_core::JobCtx::new();
+    let cx = convertme_engines::Context {
+        tools,
+        work: &work,
+        ctx: &jc,
+        preview: Some(&cache),
+    };
+    let job = Job::new(
+        path.to_path_buf(),
+        Intent::Tool {
+            tool: ToolId::Compress,
+            params,
+        },
+    );
+    let result = convertme_engines::image::preview_compress(&job, &cx);
+    work.cleanup();
+    let preview = result.map_err(|e| e.message)?;
+    Ok(CompressPreviewOut {
+        path: preview.path.to_string_lossy().into_owned(),
+        bytes: preview.bytes,
+        source_bytes: preview.source_bytes,
+        width: preview.width,
+        height: preview.height,
+    })
+}
+
 #[tauri::command]
 pub fn tool_fields(category: String, tool: String) -> Vec<Field> {
     let Some(category) = Category::parse(&category) else {
@@ -559,7 +635,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 "50 % of the dimensions",
                 "25 % of the dimensions",
             ]),
-            checkbox("target", "Compress to a target file size", false),
+            // Drives `target_bytes`; a control, so it never travels as a parameter.
+            checkbox("target", "Compress to a target file size", false).control(),
             num(
                 "target_bytes",
                 "Target size",
@@ -977,6 +1054,7 @@ pub async fn detect_boxes(
             tools: &tools,
             work: &work,
             ctx: &jc,
+            preview: None,
         };
         let result = convertme_engines::redact::detect_image(Path::new(&path), &cx, faces);
         work.cleanup();
@@ -1134,5 +1212,98 @@ mod field_payload {
                     .as_slice()
             )
         );
+    }
+
+    /// The dialog sends only non-control, visible fields. The target switch must stay a
+    /// control: as a parameter the engine rejects the whole job ("unknown parameter
+    /// `target`"), which made every image compress run fail.
+    #[test]
+    fn compress_target_is_a_control_and_its_parameters_validate() {
+        use convertme_core::formats::{Category, ToolId};
+        use convertme_core::job::{Intent, Job};
+        use std::path::PathBuf;
+
+        let fields = super::tool_fields("images".into(), "compress".into());
+        let target = fields
+            .iter()
+            .find(|f| f.key == "target")
+            .expect("the target switch exists");
+        assert!(target.control, "the target switch must not travel");
+
+        let job = |params: serde_json::Value| {
+            Job::new(
+                PathBuf::from("/tmp/photo.jpg"),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params.as_object().cloned().expect("object params"),
+                },
+            )
+        };
+        convertme_engines::image::validate(
+            &job(serde_json::json!({
+                "quality": 80,
+                "scale": 50,
+                "target_bytes": 500_000
+            })),
+            Category::Images,
+        )
+        .expect("the parameters the dialog collects must validate");
+        assert!(
+            convertme_engines::image::validate(
+                &job(serde_json::json!({ "target": true })),
+                Category::Images
+            )
+            .is_err(),
+            "a leaked control must be rejected, which is why it is marked as one"
+        );
+    }
+
+    /// The command wrapper, end to end: normalize → encode → cache → the numbers the
+    /// dialog draws. Skipped when the fixture or ImageMagick is absent.
+    #[test]
+    fn compress_preview_reports_and_reuses_a_real_file() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/photo.jpg")
+            .canonicalize();
+        let Ok(fixture) = fixture else { return };
+        let tools = convertme_engines::Toolset::probe_now();
+        if tools
+            .path(convertme_core::capability::ToolKey::Magick)
+            .is_err()
+        {
+            return;
+        }
+        let cache = tempfile::tempdir().expect("temp cache");
+        let run = || {
+            super::preview_compress_blocking(
+                &tools,
+                cache.path().to_path_buf(),
+                64 << 20,
+                &fixture,
+                serde_json::json!({ "quality": 70 }),
+            )
+            .expect("preview")
+        };
+
+        let first = run();
+        assert!(
+            std::path::Path::new(&first.path).starts_with(cache.path()),
+            "the artifact must live in the shared preview cache"
+        );
+        assert_eq!(
+            first.source_bytes,
+            std::fs::metadata(&fixture).expect("metadata").len()
+        );
+        assert!(first.bytes > 0, "the encoded file must have bytes");
+        let (width, height) =
+            convertme_engines::image_dimensions(std::path::Path::new(&first.path))
+                .expect("decode the artifact");
+        assert_eq!((first.width, first.height), (width, height));
+
+        // The identical request resolves to the same artifact: the dialog and the job
+        // share one encode.
+        let second = run();
+        assert_eq!(second.path, first.path);
+        assert_eq!(second.bytes, first.bytes);
     }
 }

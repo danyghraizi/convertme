@@ -319,9 +319,65 @@ fn convert(job: &Job, cx: &Context<'_>, target: FormatId) -> Result<Vec<PathBuf>
 // -------------------------------------------------------------------- compress
 
 fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<PathBuf>, JobError> {
-    let magick = magick_path(cx)?;
     let ext = output_ext(job);
     let out = tool_out(job, cx, ToolId::Compress);
+
+    // The dialog encodes the exact same request for its preview; reuse those bytes
+    // instead of compressing the file twice.
+    if let Some(hit) = compress_cache_hit(cx, &job.source, params, ext) {
+        cx.ctx.set_stage("using the previewed result");
+        copy_file(&hit, &out)?;
+        ensure_file(&out, "the image encoder")?;
+        cx.ctx.set_progress(1.0);
+        return Ok(vec![out]);
+    }
+
+    let produced = encode_compress(job, cx, params)?;
+    if let Some(cache) = cx.preview {
+        // A cache that cannot be written must not fail a job that already succeeded.
+        let _ = cache.store_artifact(
+            &job.source,
+            "compress",
+            &compress_signature(params, ext),
+            ext,
+            &produced,
+        );
+    }
+    move_into_place(&produced, &out)?;
+    ensure_file(&out, "the image encoder")?;
+    cx.ctx.set_progress(1.0);
+    Ok(vec![out])
+}
+
+/// One cache identity per compression request: the output extension plus every
+/// parameter, sorted so the same request always renders the same string.
+fn compress_signature(params: &ToolParams, ext: &str) -> String {
+    let mut keys: Vec<_> = params.iter().collect();
+    keys.sort_by(|a, b| a.0.cmp(b.0));
+    let rendered: Vec<String> = keys
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!("{ext}|{}", rendered.join(","))
+}
+
+/// The artifact the dialog already encoded for this exact request, when it is still
+/// on disk. The key carries the source's mtime and size, so an edited file misses.
+fn compress_cache_hit(
+    cx: &Context<'_>,
+    source: &Path,
+    params: &ToolParams,
+    ext: &str,
+) -> Option<PathBuf> {
+    let cache = cx.preview?;
+    let path = cache.artifact_key(source, "compress", &compress_signature(params, ext), ext)?;
+    path.is_file().then_some(path)
+}
+
+/// Encode one compression request into the work dir and return the artifact.
+fn encode_compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<PathBuf, JobError> {
+    let magick = magick_path(cx)?;
+    let ext = output_ext(job);
     let lossy = is_lossy_ext(ext);
 
     // Three independent dials, as the tool promises: encode quality, a size cap, and
@@ -335,27 +391,76 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 
     if let Some(target) = target {
         cx.ctx.set_stage("compressing to the target size");
-        let produced = compress_to_target(&magick, &job.source, target, ext, lossy, scale, cx)?;
-        move_into_place(&produced, &out)?;
-    } else {
-        cx.ctx.set_stage("compressing the image");
-        cx.ctx.set_progress(0.05);
-        let mut args = vec![os(&job.source)];
-        if let Some(scale) = scale {
-            args.push(os("-resize"));
-            args.push(os(format!("{scale:.2}%")));
-        }
-        if lossy {
-            args.push(os("-quality"));
-            args.push(os(quality.unwrap_or(92).to_string()));
-        }
-        args.push(os(&out));
-        run_magick(&magick, args, cx, Budget::Short)?;
+        return compress_to_target(&magick, &job.source, target, ext, lossy, scale, cx);
     }
 
+    cx.ctx.set_stage("compressing the image");
+    cx.ctx.set_progress(0.05);
+    let out = cx.scratch(&format!("compress-result.{ext}"));
+    let mut args = vec![os(&job.source)];
+    if let Some(scale) = scale {
+        args.push(os("-resize"));
+        args.push(os(format!("{scale:.2}%")));
+    }
+    if lossy {
+        args.push(os("-quality"));
+        args.push(os(quality.unwrap_or(92).to_string()));
+    }
+    args.push(os(&out));
+    run_magick(&magick, args, cx, Budget::Short)?;
     ensure_file(&out, "the image encoder")?;
-    cx.ctx.set_progress(1.0);
-    Ok(vec![out])
+    Ok(out)
+}
+
+/// What the dialog shows before the user commits: the encoded file itself, with its
+/// real size and dimensions. The artifact is stored in the shared cache, so the job
+/// with the identical request copies it instead of encoding a second time.
+pub struct CompressPreview {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub width: u32,
+    pub height: u32,
+    pub source_bytes: u64,
+}
+
+pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, JobError> {
+    let Intent::Tool { tool, params } = &job.intent else {
+        return Err(unsupported("a compress preview needs a compress job"));
+    };
+    if *tool != ToolId::Compress {
+        return Err(unsupported("only compress has a size preview"));
+    }
+    validate_tool(*tool, params)?;
+    let cache = cx
+        .preview
+        .ok_or_else(|| JobError::new(ErrorCode::Io, "previews are not configured"))?;
+    let ext = output_ext(job);
+    let source_bytes = file_len(&job.source)?;
+
+    let path = match compress_cache_hit(cx, &job.source, params, ext) {
+        Some(hit) => hit,
+        None => {
+            let produced = encode_compress(job, cx, params)?;
+            cache.store_artifact(
+                &job.source,
+                "compress",
+                &compress_signature(params, ext),
+                ext,
+                &produced,
+            )?
+        }
+    };
+
+    let magick = magick_path(cx)?;
+    let (width, height) = image_size(&magick, &path, cx)?;
+    let bytes = file_len(&path)?;
+    Ok(CompressPreview {
+        path,
+        bytes,
+        width,
+        height,
+        source_bytes,
+    })
 }
 
 /// Quality search then downscale, at most three rounds. The smallest image the
@@ -1425,6 +1530,12 @@ fn file_len(path: &Path) -> Result<u64, JobError> {
         .map_err(|e| JobError::io(format!("reading the size of {}", path.display()), &e))
 }
 
+fn copy_file(from: &Path, to: &Path) -> Result<(), JobError> {
+    std::fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|e| JobError::io(format!("copying {}", to.display()), &e))
+}
+
 fn move_into_place(from: &Path, to: &Path) -> Result<(), JobError> {
     std::fs::rename(from, to)
         .or_else(|e| {
@@ -1568,6 +1679,14 @@ mod tests {
     }
 
     fn run_engine(f: &Fixture, job: &Job) -> Result<Vec<PathBuf>, JobError> {
+        run_engine_with(f, job, None)
+    }
+
+    fn run_engine_with(
+        f: &Fixture,
+        job: &Job,
+        preview: Option<&crate::preview::PreviewCache>,
+    ) -> Result<Vec<PathBuf>, JobError> {
         let work = WorkDir::create(f._dir.path().join(format!("work-{}", job.id)))
             .expect("create the work dir");
         let ctx = JobCtx::new();
@@ -1575,8 +1694,28 @@ mod tests {
             tools: &f.tools,
             work: &work,
             ctx: &ctx,
+            preview,
         };
         run(job, &cx)
+    }
+
+    fn preview_engine(
+        f: &Fixture,
+        job: &Job,
+        cache: &crate::preview::PreviewCache,
+    ) -> Result<CompressPreview, JobError> {
+        let work = WorkDir::create(f._dir.path().join(format!("preview-{}", job.id)))
+            .expect("create the preview work dir");
+        let ctx = JobCtx::new();
+        let cx = Context {
+            tools: &f.tools,
+            work: &work,
+            ctx: &ctx,
+            preview: Some(cache),
+        };
+        let result = preview_compress(job, &cx);
+        work.cleanup();
+        result
     }
 
     fn params(value: Value) -> ToolParams {
@@ -1659,6 +1798,7 @@ mod tests {
                 tools: &f.tools,
                 work: &WorkDir::create(f._dir.path().join("size-work")).expect("work dir"),
                 ctx: &JobCtx::new(),
+                preview: None,
             },
         )
         .expect("size");
@@ -1825,6 +1965,106 @@ mod tests {
         assert!(
             shrunk < original,
             "compressed {shrunk} is not smaller than {original}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn compress_preview_matches_the_job_and_is_reused() {
+        let Some(f) = fixture() else { return };
+        let input = make_image(
+            &f,
+            "photo.jpg",
+            vec![
+                os("-size"),
+                os("400x400"),
+                os("xc:gray"),
+                os("+noise"),
+                os("Random"),
+            ],
+        );
+        let job = Job::new(
+            input.clone(),
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "quality": 60 })),
+            },
+        );
+        let cache = crate::preview::PreviewCache::new(f._dir.path().join("previews"), 64 << 20);
+        let preview = preview_engine(&f, &job, &cache).expect("preview");
+        assert!(preview.path.starts_with(cache.root()));
+        assert_eq!(
+            preview.source_bytes,
+            std::fs::metadata(&input).expect("metadata").len()
+        );
+        let (width, height) = ::image::image_dimensions(&preview.path).expect("decode preview");
+        assert_eq!((preview.width, preview.height), (width, height));
+
+        // The same request must resolve to the same artifact.
+        let again = preview_engine(&f, &job, &cache).expect("second preview");
+        assert_eq!(again.path, preview.path);
+
+        // Prove the job reads the cached artifact instead of re-encoding: the source is
+        // unreadable at this point, so only the reuse path can finish.
+        use std::os::unix::fs::PermissionsExt;
+        let original = std::fs::metadata(&input).expect("metadata").permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o000);
+        std::fs::set_permissions(&input, locked).expect("lock the source");
+        let readable = std::fs::File::open(&input).is_ok();
+        let artifacts = run_engine_with(&f, &job, Some(&cache));
+        std::fs::set_permissions(&input, original).expect("unlock the source");
+        if readable {
+            // Running as root: the permission lock says nothing, so this run only proves
+            // the bytes match.
+            let artifacts = artifacts.expect("compress");
+            assert_eq!(
+                std::fs::read(&artifacts[0]).expect("read"),
+                std::fs::read(&preview.path).expect("read preview")
+            );
+            return;
+        }
+        let artifacts = artifacts.expect("the job must reuse the preview");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            std::fs::read(&artifacts[0]).expect("read output"),
+            std::fs::read(&preview.path).expect("read preview")
+        );
+    }
+
+    #[test]
+    fn compress_preview_changes_with_the_parameters() {
+        let Some(f) = fixture() else { return };
+        let input = make_image(
+            &f,
+            "photo2.jpg",
+            vec![
+                os("-size"),
+                os("300x300"),
+                os("xc:gray"),
+                os("+noise"),
+                os("Random"),
+            ],
+        );
+        let cache = crate::preview::PreviewCache::new(f._dir.path().join("previews"), 64 << 20);
+        let make = |quality: u32| {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::Compress,
+                    params: params(json!({ "quality": quality })),
+                },
+            );
+            preview_engine(&f, &job, &cache).expect("preview")
+        };
+        let high = make(90);
+        let low = make(20);
+        assert_ne!(high.path, low.path);
+        assert!(
+            low.bytes < high.bytes,
+            "quality 20 ({} B) is not smaller than quality 90 ({} B)",
+            low.bytes,
+            high.bytes
         );
     }
 

@@ -327,6 +327,7 @@ mod tests {
             tools,
             work: &work,
             ctx: &job_ctx,
+            preview: None,
         };
         run(&job, &cx)
     }

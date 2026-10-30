@@ -452,6 +452,7 @@ mod tests {
             tools,
             work,
             ctx: jc,
+            preview: None,
         }
     }
 

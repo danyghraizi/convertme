@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import BackgroundPreview from './background-preview';
+import CompressPreview from './compress-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor from './field-editor';
@@ -55,6 +56,8 @@ const GRADIENT_PRESETS: FillPreset[] = [
 interface ToolModalProps {
   tool: Segment;
   fields: Field[];
+  /** The category the tool runs in: the same id drives different fields per category. */
+  category: string;
   /** The whole selection: the settings apply to all of them, the preview shows one. */
   files?: { path: string; label: string }[];
   /** Shown above the fields: the file the tool will act on, and its size. */
@@ -262,6 +265,12 @@ export default function ToolModal(props: ToolModalProps) {
             </p>
           </Show>
           <div class="modal-fields">
+            <Show when={props.tool.id === 'compress' && props.category === 'images'}>
+              <CompressPreview
+                path={props.files?.[shown()]?.path ?? props.previewPath}
+                params={collected()}
+              />
+            </Show>
             <Show when={props.tool.id === 'crop'}>
               <div class="field">
                 <span class="field-label">Area to keep</span>

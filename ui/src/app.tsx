@@ -788,6 +788,7 @@ export default function App() {
           <ToolModal
             tool={state().tool}
             fields={state().fields}
+            category={state().category}
             fileLabel={
               state().files.length === 1
                 ? baseName(state().files[0])

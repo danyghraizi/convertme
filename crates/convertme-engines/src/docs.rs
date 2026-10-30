@@ -970,6 +970,7 @@ mod tests {
                 tools: &self.tools,
                 work: &self.work,
                 ctx: &self.ctx,
+                preview: None,
             }
         }
 

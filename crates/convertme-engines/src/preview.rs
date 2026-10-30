@@ -68,6 +68,21 @@ impl PreviewCache {
 
     /// Cache file for a source, or `None` when the source cannot be stat'ed.
     pub fn key(&self, source: &Path, kind: &str, arg: &str) -> Option<PathBuf> {
+        self.file_key(
+            source,
+            kind,
+            arg,
+            if kind == "thumb" { "jpg" } else { "bin" },
+        )
+    }
+
+    /// Cache path for an output that must keep its extension, so the asset protocol
+    /// can serve it back (the dialog shows the encoded file itself, not a drawing).
+    pub fn artifact_key(&self, source: &Path, kind: &str, arg: &str, ext: &str) -> Option<PathBuf> {
+        self.file_key(source, kind, arg, ext)
+    }
+
+    fn file_key(&self, source: &Path, kind: &str, arg: &str, ext: &str) -> Option<PathBuf> {
         let canonical = std::fs::canonicalize(source).ok()?;
         let meta = std::fs::metadata(&canonical).ok()?;
         let mtime = meta
@@ -83,12 +98,36 @@ impl PreviewCache {
         hasher.update(kind.as_bytes());
         hasher.update(arg.as_bytes());
         let digest = hasher.finalize();
-        let name = format!(
-            "{kind}-{}.{}",
-            hex(&digest[..16]),
-            if kind == "thumb" { "jpg" } else { "bin" }
-        );
+        let name = format!("{kind}-{}.{ext}", hex(&digest[..16]));
         Some(self.root.join(name))
+    }
+
+    /// Copy an already-encoded artifact into the cache under the key of its request.
+    /// The bytes are published by rename, so a reader never sees a partial file.
+    pub fn store_artifact(
+        &self,
+        source: &Path,
+        kind: &str,
+        arg: &str,
+        ext: &str,
+        from: &Path,
+    ) -> Result<PathBuf, JobError> {
+        let path = self
+            .artifact_key(source, kind, arg, ext)
+            .ok_or_else(|| JobError::new(ErrorCode::Io, "cannot stat the source for a preview"))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = path.with_extension(format!("{}-{stamp}.tmp", std::process::id()));
+        std::fs::copy(from, &tmp)
+            .map_err(|e| JobError::io("copying into the preview cache", &e))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(JobError::io("storing an encoded preview", &e));
+        }
+        self.enforce_cap_keeping(Some(&path));
+        Ok(path)
     }
 
     /// Thumbnail path, generating it at `size` px on the longest edge if missing.
@@ -265,15 +304,25 @@ impl PreviewCache {
 
     /// Keep the cache under its cap, oldest-used first.
     pub fn enforce_cap(&self) -> u64 {
+        self.enforce_cap_keeping(None)
+    }
+
+    /// Evict oldest-first, but never the entry being served: an artifact larger than the
+    /// whole cap is still the result the preview must show.
+    fn enforce_cap_keeping(&self, keep: Option<&Path>) -> u64 {
         let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
         let Ok(read) = std::fs::read_dir(&self.root) else {
             return 0;
         };
         for entry in read.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            // `touch` bumps mtime because atime is unreliable under relatime/noatime;
+            // evicting by atime therefore evicted an arbitrary entry.
             let used = meta
-                .accessed()
-                .or_else(|_| meta.modified())
+                .modified()
+                .or_else(|_| meta.accessed())
                 .unwrap_or(std::time::UNIX_EPOCH);
             entries.push((used, meta.len(), entry.path()));
         }
@@ -287,6 +336,9 @@ impl PreviewCache {
         for (_, len, path) in entries {
             if current <= self.cap {
                 break;
+            }
+            if keep.is_some_and(|k| k == path.as_path()) {
+                continue;
             }
             if path.is_dir() {
                 let _ = std::fs::remove_dir_all(&path);
@@ -426,6 +478,59 @@ mod tests {
         assert_ne!(ka, ka2);
         // Same file, same params → stable key.
         assert_eq!(ka, cache.key(&a, "thumb", "256").unwrap());
+    }
+
+    #[test]
+    fn artifact_key_keeps_its_extension_and_arg() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::new(dir.path().to_path_buf(), 1 << 20);
+        let src = dir.path().join("a.jpg");
+        std::fs::write(&src, b"one").unwrap();
+        let key = cache
+            .artifact_key(&src, "compress", "jpg|quality=80", "jpg")
+            .unwrap();
+        assert_eq!(key.extension().and_then(|e| e.to_str()), Some("jpg"));
+        assert_ne!(
+            key,
+            cache
+                .artifact_key(&src, "compress", "jpg|quality=70", "jpg")
+                .unwrap()
+        );
+        assert_eq!(
+            key,
+            cache
+                .artifact_key(&src, "compress", "jpg|quality=80", "jpg")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_stored_artifact_survives_the_cap() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let input_dir = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::new(cache_dir.path().to_path_buf(), 100);
+        let src = input_dir.path().join("a.jpg");
+        let produced = input_dir.path().join("produced.jpg");
+        std::fs::write(&src, b"source").unwrap();
+        std::fs::write(&produced, vec![7u8; 300]).unwrap();
+        let old = cache_dir.path().join("old.bin");
+        std::fs::write(&old, vec![0u8; 300]).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+
+        let stored = cache
+            .store_artifact(&src, "compress", "jpg|quality=80", "jpg", &produced)
+            .unwrap();
+        assert!(
+            stored.exists(),
+            "the artifact just stored must not be evicted"
+        );
+        assert!(!old.exists(), "older entries go first");
     }
 
     #[test]

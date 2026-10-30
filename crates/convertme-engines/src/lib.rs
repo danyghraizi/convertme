@@ -126,6 +126,9 @@ pub struct Context<'a> {
     pub tools: &'a Toolset,
     pub work: &'a WorkDir,
     pub ctx: &'a JobCtx,
+    /// The shared preview cache, when the caller has one. A job may reuse an artifact
+    /// the dialog already encoded for the identical request, and stores its own.
+    pub preview: Option<&'a crate::preview::PreviewCache>,
 }
 
 impl<'a> Context<'a> {
@@ -166,11 +169,24 @@ impl<'a> Context<'a> {
 /// The single [`EngineRunner`] implementation: routes a job to its module.
 pub struct Dispatcher {
     tools: Toolset,
+    preview: Option<crate::preview::PreviewCache>,
 }
 
 impl Dispatcher {
     pub fn new(tools: Toolset) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            preview: None,
+        }
+    }
+
+    /// A dispatcher whose jobs share one preview cache with the dialog: an identical
+    /// request can reuse the artifact the dialog already encoded.
+    pub fn with_preview(tools: Toolset, preview: crate::preview::PreviewCache) -> Self {
+        Self {
+            tools,
+            preview: Some(preview),
+        }
     }
 
     pub fn tools(&self) -> &Toolset {
@@ -277,6 +293,7 @@ impl EngineRunner for Dispatcher {
             tools: &self.tools,
             work,
             ctx,
+            preview: self.preview.as_ref(),
         };
         let route = self.route(job)?;
         let artifacts = match route {

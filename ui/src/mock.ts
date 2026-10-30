@@ -2,6 +2,7 @@ import { ACTIONS, FALLBACK_TARGETS, FALLBACK_TOOLS } from './catalog';
 import type {
   AnalyzeResult,
   BootInfo,
+  CompressPreview,
   DetectedBox,
   Field,
   HistoryRow,
@@ -217,6 +218,7 @@ const TOOL_FIELDS: Record<string, Field[]> = {
       label: 'Compress to a target file size',
       kind: 'checkbox',
       default: false,
+      control: true,
     },
     {
       key: 'target_bytes',
@@ -571,6 +573,31 @@ export function mockRun(
 
 export function mockPreviewThumb(path: string, size: number): string {
   return svgDataUrl(baseName(path), size, Math.round((size * 3) / 4));
+}
+
+/**
+ * The mock cannot encode, so it derives the same numbers the dialog displays from the
+ * fields. The real surface gets the size from the backend's actual encode.
+ */
+export function mockCompressPreview(
+  path: string,
+  params: Record<string, unknown>,
+): CompressPreview {
+  const source = 1_400_000 + path.length * 900;
+  const scale = Number(params.scale ?? 100) || 100;
+  const quality = Number(params.quality ?? 80) || 80;
+  const target = Number(params.target_bytes ?? 0) || 0;
+  const width = Math.max(1, Math.round((4032 * scale) / 100));
+  const height = Math.max(1, Math.round((3024 * scale) / 100));
+  const factor = Math.min(0.95, Math.max(0.02, (quality / 100) ** 2 * (scale / 100) ** 2));
+  const bytes = target > 0 ? Math.min(Math.round(target), source) : Math.round(source * factor);
+  return {
+    path: svgDataUrl(baseName(path), 512, Math.max(1, Math.round((512 * height) / width))),
+    bytes,
+    source_bytes: source,
+    width,
+    height,
+  };
 }
 
 export function mockDetectBoxes(path: string, faces: boolean): DetectedBox[] {

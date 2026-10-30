@@ -170,3 +170,35 @@ The preview components loaded their thumbnail once, on mount, so switching file 
 old picture on screen while the fields changed underneath. Any preview that takes a path
 reloads on that path; per-file settings are stored as *collected parameters* (never the
 whole value store — a UI control such as `mode` leaked and the backend rejected it).
+
+## 17. Evict on the clock the touch path writes
+
+**Trap.** The preview cache sorted entries by `accessed()` for LRU eviction, but `touch()`
+deliberately sets `modified()` because atime is unreliable under `relatime`/`noatime`.
+Under a normal mount every file's atime was "now", so eviction picked an arbitrary entry;
+`cap_is_enforced_oldest_first` failed one run in three.
+
+**Rule.** One timestamp is the age: the one the read path bumps. Sort by mtime, and make
+the eviction test set mtimes and assert the oldest is the one removed. Never mix atime and
+mtime as fallbacks for the same ordering.
+
+## 18. A switch that drives another field is a control
+
+**Trap.** Image compress rendered "Compress to a target file size" as a plain checkbox.
+`collectParams` sends every visible non-control field, so `target` reached the engine,
+`check_params` rejected it as unknown, and **every** compress run from the dialog failed
+validation — with the fields looking correct on screen.
+
+**Rule.** Every field referenced by a `show_if` is a control (`control: true`) unless the
+backend explicitly accepts that key; pin it with a contract test on both sides — the Rust
+field table and the collector test — and assert that the engine rejects the leaked key.
+The mock must carry the same flag, because the mock travels the reader.
+
+## 19. A preview of a compressed file must be the encoded file
+
+The compress dialog first had no preview. An estimate derived from a thumbnail would repeat
+lesson 3 (preview maths ≠ engine maths), so the dialog encodes the real file once and shows
+its true size, dimensions and pixels. The engine keys the artifact by source identity
+(canonical path, mtime, size) **and** the normalized parameters, so the identical job copies
+the preview bytes instead of encoding again. The test proves reuse by making the source
+unreadable before the job: only a cache hit can finish.

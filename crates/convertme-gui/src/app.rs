@@ -96,6 +96,7 @@ pub fn run() -> i32 {
         .invoke_handler(tauri::generate_handler![
             commands::boot,
             commands::image_size,
+            commands::compress_preview,
             commands::take_pending_paths,
             commands::analyze,
             commands::wheels,
@@ -167,7 +168,13 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
             history_limit: settings.history_limit,
             ..Default::default()
         },
-        Arc::new(convertme_engines::Dispatcher::new(tools.clone())),
+        Arc::new(convertme_engines::Dispatcher::with_preview(
+            tools.clone(),
+            convertme_engines::preview::PreviewCache::new(
+                paths::previews_dir(),
+                settings.preview_cache_bytes,
+            ),
+        )),
         store,
         tx,
     );

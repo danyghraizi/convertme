@@ -10,6 +10,7 @@ export { readFields };
 import type {
   AnalyzeResult,
   BootInfo,
+  CompressPreview,
   DetectedBox,
   DragSignal,
   Field,
@@ -189,6 +190,17 @@ function readRunResult(raw: unknown): RunResult {
   return { jobs: strings(o.jobs), skipped: readSkipped(o.skipped) };
 }
 
+function readCompressPreview(raw: unknown): CompressPreview {
+  const o = record(raw, 'compress preview');
+  return {
+    path: str(o.path),
+    bytes: num(o.bytes),
+    source_bytes: num(o.source_bytes),
+    width: num(o.width),
+    height: num(o.height),
+  };
+}
+
 function readDetectedBoxes(value: unknown): DetectedBox[] {
   return records(value)
     .map((o) => {
@@ -320,6 +332,18 @@ export async function imageSize(path: string): Promise<{ w: number; h: number } 
   }
   const raw = (await invoke('image_size', { path })) as [number, number] | null;
   return Array.isArray(raw) && raw.length === 2 ? { w: raw[0], h: raw[1] } : null;
+}
+
+/**
+ * The file the compress dialog will produce, encoded once at the chosen settings. The
+ * backend caches the artifact, so submitting the identical job copies it.
+ */
+export async function compressPreview(
+  path: string,
+  params: Record<string, unknown>,
+): Promise<CompressPreview> {
+  if (isMock()) return mock.mockCompressPreview(path, params);
+  return readCompressPreview(await invoke('compress_preview', { path, params }));
 }
 
 export async function toolFields(category: string, tool: string): Promise<Field[]> {

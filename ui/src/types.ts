@@ -167,6 +167,15 @@ export interface DetectedBox {
   detail: string;
 }
 
+/** The encoded file the compress dialog shows before the user commits. */
+export interface CompressPreview {
+  path: string;
+  bytes: number;
+  source_bytes: number;
+  width: number;
+  height: number;
+}
+
 export type DragSignal =
   | { kind: 'modifier'; key: string; active: boolean }
   | { kind: 'shortcut'; key: string }

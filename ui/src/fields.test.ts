@@ -55,3 +55,36 @@ test('a numeric select still becomes a number', () => {
   assert.deepEqual(collectParams(numeric, { scale: '2' }), { scale: 2 });
   assert.deepEqual(collectParams(numeric, { scale: '100%' }), { scale: '100%' });
 });
+
+/**
+ * The image-compress target switch drives `target_bytes`; if it travelled, the backend
+ * rejected the whole job with "unknown parameter `target`". The same field list is
+ * asserted to carry `control` on the Rust side (`field_payload`).
+ */
+test('the compress target switch never becomes a job parameter', () => {
+  const compress: Field[] = [
+    { key: 'quality', label: 'Quality', kind: 'range', default: 80 },
+    {
+      key: 'scale',
+      label: 'Image size',
+      kind: 'select',
+      default: '100',
+      options: ['100', '75', '50', '25'],
+    },
+    { key: 'target', label: 'Compress to a target file size', kind: 'checkbox', default: false, control: true },
+    {
+      key: 'target_bytes',
+      label: 'Target size',
+      kind: 'number',
+      default: 500000,
+      show_if: { key: 'target', equals: 'true' },
+    },
+  ];
+  const params = collectParams(compress, {
+    quality: 80,
+    scale: '100',
+    target: true,
+    target_bytes: 500000,
+  });
+  assert.deepEqual(params, { quality: 80, scale: 100, target_bytes: 500000 });
+});

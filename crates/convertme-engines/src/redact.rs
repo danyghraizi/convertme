@@ -452,6 +452,7 @@ mod tests {
             tools: &tools,
             work: &work,
             ctx: &jc,
+            preview: None,
         };
         let job = Job::new(
             png,

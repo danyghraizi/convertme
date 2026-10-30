@@ -1971,6 +1971,90 @@ body.wheel-body {
   mix-blend-mode: soft-light;
 }
 
+/* Compress preview: the encoded artifact itself, then the numbers that matter. */
+.compress-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.compress-frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: var(--sunken);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  min-height: 180px;
+}
+
+.compress-image {
+  display: block;
+  max-width: 100%;
+  max-height: 34vh;
+  user-select: none;
+}
+
+.compress-empty {
+  margin: 0;
+  padding: var(--s-5);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+/* Re-encoding an edited setting keeps the old image on screen; this says it is stale. */
+.compress-working {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  animation: compress-pulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes compress-pulse {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.compress-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: var(--t-2xs);
+  color: var(--ink-2);
+}
+
+.compress-dimensions,
+.compress-size {
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
+.compress-delta {
+  font-weight: 600;
+}
+
+.compress-saved {
+  color: var(--ok-ink);
+}
+
+.compress-grown {
+  color: var(--warn-ink);
+}
+
+.compress-note {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
 /* Background composition stage. */
 .background-stage {
   display: grid;

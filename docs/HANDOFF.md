@@ -1,36 +1,52 @@
 # Handoff
 
-State of the project at the end of the first background-conversion session. Read this
-first, then `AGENTS.md` (rules) and `docs/LESSONS.md` (why the rules exist).
+State of the project after the second working session: `add background` is complete and
+**Compress now previews its real result**. Read this first, then `AGENTS.md` (rules) and
+`docs/LESSONS.md` (why the rules exist).
 
 ## Where things stand
 
-`add background` is feature-complete and verified. Nothing else has been started.
+`add background` and `compress` are feature-complete and verified. Nothing else has been
+started.
 
 Working tools (UI and engine): Compress, Crop, Add background, Edit photo, Metadata,
 Redact, plus conversions for images. The wheel, the drag layer, the queue, history and
 settings exist as described in the plan; the GUI is usable end to end on this machine.
 
-## What "add background" does now
+## What "compress" does now
 
 | Control | Behaviour |
 |---|---|
-| Fill presets | 4 solids, a rule, 4 gradients, then an image button that switches the mode to “Another image” |
-| Fill | colour (picker + presets + hex), gradient (linear/radial, angle, 2–8 stops with positions), another image with Choose… |
-| Padding / corners | percentages of the shorter side: 0–100 % and 0–100 % (100 % = fully rounded) |
-| Shadow | 0–100 %, angle 0–360 (0 = above, 180 = below), density and spread both follow the value |
-| Background image | zoom (up to 3×), across / up-down, or drag directly on the canvas |
-| Canvas ratio | Auto, 1:1, 16:9, 4:3, 9:16, 3:4, 4:5 |
-| Preview | the real canvas size in pixels, the photo centred with its padding, the chosen image and shadow |
-| Files | arrow picker for a multi-file selection; each file keeps its own settings unless “Same settings for every file” is ticked; Run sends one job per file |
+| Quality | 1–100, encoder quality for lossy formats |
+| Image size | 100 / 75 / 50 / 25 % of the dimensions |
+| Target file size | quality search, then up to three downscale rounds; the smallest result when the target is unreachable (lossless also drops the palette) |
+| Preview | the **real encoded file**: true size, true dimensions, percent saved, and a picture of the result. Re-encodes 400 ms after the last edit, with stale responses dropped |
+| Run | reuses the preview artifact when source mtime/size and every parameter still match; otherwise encodes once and stores it |
+
+The preview is keyed in the shared 256 MB preview cache by source identity (canonical
+path, mtime, size) plus the normalized parameters and the output extension. A cache hit is
+a copy; there is no second encode. The whole pipeline is
+`encode_compress` → `PreviewCache::store_artifact` → `compress` cache hit.
+
+Fixed in the same pass: the `target file size` switch was a plain checkbox, so it travelled
+to the backend and `check_params` rejected **every** image compress run ("unknown parameter
+`target`"). It is now marked `control` like the background mode switch.
 
 Engine notes worth knowing:
 
+- `add background` fills: 4 solids, a rule, 4 gradients, plus another image; padding and
+  corners as percentages of the shorter side (100 % = fully rounded); shadow 0–100 % with
+  an angle (0 = above, 180 = below); background image zoom to 3× with drag on the canvas;
+  canvas ratio Auto/1:1/16:9/4:3/9:16/3:4/4:5; multi-file arrow picker with per-file
+  settings unless "Same settings for every file" is ticked. Its preview shows the real
+  canvas size in pixels.
 - The background picture is cropped at source resolution and then scaled to the canvas.
 - The shadow is built from a rounded-rect mask at ≤ 600 px, blurred, turned into alpha and
   scaled back; above **60 megapixels** it is skipped so the job still succeeds.
 - ImageMagick works at depth 8 for the composition, with 1 GiB of RAM, 2 GiB of mapping
   and 16 GiB of disk spill (`crates/convertme-engines/src/proc.rs`).
+- The preview cache evicts by **mtime**, not atime: `touch()` bumps mtime, and atime is
+  unreliable under relatime/noatime.
 
 ## Known limits / next performance work (deliberately not done)
 
@@ -42,17 +58,29 @@ Engine notes worth knowing:
 3. **Shadow cost is still the dominant term** for big canvases (several seconds).
 4. The installed size and cold-start budgets from the plan have not been re-measured since
    the UI work.
+5. Compress target-size previews re-run the whole quality search on every parameter
+   change. It is debounced and cached, but a target on a huge file still costs seconds.
 
 ## Verification status
 
 - `./scripts/preflight.sh` passes: identity gate, fmt, clippy `-D warnings`, all workspace
-  tests (67 engine tests, 13 GUI tests), node tests for the field reader and the parameter
+  tests (71 engine tests, 15 GUI tests), node tests for the field reader and the parameter
   collector, UI typecheck/build, clean-checkout builds.
 - Composition tests pin: proportional padding/corners, rounding belongs to the photo,
   background placement stays inside the frame at -100/0/100, shadow darkens the band.
-- Contract tests pin: the field payload names the kinds the UI renders; the binary embeds
-  the built bundle; the reader keeps every kind and property; controls and hidden fields
-  never become backend parameters.
+- Compress tests pin: a preview's bytes equal the job's artifact, the job completes with
+  the **source unreadable** (proving reuse rather than a second encode), different
+  qualities produce different artifacts, the artifact key keeps its extension, and the
+  command body reports the real fixture file and resolves a repeat request to the same
+  cached artifact.
+- Contract tests pin: the field payload names the kinds the UI renders and marks the
+  compress target switch as a control; the binary embeds the built bundle; the reader
+  keeps every kind and property; controls and hidden fields never become backend
+  parameters.
+- The dialog was measured in the built bundle (mock mode, headless Firefox): pane
+  570×254 px inside the modal, image loaded (512×384), facts read
+  `4032 × 3024 · 886 KB · −36% · from 1.4 MB`, and ticking the target switch re-encoded to
+  `488 KB · −65%` within the debounce.
 
 ## Running it
 
@@ -67,8 +95,8 @@ compares the embedded page with `ui-dist`).
 
 ## Backlog
 
-1. **Compress** — the next tool to bring to the same standard (target size or percentage,
-   preview before commit).
-2. Crop, Edit photo, Annotate, Redact, Metadata — the rest of the image tool row.
+1. **Crop** — the next tool to bring to the same standard (a live preview of the kept
+   area, already started via `CropEditor`; check the handles and multi-file behaviour).
+2. Edit photo, Annotate, Redact, Metadata — the rest of the image tool row.
 3. Video, audio, PDF, documents, slides, spreadsheets, EPUB, subtitles, archives.
 4. Performance pass per the plan's Step 0 budgets, including tiled composition.

@@ -913,6 +913,7 @@ mod tests {
             tools,
             work: &work,
             ctx: &ctx,
+            preview: None,
         };
         run(job, &cx)
     }
