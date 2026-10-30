@@ -194,15 +194,21 @@ fn err_to_string(e: impl std::fmt::Display) -> String {
 }
 
 #[tauri::command]
-pub fn boot(state: State<'_, AppState>) -> Boot {
+pub fn boot(window: tauri::WebviewWindow, state: State<'_, AppState>) -> Boot {
     let settings = state.settings.lock().clone();
     let caps = state.caps.read().clone();
-    let pending = state
-        .pending
-        .lock()
-        .drain(..)
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    // The wheel window is prewarmed at startup and boots too. Draining the pending
+    // paths there lost every "Open with" launch; only the main window consumes them.
+    let pending: Vec<String> = if window.label() == "main" {
+        state
+            .pending
+            .lock()
+            .drain(..)
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
     Boot {
         settings,
         backend: BackendInfo {

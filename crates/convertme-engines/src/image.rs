@@ -333,7 +333,7 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
     }
 
     let produced = optimize_png(
-        prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?,
+        prefer_smaller(job, encode_compress(job, cx, params)?, ext, cx)?,
         ext,
         cx,
     )?;
@@ -355,7 +355,7 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 
 /// Bump when the encoder output for the same request changes: the key otherwise only
 /// covers the source file and the parameters, so an old preview would be reused.
-const COMPRESS_CACHE_VERSION: &str = "v3";
+const COMPRESS_CACHE_VERSION: &str = "v4";
 
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
@@ -459,7 +459,7 @@ pub fn preview_compress(job: &Job, cx: &Context<'_>) -> Result<CompressPreview, 
         Some(hit) => hit,
         None => {
             let produced = optimize_png(
-                prefer_smaller(&job.source, encode_compress(job, cx, params)?, ext, cx)?,
+                prefer_smaller(job, encode_compress(job, cx, params)?, ext, cx)?,
                 ext,
                 cx,
             )?;
@@ -1561,16 +1561,21 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), JobError> {
 /// Keep the original when the encoder produced something larger. A compressor that
 /// grows a file is not a compressor; the AV and PDF tools use the same rule.
 fn prefer_smaller(
-    source: &Path,
+    job: &Job,
     produced: PathBuf,
     ext: &str,
     cx: &Context<'_>,
 ) -> Result<PathBuf, JobError> {
-    if file_len(&produced)? < file_len(source)? {
+    // SVG rasterises to PNG: comparing the two by size is meaningless, and copying the
+    // SVG under a .png name produced an artifact no viewer could open.
+    let same_format = input_format(job)
+        .map(|format| format.canonical_ext() == ext)
+        .unwrap_or(false);
+    if !same_format || file_len(&produced)? < file_len(&job.source)? {
         return Ok(produced);
     }
     let copy = cx.scratch(&format!("compress-original.{ext}"));
-    copy_file(source, &copy)?;
+    copy_file(&job.source, &copy)?;
     Ok(copy)
 }
 
@@ -2291,6 +2296,39 @@ mod tests {
             original.as_raw() == output.as_raw(),
             "PNG optimisation changed pixels"
         );
+    }
+
+    /// SVG is read-only and rasterises to PNG; the result must be a real PNG, not a copy
+    /// of the SVG under a .png name (that was the broken preview).
+    #[test]
+    fn compressing_an_svg_produces_a_png() {
+        let Some(f) = fixture() else { return };
+        let source = f._dir.path().join("drawing.svg");
+        std::fs::write(
+            &source,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2ea8a0"/></svg>"##,
+        )
+        .expect("write svg");
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({})),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        assert_eq!(
+            artifacts[0].extension().and_then(|e| e.to_str()),
+            Some("png")
+        );
+        let bytes = std::fs::read(&artifacts[0]).expect("read output");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "the artifact is not a PNG: {:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(40)])
+        );
+        let (width, height) = ::image::image_dimensions(&artifacts[0]).expect("decode output");
+        assert_eq!((width, height), (120, 80));
     }
 
     #[test]

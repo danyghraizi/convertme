@@ -285,3 +285,24 @@ timeout and a size cap) and keep the smaller result. Do not compare against a we
 number without checking whether it is lossless: a 16-bit 2000×3000 poster shrank to 18 KB
 there by reducing it to a 177-colour palette — lossy colour reduction, not compression.
 If that is wanted, make it an explicit "reduce colours" choice.
+
+## 27. A prewarmed window must not consume launch state
+
+**Trap.** The wheel window is created hidden at startup. Its `boot()` command drained the
+pending launch paths, so `convertme photo.jpg` opened the main window with an empty
+selection — the file had been consumed by a window that never uses it. This was invisible
+until the app was driven with a file on the command line.
+
+**Rule.** Launch state belongs to the window that acts on it. Take it only for the main
+window (or pass it explicitly); a prewarmed/auxiliary webview may read settings but must
+not drain pending data.
+
+## 28. Never compare file sizes across formats
+
+**Trap.** "Compress never grows a file" compared the produced PNG with the source SVG and
+kept the 502-byte SVG, renaming it `.png`. The dialog then showed a broken image: a PNG
+extension with SVG bytes.
+
+**Rule.** Apply the never-grow rule only when the container is unchanged. A format change
+(SVG→PNG) has no comparable size, and an artifact must always be in its stated format;
+test the magic bytes, not just the name.

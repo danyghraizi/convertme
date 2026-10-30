@@ -97,6 +97,10 @@ Engine notes worth knowing:
   parameters.
 - The CLI publishes a relative input next to the working directory; it used to treat the
   empty parent as unwritable and write to `~/Downloads`.
+- SVG compresses to a real PNG (rasterisation is a format change, so the never-grow rule
+  does not compare the PNG with the SVG bytes).
+- `boot` drains the launch paths only for the main window: the prewarmed wheel boots too
+  and used to swallow every "Open with" launch before the main window saw it.
 - The dialog was measured in the built bundle (mock mode, headless Firefox): pane
   570×254 px inside the modal, image loaded (512×384), facts read
   `4032 × 3024 · 886 KB · −36% · from 1.4 MB`, and ticking the target switch re-encoded to
