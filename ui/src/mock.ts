@@ -465,10 +465,72 @@ const TOOL_FIELDS: Record<string, Field[]> = {
   ],
 };
 
-export function mockToolFields(_category: string, tool: string): Field[] {
-  const fields = TOOL_FIELDS[tool] ?? [];
+export function mockToolFields(category: string, tool: string): Field[] {
+  const fields =
+    tool === 'compress'
+      ? category === 'video'
+        ? VIDEO_COMPRESS_FIELDS
+        : category === 'audio'
+          ? AUDIO_COMPRESS_FIELDS
+          : (TOOL_FIELDS.compress ?? [])
+      : (TOOL_FIELDS[tool] ?? []);
   return structuredClone(fields);
 }
+
+/** Mirrors `fields_for(Video/Audio, Compress)`: a proportion, with opt-in absolutes. */
+const VIDEO_COMPRESS_FIELDS: Field[] = [
+  {
+    key: 'percent',
+    label: 'Size',
+    kind: 'range',
+    default: 50,
+    min: 5,
+    max: 100,
+    step: 1,
+    unit: '% of the original',
+  },
+  {
+    key: 'size_target',
+    label: 'Or a target file size',
+    kind: 'checkbox',
+    default: false,
+    control: true,
+  },
+  {
+    key: 'target_bytes',
+    label: 'Target size',
+    kind: 'number',
+    default: 5000000,
+    min: 1000,
+    max: 20000000000,
+    step: 1000,
+    unit: 'bytes',
+    show_if: { key: 'size_target', equals: 'true' },
+  },
+];
+
+const AUDIO_COMPRESS_FIELDS: Field[] = [
+  ...VIDEO_COMPRESS_FIELDS.slice(0, 1),
+  {
+    key: 'bitrate_set',
+    label: 'Or a bitrate',
+    kind: 'checkbox',
+    default: false,
+    control: true,
+  },
+  {
+    key: 'bitrate',
+    label: 'Bitrate',
+    kind: 'number',
+    default: 128,
+    min: 8,
+    max: 512,
+    step: 1,
+    unit: 'kbps',
+    show_if: { key: 'bitrate_set', equals: 'true' },
+  },
+  ...VIDEO_COMPRESS_FIELDS.slice(1),
+];
 
 let historySeq = 1000;
 const historyRows: HistoryRow[] = [

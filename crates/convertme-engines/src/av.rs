@@ -401,18 +401,30 @@ fn compress(job: &Job, category: Category, cx: &Context<'_>) -> Result<Vec<PathB
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
     let ext = source_ext(job);
     let budget = budget_for(category);
-    if matches!(category, Category::Video) {
-        compress_video(job, cx, &ffmpeg, &ext, &info, budget)
+    let artifacts = if matches!(category, Category::Video) {
+        compress_video(job, cx, &ffmpeg, &ext, &info, budget)?
     } else {
-        compress_audio(job, cx, &ffmpeg, &ext, &info, budget)
+        compress_audio(job, cx, &ffmpeg, &ext, &info, budget)?
+    };
+
+    // A compressor that grows a file is not a compressor (the PDF tool has the same
+    // rule). Some encoders cannot reach the requested bitrate on a short clip; the
+    // result is then a copy of the original, never a larger file.
+    if let Some(out) = artifacts.first() {
+        let produced = std::fs::metadata(out).map(|meta| meta.len()).unwrap_or(0);
+        if produced >= info.size {
+            std::fs::copy(&job.source, out)
+                .map_err(|e| JobError::io("keeping the original instead", &e))?;
+        }
     }
+    Ok(artifacts)
 }
 
 fn validate_compress(job: &Job, category: Category) -> Result<(), JobError> {
     let p = job.intent.params();
     let bytes = num_param(p, "target_bytes").filter(|v| *v > 0.0);
+    let percent = num_param(p, "percent").filter(|v| *v > 0.0 && *v <= 100.0);
     if matches!(category, Category::Video) {
-        let percent = num_param(p, "percent").filter(|v| *v > 0.0 && *v <= 100.0);
         if bytes.is_none() && percent.is_none() {
             return Err(invalid(
                 "compress needs target_bytes or percent between 0 and 100",
@@ -420,10 +432,18 @@ fn validate_compress(job: &Job, category: Category) -> Result<(), JobError> {
         }
     } else {
         let bitrate = num_param(p, "bitrate").filter(|v| *v >= 8.0 && *v <= 1024.0);
-        if bytes.is_none() && bitrate.is_none() {
+        if bytes.is_none() && percent.is_none() && bitrate.is_none() {
             return Err(invalid(
-                "audio compress needs bitrate (kbps) or target_bytes",
+                "audio compress needs bitrate (kbps), target_bytes or percent",
             ));
+        }
+        // WAV/AIFF/FLAC keep every sample; a size or bitrate target cannot apply without
+        // changing the format, so refusing beats silently writing the same file back.
+        let ext = source_ext(job);
+        if is_lossless(&ext) {
+            return Err(invalid(format!(
+                "{ext} is lossless; convert it to MP3, OGG or Opus to compress it"
+            )));
         }
     }
     Ok(())
@@ -461,14 +481,20 @@ fn compress_video(
         .filter(|v| *v >= 32.0 && *v <= 512.0)
         .unwrap_or(128.0);
     let total_kbps = target * 8.0 / info.duration / 1000.0;
-    let video_kbps = (total_kbps - audio_kbps).floor().max(50.0);
-    if total_kbps <= audio_kbps + 25.0 {
+    // A small target is legitimate (a 2 s clip at 50 %). Give the audio stream what is
+    // left rather than refusing the encode; only refuse when even a minimal audio
+    // track plus video cannot fit.
+    if total_kbps < 48.0 {
         return Err(invalid(format!(
-            "a {:.1} MB target is too small for {:.1} s of video",
+            "a target of {:.1} MB is too small for {:.1} s of video",
             target / 1_000_000.0,
             info.duration
         )));
     }
+    let audio_kbps = audio_kbps
+        .min((total_kbps * 0.3).max(32.0))
+        .min(total_kbps - 16.0);
+    let video_kbps = (total_kbps - audio_kbps).floor().max(16.0);
 
     let (encoder, pass_supported) = match ext {
         "webm" => {
@@ -558,39 +584,45 @@ fn compress_audio(
     if !info.has_audio {
         return Err(invalid("the input has no audio track"));
     }
+    if is_lossless(ext) {
+        return Err(invalid(format!(
+            "{ext} is lossless; convert it to MP3, OGG or Opus to compress it"
+        )));
+    }
     let p = job.intent.params();
     let bitrate = num_param(p, "bitrate").filter(|v| *v >= 8.0 && *v <= 1024.0);
-    let kbps = match (bitrate, num_param(p, "target_bytes")) {
+    // A relative target is the default the dialog sends: it cannot exceed the source.
+    let target = num_param(p, "target_bytes")
+        .filter(|v| *v > 0.0)
+        .or_else(|| {
+            num_param(p, "percent")
+                .filter(|v| *v > 0.0 && *v <= 100.0)
+                .map(|percent| info.size as f64 * percent / 100.0)
+        });
+    let codec = lossy_audio_codec(ext);
+    let kbps = match (bitrate, target) {
         (Some(b), _) => b,
-        (None, Some(bytes)) if bytes > 0.0 && info.duration > 0.0 => {
-            (bytes * 8.0 / info.duration / 1000.0)
-                .floor()
-                .clamp(32.0, 512.0)
-        }
+        (None, Some(target)) if info.duration > 0.0 => (target * 8.0 / info.duration / 1000.0)
+            .floor()
+            .clamp(8.0, 512.0),
         _ => 128.0,
     };
+    // libvorbis (and wmav2) refuse to open the encoder below 32 kbps; a relative
+    // target on a small file lands under it. Clamp per codec rather than fail.
+    let kbps = kbps.max(min_audio_kbps(codec)).min(512.0);
 
     let output = cx.out(&out_name(job, Some("compressed"), ext));
     cx.ctx.set_stage("compressing audio");
     let mut cmd = ffmpeg_cmd(ffmpeg);
     cmd = cmd.arg("-i").arg(&job.source).arg("-vn");
 
-    if is_lossless(ext) {
-        if let Some(args) = audio_encode_args(cx, ext)? {
-            for arg in args {
-                cmd = cmd.arg(arg);
-            }
-        }
-    } else {
-        let codec = lossy_audio_codec(ext);
-        if let Some(feature) = encoder_feature(codec) {
-            require_encoder(cx, feature, codec)?;
-        }
-        cmd = cmd
-            .args(["-c:a", codec])
-            .arg("-b:a")
-            .arg(format!("{}k", kbps as u64));
+    if let Some(feature) = encoder_feature(codec) {
+        require_encoder(cx, feature, codec)?;
     }
+    cmd = cmd
+        .args(["-c:a", codec])
+        .arg("-b:a")
+        .arg(format!("{}k", kbps as u64));
     if let Some(m) = muxer_for_ext(ext) {
         cmd = cmd.args(["-f", m]);
     }
@@ -1675,6 +1707,17 @@ fn lossy_audio_codec(ext: &str) -> &'static str {
     }
 }
 
+/// The lowest bitrate each encoder accepts; below it ffmpeg refuses to open the
+/// encoder ("encoder setup failed"), which a relative target on a small file hits.
+fn min_audio_kbps(codec: &str) -> f64 {
+    match codec {
+        "libvorbis" | "wmav2" => 32.0,
+        "aac" => 16.0,
+        "libopus" => 6.0,
+        _ => 8.0,
+    }
+}
+
 fn encoder_feature(encoder: &str) -> Option<&'static str> {
     Some(match encoder {
         "libx264" => "libx264",
@@ -1962,6 +2005,32 @@ mod tests {
             path
         }
 
+        fn wav(&self) -> PathBuf {
+            let path = self.dir.path().join("voice.wav");
+            if !path.exists() {
+                let output = Command::new(self.ffmpeg())
+                    .args([
+                        "-hide_banner",
+                        "-y",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "sine=frequency=330:duration=1.0",
+                        "-c:a",
+                        "pcm_s16le",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .expect("running ffmpeg to build the wav fixture");
+                assert!(
+                    output.status.success(),
+                    "wav fixture generation failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            path
+        }
+
         fn inspect(&self, path: &Path) -> serde_json::Value {
             let output = Command::new(self.ffprobe())
                 .args([
@@ -2060,6 +2129,68 @@ mod tests {
             .iter()
             .any(|s| s["codec_type"] == "audio");
         assert!(audio, "the mp3 has no audio stream");
+    }
+
+    #[test]
+    fn video_compress_percent_shrinks_a_short_clip() {
+        let Some(env) = Env::new() else { return };
+        let source = env.video();
+        let before = std::fs::metadata(&source).expect("metadata").len();
+        let job = tool_job(&source, ToolId::Compress, json!({ "percent": 50 }));
+        validate(&job, Category::Video).expect("percent is a valid target");
+        let artifacts = run_job(&env, &job);
+        let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+        assert!(
+            after < before,
+            "50 % of {before} bytes produced {after} bytes"
+        );
+    }
+
+    #[test]
+    fn audio_compress_percent_shrinks() {
+        let Some(env) = Env::new() else { return };
+        let source = env.audio();
+        let before = std::fs::metadata(&source).expect("metadata").len();
+        let job = tool_job(&source, ToolId::Compress, json!({ "percent": 50 }));
+        validate(&job, Category::Audio).expect("percent is a valid target");
+        let artifacts = run_job(&env, &job);
+        let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+        assert!(
+            after < before,
+            "50 % of {before} bytes produced {after} bytes"
+        );
+    }
+
+    /// A target larger than the source once made the encoder write a bigger file.
+    #[test]
+    fn compress_never_grows_the_file() {
+        let Some(env) = Env::new() else { return };
+        let source = env.video();
+        let before = std::fs::metadata(&source).expect("metadata").len();
+        let job = tool_job(
+            &source,
+            ToolId::Compress,
+            json!({ "target_bytes": before * 2 }),
+        );
+        let artifacts = run_job(&env, &job);
+        let after = std::fs::metadata(&artifacts[0]).expect("metadata").len();
+        assert!(after <= before, "{before} bytes grew to {after}");
+    }
+
+    /// WAV keeps every sample, so a size target cannot apply. Writing the same file
+    /// back under a "compressed" name claimed a compression that never happened.
+    #[test]
+    fn lossless_audio_is_refused() {
+        let Some(env) = Env::new() else { return };
+        let source = env.wav();
+        let job = tool_job(&source, ToolId::Compress, json!({ "percent": 50 }));
+        let err = validate(&job, Category::Audio).expect_err("must refuse");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        assert!(err.message.contains("lossless"), "{}", err.message);
+        // The engine refuses too, for callers that skip plan validation.
+        let cx = env.context();
+        let err = run(&job, &cx).expect_err("must refuse");
+        assert_eq!(err.code, ErrorCode::Unsupported);
     }
 
     #[test]

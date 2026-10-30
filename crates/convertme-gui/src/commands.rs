@@ -792,17 +792,53 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             fields.push(checkbox("detect_text", "Find text automatically", true));
             fields
         }
-        (Category::Video, ToolId::Compress) | (Category::Audio, ToolId::Compress) => vec![
+        (Category::Video, ToolId::Compress) => vec![
+            // Relative to the source, as lesson 11: a fixed byte default compressed a
+            // 62 KB clip into 131 KB.
+            ranged(
+                "percent",
+                "Size",
+                50.0,
+                5.0,
+                100.0,
+                1.0,
+                "% of the original",
+            ),
+            checkbox("size_target", "Or a target file size", false).control(),
             num(
                 "target_bytes",
                 "Target size",
-                20_000_000.0,
-                0.0,
+                5_000_000.0,
+                1000.0,
                 20_000_000_000.0,
-                1.0,
+                1000.0,
                 "bytes",
+            )
+            .when("size_target", "true"),
+        ],
+        (Category::Audio, ToolId::Compress) => vec![
+            ranged(
+                "percent",
+                "Size",
+                50.0,
+                5.0,
+                100.0,
+                1.0,
+                "% of the original",
             ),
-            num("bitrate", "Or bitrate", 0.0, 0.0, 512.0, 1.0, "kbps"),
+            checkbox("bitrate_set", "Or a bitrate", false).control(),
+            num("bitrate", "Bitrate", 128.0, 8.0, 512.0, 1.0, "kbps").when("bitrate_set", "true"),
+            checkbox("size_target", "Or a target file size", false).control(),
+            num(
+                "target_bytes",
+                "Target size",
+                5_000_000.0,
+                1000.0,
+                20_000_000_000.0,
+                1000.0,
+                "bytes",
+            )
+            .when("size_target", "true"),
         ],
         (Category::Video, ToolId::Trim) | (Category::Audio, ToolId::Trim) => vec![
             num("start", "Start", 0.0, 0.0, 86_400.0, 0.1, "s"),
@@ -1212,6 +1248,66 @@ mod field_payload {
                     .as_slice()
             )
         );
+    }
+
+    /// A switch that drives `show_if` must be a control or it travels as a parameter;
+    /// that exact leak rejected every image compress run.
+    #[test]
+    fn every_show_if_driver_is_a_control() {
+        use convertme_core::formats::{Category, Registry};
+        for category in Category::ALL {
+            for tool in Registry::tools_for(category) {
+                let fields = super::fields_for(category, tool.id);
+                for field in &fields {
+                    let Some(rule) = &field.show_if else { continue };
+                    let driver = fields
+                        .iter()
+                        .find(|f| f.key == rule.key)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{} {}: show_if names missing `{}`",
+                                category.key(),
+                                tool.id.as_str(),
+                                rule.key
+                            )
+                        });
+                    assert!(
+                        driver.control,
+                        "{} {}: `{}` drives `{}` but is not a control",
+                        category.key(),
+                        tool.id.as_str(),
+                        rule.key,
+                        field.key
+                    );
+                }
+            }
+        }
+    }
+
+    /// Video and audio compress defaulted to an absolute 20 MB target: a 62 KB clip
+    /// came out at 131 KB. The default must be a proportion of the source.
+    #[test]
+    fn av_compress_defaults_are_relative() {
+        let video = super::tool_fields("video".into(), "compress".into());
+        let percent = video
+            .iter()
+            .find(|f| f.key == "percent")
+            .expect("a relative size field");
+        assert_eq!(percent.kind, "range");
+        assert_eq!(percent.default, serde_json::json!(50.0));
+        assert!(
+            video.iter().all(|f| f.key != "bitrate"),
+            "the video encoder reads no bitrate parameter"
+        );
+        let target = video
+            .iter()
+            .find(|f| f.key == "target_bytes")
+            .expect("a target-size option");
+        assert!(target.show_if.is_some(), "the target hides until asked for");
+
+        let audio = super::tool_fields("audio".into(), "compress".into());
+        assert!(audio.iter().any(|f| f.key == "percent"));
+        assert!(audio.iter().any(|f| f.key == "bitrate"));
     }
 
     /// The dialog sends only non-control, visible fields. The target switch must stay a

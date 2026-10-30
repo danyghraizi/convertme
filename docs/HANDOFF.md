@@ -28,6 +28,21 @@ path, mtime, size) plus the normalized parameters and the output extension. A ca
 a copy; there is no second encode. The whole pipeline is
 `encode_compress` → `PreviewCache::store_artifact` → `compress` cache hit.
 
+The other Compress families (no dialog preview; they are not pictures):
+
+| Category | Controls | Behaviour |
+|---|---|---|
+| Video (incl. GIF) | Size 5–100 % of the source (default 50), or an opt-in target size | bitrate derived from the target; a short clip's audio budget shrinks to fit instead of failing; never grows |
+| Audio | Size %, or an opt-in bitrate / target size | per-codec bitrate floors (libvorbis needs 32 kbps); lossless WAV/AIFF/FLAC is refused with "convert to MP3, OGG or Opus" instead of writing the same file back |
+| PDF | preset (screen/ebook/printer/prepress), optional target | Ghostscript tiers; falls back to a copy when the result would not be smaller |
+
+Matrix on the fixtures (2026-10-30): images PNG/JPG/BMP/TIFF/WEBP/AVIF/HEIC/SVG plus a
+generated PNG all produced valid files (GIF is registered under Video and compresses
+there); video MP4/MKV/WEBM/MOV/AVI/WMV/GIF all at ≤ the source size; lossy audio
+MP3/OGG/OPUS/M4A/WMA all shrank; PDF compressed, an empty PDF is skipped. `scale 50` on a
+1200×800 PNG produced 600×400; target sizes were honoured where reachable and the
+smallest result returned where not.
+
 Fixed in the same pass: the `target file size` switch was a plain checkbox, so it travelled
 to the backend and `check_params` rejected **every** image compress run ("unknown parameter
 `target`"). It is now marked `control` like the background mode switch.
@@ -64,7 +79,7 @@ Engine notes worth knowing:
 ## Verification status
 
 - `./scripts/preflight.sh` passes: identity gate, fmt, clippy `-D warnings`, all workspace
-  tests (71 engine tests, 15 GUI tests), node tests for the field reader and the parameter
+  tests (75 engine tests, 17 GUI tests), node tests for the field reader and the parameter
   collector, UI typecheck/build, clean-checkout builds.
 - Composition tests pin: proportional padding/corners, rounding belongs to the photo,
   background placement stays inside the frame at -100/0/100, shadow darkens the band.
@@ -77,6 +92,8 @@ Engine notes worth knowing:
   compress target switch as a control; the binary embeds the built bundle; the reader
   keeps every kind and property; controls and hidden fields never become backend
   parameters.
+- The CLI publishes a relative input next to the working directory; it used to treat the
+  empty parent as unwritable and write to `~/Downloads`.
 - The dialog was measured in the built bundle (mock mode, headless Firefox): pane
   570×254 px inside the modal, image loaded (512×384), facts read
   `4032 × 3024 · 886 KB · −36% · from 1.4 MB`, and ticking the target switch re-encoded to

@@ -183,8 +183,11 @@ pub fn dir_is_writable(dir: &Path) -> bool {
 /// Pick the publish directory: the source's own directory when writable,
 /// otherwise the Downloads fallback (named in the toast by the caller).
 pub fn publish_dir_for(source: &Path) -> (PathBuf, bool) {
+    // `Path::new("photo.png").parent()` is `Some("")`, and an empty path is not a
+    // directory: a relative input used to be published to the Downloads fallback.
     let own = source
         .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     if dir_is_writable(&own) {
@@ -221,6 +224,15 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("convertme-tmp"))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn a_bare_filename_publishes_in_the_working_directory() {
+        // `photo.png` has `Some("")` as its parent; that must mean ".", not the
+        // Downloads fallback, or every CLI run with a relative path went elsewhere.
+        let (dir, fallback) = publish_dir_for(Path::new("photo.png"));
+        assert!(!fallback);
+        assert_eq!(dir, PathBuf::from("."));
     }
 
     #[test]

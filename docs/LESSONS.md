@@ -202,3 +202,46 @@ its true size, dimensions and pixels. The engine keys the artifact by source ide
 (canonical path, mtime, size) **and** the normalized parameters, so the identical job copies
 the preview bytes instead of encoding again. The test proves reuse by making the source
 unreadable before the job: only a cache hit can finish.
+
+## 20. A default must be relative to the file
+
+**Trap.** Video and audio compress shipped a fixed `target_bytes` default of 20 MB. The
+dialog always sent it, so "compress" a 62 KB clip with the defaults produced **131 KB** —
+the feature inflated the file it was meant to shrink. Image compress had already learned
+this (percentages of the shorter side); the AV table had not.
+
+**Rule.** When a field's sensible value depends on the input, express it as a proportion
+and compute the absolute number in the engine from the real `size`. An absolute number in
+a field table is only correct when the user opted into it.
+
+## 21. A knob the engine ignores is a lie
+
+**Trap.** The video compress dialog offered "Or bitrate", but `compress_video` never read
+`bitrate`; the audio dialog offered `bitrate` on WAV/FLAC, where the lossless branch
+ignored it and wrote the same file back. Both "worked" and did nothing.
+
+**Rule.** Every field in the table must be read by that category's engine code. Split a
+shared field table per category instead of offering controls one branch drops. When an
+operation cannot honour the control for a format (a bitrate on lossless audio), refuse
+with a message naming a format that can — never silently no-op.
+
+## 22. A relative target must respect the encoder's floor
+
+**Trap.** 50 % of a 41 kbps OGG is 20 kbps, and libvorbis refuses to open below 32 kbps:
+`encoder setup failed`, exit 234. The same shape appeared in video (`a 0.0 MB target is
+too small for 2.0 s of video`) because the audio stream alone exceeded the whole target.
+
+**Rule.** Clamp a derived bitrate to the codec's minimum (`min_audio_kbps`) and degrade the
+other streams (give video what is left of the audio budget) instead of failing a request
+the UI lets the user make. Test the smallest input the UI can select, not a comfortable
+one.
+
+## 23. An empty path component is not a directory
+
+**Trap.** The CLI was given `photo.png`; `Path::parent()` returns `Some("")`, `"".is_dir()`
+is false, so the destination check declared the source folder unwritable and published to
+`~/Downloads/ConvertMe`. The GUI was unaffected (absolute paths), which is why it survived.
+Found by running the compress matrix from a temporary folder with a relative name.
+
+**Rule.** Normalise a path's parent to `"."` before asking whether it is writable, and test
+the CLI with a relative filename, not only with absolute fixture paths.
