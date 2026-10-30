@@ -1,8 +1,10 @@
 # Handoff
 
-State of the project after the second working session: `add background` is complete and
-**Compress now previews its real result**. Read this first, then `AGENTS.md` (rules) and
-`docs/LESSONS.md` (why the rules exist).
+State of the project after the compress-hardening session: `add background` is complete
+and **Compress is feature-complete across images, video, audio and PDF, previews real
+output for images, and no longer inflates files**. A headless screenshot harness now
+drives every tool dialog. Read this first, then `AGENTS.md` (rules) and `docs/LESSONS.md`
+(why the rules exist).
 
 ## Where things stand
 
@@ -38,6 +40,24 @@ The other Compress families (no dialog preview; they are not pictures):
 | Audio | Size %, or an opt-in bitrate / target size | per-codec bitrate floors (libvorbis needs 32 kbps); lossless WAV/AIFF/FLAC is refused with "convert to MP3, OGG or Opus" instead of writing the same file back |
 | PDF | preset (screen/ebook/printer/prepress), optional target | Ghostscript tiers; falls back to a copy when the result would not be smaller |
 
+### Findings from this session
+
+Each item: cause → fix → evidence. The reusable rules are `docs/LESSONS.md` §17–29.
+
+| Symptom | Cause | Fix | Evidence |
+|---|---|---|---|
+| Every image compress run failed validation | the `target size` checkbox travelled as a parameter | marked it a control | `compress_target_is_a_control…`, manual run |
+| Preview cache evicted arbitrary entries | sorted by atime, but `touch()` bumps mtime | sort by mtime; never evict the artifact just stored | `cap_is_enforced_oldest_first` was 1-in-3 flaky, now 5/5 |
+| AV compress grew a 62 KB clip to 131 KB | fixed 20 MB `target_bytes` default always sent | percentage default (50 %), target/bitrate opt-in | matrix, 62→24 KB |
+| 2 s clips and small OGGs failed | audio budget exceeded the target; libvorbis floor is 32 kbps | degrade the audio budget; clamp per codec | mp4/webm/ogg tests |
+| Lossless audio "compressed" to the same file | lossless branch ignored bitrate | refuse with a format that can shrink | `lossless_audio_is_refused` |
+| q100 JPEG grew 5.4 MB → 17.9 MB | quality is fidelity, not compression | never return a larger file (copy the source) | CLI: byte-identical 5,625,026 |
+| PNG compressed only ~2.5 % vs a website | ImageMagick's encoder was the bottleneck | oxipng (lossless) + zlib 9; TIFF LZW | 96.9→81.9 KB, 112.1→67.6 KB, TIFF 5.76→3.08 MB |
+| SVG dialog showed a broken image | cross-format never-grow copied SVG bytes to `.png` | apply never-grow only when the container is unchanged | PNG magic bytes test + real app |
+| `convertme file` opened an empty window | the prewarmed wheel's `boot()` drained launch paths | drain only for the main window | real app: "1 file ready", screenshot |
+| CLI wrote relative inputs to `~/Downloads` | empty parent treated as unwritable | normalise to `.` | `a_bare_filename_publishes…` |
+| Quality slider did nothing on PNG/BMP/TIFF | those encoders ignore `-quality` | hide it for lossless selections and drop it from params | harness assertion, mixed selection keeps it |
+
 Matrix on the fixtures (2026-10-30): images PNG/JPG/BMP/TIFF/WEBP/AVIF/HEIC/SVG plus a
 generated PNG all produced valid files (GIF is registered under Video and compresses
 there); video MP4/MKV/WEBM/MOV/AVI/WMV/GIF all at ≤ the source size; lossy audio
@@ -63,7 +83,10 @@ Engine notes worth knowing:
 - ImageMagick works at depth 8 for the composition, with 1 GiB of RAM, 2 GiB of mapping
   and 16 GiB of disk spill (`crates/convertme-engines/src/proc.rs`).
 - The preview cache evicts by **mtime**, not atime: `touch()` bumps mtime, and atime is
-  unreliable under relatime/noatime.
+  unreliable under relatime/noatime. Its key is versioned (`v4`); bump it when encoder
+  output changes.
+- PNG optimisation runs the `oxipng` crate in-process (MIT; preset 2, 4 s timeout, 64 MB
+  cap); TIFF asks ImageMagick for LZW. Neither strips metadata.
 
 ## Known limits / next performance work (deliberately not done)
 
@@ -77,12 +100,22 @@ Engine notes worth knowing:
    the UI work.
 5. Compress target-size previews re-run the whole quality search on every parameter
    change. It is debounced and cached, but a target on a huge file still costs seconds.
+6. **Lossy PNG parity is not implemented.** The website result (18 KB) was a 177-colour
+   palette of the 16-bit poster. We do lossless only (81.9 KB). A "Reduce colours"
+   option using `imagequant` (GPL-3-compatible with this GPL app) is the honest next step;
+   ImageMagick's own quantizer is weak (74 KB at 256 colours) and should not be used.
+7. **16-bit PNGs stay 16-bit.** Converting to 8-bit before oxipng would reach ~35 KB on
+   the poster, but it is a precision reduction; it needs an explicit choice.
+8. GIF/JPEG website parity (gifsicle-style frame optimisation, mozjpeg-style encoding) is
+   not implemented; JPEG has quality control and the never-grow rule.
+9. The screenshot harness runs against the mock; tools without mock field tables do not
+   open a dialog. Real-window WebDriver needs `WebKitWebDriver`, which this install lacks.
 
 ## Verification status
 
 - `./scripts/preflight.sh` passes: identity gate, fmt, clippy `-D warnings`, all workspace
-  tests (80 engine tests, 17 GUI tests), node tests for the field reader and the parameter
-  collector, UI typecheck/build, clean-checkout builds.
+  tests (54 core, 81 engine, 17 GUI), node tests for the reader/collector/format helpers,
+  UI typecheck/build, clean-checkout builds.
 - Composition tests pin: proportional padding/corners, rounding belongs to the photo,
   background placement stays inside the frame at -100/0/100, shadow darkens the band.
 - Compress tests pin: a preview's bytes equal the job's artifact, the job completes with
@@ -105,6 +138,9 @@ Engine notes worth knowing:
   570×254 px inside the modal, image loaded (512×384), facts read
   `4032 × 3024 · 886 KB · −36% · from 1.4 MB`, and ticking the target switch re-encoded to
   `488 KB · −65%` within the debounce.
+- `scripts/ui-shots.py` last run: 30 dialogs across 49 tool states, no layout failures,
+  preview loaded; 40 PNGs + `report.json` in
+  `/home/dany/Downloads/Testing Files/screenshots/`.
 
 ## UI screenshots, without the desktop
 
@@ -120,6 +156,15 @@ does not load. It runs against the **mock**, so it exercises rendering and field
 not the Rust engine; engine behaviour is covered by the tests and the CLI. Tools whose
 mock field table is missing run without a dialog (the report marks `"dialog": false`).
 
+## Test assets (outside the repository)
+
+`/home/dany/Downloads/Testing Files/` holds one file per format for manual testing,
+generated with ImageMagick/FFmpeg/espeak/pandoc/groff: images (incl. 48 MP and 63 MP,
+transparent, text, SVG), video in six containers, speech in eight audio formats, a 5-page
+text PDF and a 3-page scan, DOCX/ODT/HTML/MD, PPTX, XLSX/ODS/CSV, EPUB, SRT/VTT, archives
+with hostile names, and a `hostile/` set. `screenshots/` holds the harness output and one
+real-app capture (`real-app-svg-loaded.png`).
+
 ## Running it
 
 ```bash
@@ -133,8 +178,14 @@ compares the embedded page with `ui-dist`).
 
 ## Backlog
 
-1. **Crop** — the next tool to bring to the same standard (a live preview of the kept
-   area, already started via `CropEditor`; check the handles and multi-file behaviour).
-2. Edit photo, Annotate, Redact, Metadata — the rest of the image tool row.
-3. Video, audio, PDF, documents, slides, spreadsheets, EPUB, subtitles, archives.
-4. Performance pass per the plan's Step 0 budgets, including tiled composition.
+1. **Lossy PNG "Reduce colours"** (imagequant + indexed PNG writer, off by default) to
+   close the gap with compresspng.com; keep the lossless path the default.
+2. **GIF/JPEG parity** (gifsicle-style optimisation, mozjpeg-style encoding), measured
+   against the same test files.
+3. Extend the mock field tables (or generate them from the Rust tables) so the screenshot
+   harness covers every dialog instead of 31 of 49 tools.
+4. **Crop** — the next image tool to bring to the same standard (live preview of the kept
+   area is started via `CropEditor`; check handles and multi-file behaviour).
+5. Edit photo, Annotate, Redact, Metadata — the rest of the image row.
+6. Other categories (documents, slides, spreadsheets, EPUB, subtitles, archives).
+7. Performance pass per the plan's Step 0 budgets, including tiled composition.
