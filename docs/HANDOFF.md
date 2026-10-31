@@ -56,6 +56,7 @@ page, `PDF → EPUB` is built from the same reflow analyser.
 ## Numbers from the final run
 
 `./scripts/app-e2e.py` on this machine (real window, real jobs, AT-SPI):
+**60 passed, 0 failed, 9 skipped** in 69 scenarios (`artifacts/final/app-final3`).
 
 | Group | Result |
 |---|---|
@@ -70,9 +71,10 @@ page, `PDF → EPUB` is built from the same reflow analyser.
 | negative (corrupt, missing tool, hostile names, cancel, overwrite) | 5 of 5 |
 | persistence, build-identity | 2 of 2 |
 
-The 58-passed / 1-failed baseline is now **0 failed**; the only remaining failures
-anywhere in the suite are the two canvas interactions below, which are reported as skips
-with the part the CLI audit measures instead.
+The 58-passed / 1-failed baseline is now **0 failed**. The nine skips are: five
+categories with no backend tools (Documents, Slides, Spreadsheets, EPUB, Subtitles),
+LibreOffice missing for one conversion target, and the three interaction gaps listed under
+"Open items" (video redaction canvas, bleep canvas, page-organizer rotation).
 
 `./scripts/quality-audit.py`: **224 passed, 0 failed, 52 skipped** — every skip names a
 missing engine (LibreOffice), a decoder this ImageMagick build lacks (AVIF/HEIC), or a
@@ -102,13 +104,13 @@ bundle (112 MiB).
 | waveform, 30 s | 109 ms | 300 ms |
 | filmstrip, 12 frames | 255 ms | 1.5 s |
 | photo preview, 4000×3000 at 1024 px | 211 ms | 700 ms |
-| compress preview, poster defaults | 2,505 ms | 3 s (measured) |
-| compress to 1,000 B, unreachable | 1,267 ms | 5 s (was 13,445 ms) |
-| background, 63 MP | 2,769 ms, 1.46 GiB peak | 10 s, 1.5 GiB |
+| compress preview, poster defaults | 2,968 ms | 3 s (measured) |
+| compress to 1,000 B, unreachable | 2,877 ms | 5 s (was 13,445 ms) |
+| background, 63 MP | 3,514 ms, 1.46 GiB peak | 10 s, 1.5 GiB |
 | PDF organize, 5 pages | 574 ms | 2 s |
 | PDF → DOCX, résumé | 1,442 ms | 10 s |
 | video trim, 10 s re-encode | 555 ms | 6 s |
-| normalize, 30 s | 2,485 ms | 4 s |
+| normalize, 30 s | 2,979 ms | 4 s |
 | installed bundle | 281 MB | 320 MB |
 
 `artifacts/perf/baseline.json` is the reference for the 15 % regression gate.

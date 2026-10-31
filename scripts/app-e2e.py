@@ -2809,6 +2809,18 @@ def scenario_reachable_target(h, rec, checks):
             s.set_check("Compress to a target file size", True)
             time.sleep(0.4)
             s.set_entry("Target size", "40000")
+            # The preview re-encodes 400 ms after the last edit and takes a second or
+            # two; the note it prints is about the request it measured. Wait until it
+            # reports a size at or under the new target before anything is asserted, or
+            # the check reads the previous request's verdict.
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                text = s.subtree_text(s.dialog())
+                numbers = re.findall(r"(\d+(?:\.\d+)?)\s*KB", text)
+                if numbers and float(numbers[0]) * 1024 <= 40000:
+                    break
+                time.sleep(0.5)
+            rec["measurements"]["preview_at_assert"] = s.subtree_text(s.dialog())[-200:]
         outputs, preview = run_tool_job(session, rec, checks, "Compress", apply=apply)
         record = record_outputs(rec, outputs)[0]
         info = record.get("image", {})
