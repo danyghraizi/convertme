@@ -334,6 +334,72 @@ def epub_check(min_chapters=1):
     return check
 
 
+#: The inputs of the case being run. A pixel check compares the output with the very
+#: file it was made from, and threading that through every check signature would make
+#: the simple ones (`image`, `media`) carry an argument they never use.
+CURRENT_INPUTS: list[Path] = []
+
+
+def frame_pixel(path: Path, seconds: float, x: int, y: int, work: Path) -> tuple | None:
+    """One pixel of one frame of a video, as RGB."""
+    frame = work / f"frame-{seconds}-{x}-{y}.png"
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", str(seconds), "-i", str(path),
+         "-frames:v", "1", str(frame)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0 or not frame.exists():
+        return None
+    return validate.pixel(frame, x, y)
+
+
+def redaction_check(inside=(420, 300), plain=(544, 360), start=0.5, end=2.0, fill=(228, 87, 46)):
+    """A per-box time range: covered inside the range, untouched outside it.
+
+    This is the acceptance the dialog's `Region n start/end` rows feed, measured on the
+    engine's own output: a redaction that leaked outside its range, or one that missed
+    the range entirely, fails here.
+    """
+
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        source = next((p for p in CURRENT_INPUTS if p.suffix == produced[0].suffix), None)
+        work = Path(tempfile.mkdtemp(prefix="convertme-frame-"))
+        try:
+            covered = frame_pixel(produced[0], (start + end) / 2, *inside, work)
+            early = frame_pixel(produced[0], max(0.0, start - 0.3), *plain, work)
+            late = frame_pixel(produced[0], end + 0.5, *plain, work)
+            source_early = frame_pixel(source, max(0.0, start - 0.3), *plain, work) if source else None
+            source_late = frame_pixel(source, end + 0.5, *plain, work) if source else None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        if covered is None or early is None or late is None:
+            return [{"name": "frames readable", "ok": False, "actual": [covered, early, late]}]
+        matches_fill = all(abs(a - b) <= 24 for a, b in zip(covered, fill))
+        distance = lambda a, b: max(abs(x - y) for x, y in zip(a, b)) if a and b else 999
+        return [
+            {"name": "the box is filled inside its range", "ok": matches_fill, "actual": covered},
+            {
+                "name": "the frame before the range matches the source",
+                "ok": source_early is not None and distance(early, source_early) <= 24,
+                "actual": early,
+            },
+            {
+                "name": "the frame after the range matches the source",
+                "ok": source_late is not None and distance(late, source_late) <= 24,
+                "actual": late,
+            },
+            {
+                "name": "the redaction did not bleed outside the box",
+                "ok": distance(early, fill) > 60 and distance(late, fill) > 60,
+                "actual": [early, late],
+            },
+        ]
+
+    return check
+
+
 def members_check(min_files=1):
     """A tool that publishes a folder: its members are the artifact."""
 
@@ -414,6 +480,21 @@ CASES: list[Case] = [
               {"start": 2, "end": 5}, media_check(None, (2.5, 5.5), size=(1280, 720))),
     tool_case("video-speed-double", "video/clip-landscape-720p-10s.mp4", "speed", "video",
               {"factor": 2}, media_check(None, (4.5, 5.5))),
+    tool_case("video-crop-free", "video/clip-landscape-720p-10s.mp4", "crop", "video",
+              {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5},
+              media_check(None, None, audio=True, video=True, size=(640, 360))),
+    tool_case(
+        "video-redact-range",
+        "video/clip-landscape-720p-10s.mp4",
+        "redact",
+        "video",
+        {
+            "boxes": [{"x": 0.25, "y": 0.3, "w": 0.35, "h": 0.4, "start": 0.5, "end": 2.0}],
+            "style": "solid",
+            "color": "#e4572e",
+        },
+        redaction_check(),
+    ),
     tool_case("video-frames", "video/clip-landscape-720p-10s.mp4", "snapshot", "video",
               {"times": [1.0]}, image_check("PNG", (1280, 720))),
     tool_case("video-redact-range", "video/clip-landscape-720p-10s.mp4", "redact", "video",
@@ -660,7 +741,9 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
                     flattened.extend(sorted(p for p in path.rglob("*") if p.is_file()))
                 else:
                     flattened.append(path)
+            CURRENT_INPUTS[:] = copies
             record["checks"] = case.check(flattened)
+            CURRENT_INPUTS.clear()
         failures = [check for check in record["checks"] if not check.get("ok")]
         record["status"] = "failed" if failures else "passed"
         # Keep the artifact of a *failed* case (that is when someone needs to look at

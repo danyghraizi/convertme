@@ -461,6 +461,52 @@ def run_category(
                 close_dialog(m)
             else:
                 failures.append("images-lossless/compress: no dialog")
+        if key == "video":
+            # Typing the output size must work before anything is drawn: the reference
+            # dialog lets you enter exact dimensions first.
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files={key}"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "Video")
+            m.js(
+                "const card = [...document.querySelectorAll('.tool-card')]"
+                ".find((c) => c.innerText.trim().startsWith('Crop'));"
+                "if (card) card.click(); return !!card;"
+            )
+            if m.wait_for("document.querySelector('.modal')", 6):
+                time.sleep(1.0)
+                typed = m.js(
+                    """
+                    const input = [...document.querySelectorAll('.modal input[type=number]')]
+                      .find((el) => el.getAttribute('aria-label') === 'Width');
+                    if (!input) return { found: false };
+                    const setter = Object.getOwnPropertyDescriptor(
+                      HTMLInputElement.prototype, 'value').set;
+                    setter.call(input, '640');
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    return { found: true, value: input.value };
+                    """
+                )
+                time.sleep(0.4)
+                after = m.js(
+                    """
+                    const input = [...document.querySelectorAll('.modal input[type=number]')]
+                      .find((el) => el.getAttribute('aria-label') === 'Width');
+                    return input ? input.value : null;
+                    """
+                )
+                report.append(
+                    {
+                        "category": key,
+                        "tool": "crop-typed-width",
+                        "dialog": True,
+                        "typed": typed,
+                        "value_after": after,
+                    }
+                )
+                if not (typed or {}).get("found") or after != "640":
+                    failures.append(f"video/crop: typing 640 as the width left {after!r}")
+                close_dialog(m)
+
         for index, tool in enumerate(tools):
             m.js(
                 "document.querySelectorAll('.tool-card')[%d].click(); return true;" % index

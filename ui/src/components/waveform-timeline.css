@@ -24,6 +24,9 @@
   width: 100%;
   height: 100%;
   opacity: 0.75;
+  /* Decoration only: pointer events must reach the surface that draws the ranges,
+     or a drag lands on the SVG and never becomes a bleep. */
+  pointer-events: none;
 }
 
 .waveform-empty {

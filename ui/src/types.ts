@@ -304,8 +304,10 @@ export interface MetaFieldRow {
   key: string;
   label: string;
   value: string;
-  /** False for a file fact, or a tag this writer cannot change or delete. */
+  /** The writer can set this tag. */
   editable: boolean;
+  /** The writer can delete this tag alone, so the row offers a minus. */
+  removable: boolean;
 }
 
 export interface MetaGroup {

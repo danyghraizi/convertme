@@ -119,7 +119,11 @@ export default function MetadataEditor(props: MetadataEditorProps) {
                     return (
                       <li
                         class="metadata-row"
-                        classList={{ 'is-removed': removed(), 'is-readonly': !field.editable }}
+                        classList={{
+                          'is-removed': removed(),
+                          'is-readonly': !field.editable,
+                          'has-remove': field.removable,
+                        }}
                       >
                         <label class="metadata-label" for={`meta-${group.name}-${field.key}`}>
                           {field.label}
@@ -140,14 +144,19 @@ export default function MetadataEditor(props: MetadataEditorProps) {
                           <Show
                             when={removed()}
                             fallback={
-                              <button
-                                type="button"
-                                class="metadata-remove"
-                                aria-label={`Remove ${field.key}`}
-                                onClick={() => drop(field.key)}
+                              <Show
+                                when={field.removable}
+                                fallback={<span class="metadata-keep" aria-hidden="true" />}
                               >
-                                −
-                              </button>
+                                <button
+                                  type="button"
+                                  class="metadata-remove"
+                                  aria-label={`Remove ${field.key}`}
+                                  onClick={() => drop(field.key)}
+                                >
+                                  −
+                                </button>
+                              </Show>
                             }
                           >
                             <button

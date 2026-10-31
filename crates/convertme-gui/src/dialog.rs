@@ -71,7 +71,11 @@ pub async fn filmstrip(
     // A new request supersedes the one before it *for the same file and kind*: the
     // superseded encoder is killed, not merely ignored, and a waveform asked for at the
     // same time is not collaterally cancelled.
-    let ctx = state.preview_guard.begin(&format!("filmstrip:{path}"));
+    // The key is the whole request: the crop canvas asks for one frame and the
+    // timeline for twelve, and those are different previews of the same file.
+    let ctx = state
+        .preview_guard
+        .begin(&format!("filmstrip:{path}:{frames}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache
@@ -463,7 +467,14 @@ pub struct MetaFieldOut {
     pub key: String,
     pub label: String,
     pub value: String,
+    /// The writer can set this tag.
     pub editable: bool,
+    /// The writer can delete this tag on its own, so the row offers a minus.
+    ///
+    /// These are separate: PNG and WEBP are written through ImageMagick, which sets a
+    /// tag but can only clear whole profiles. Marking them "not editable" hid the text
+    /// fields entirely, so setting a title on a PNG became impossible.
+    pub removable: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -512,6 +523,7 @@ fn metadata_groups(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
         editable: false,
+        removable: false,
     }];
     if let Ok(meta) = std::fs::metadata(source) {
         file_fields.push(MetaFieldOut {
@@ -519,6 +531,7 @@ fn metadata_groups(
             label: "Size".into(),
             value: size_label(meta.len()),
             editable: false,
+            removable: false,
         });
     }
     file_fields.push(MetaFieldOut {
@@ -526,6 +539,7 @@ fn metadata_groups(
         label: "Format".into(),
         value: format.label.to_string(),
         editable: false,
+        removable: false,
     });
     if let Some(facts) = &facts {
         let dimension = match (facts.width, facts.height) {
@@ -538,6 +552,7 @@ fn metadata_groups(
                 label: "Dimensions".into(),
                 value: dimension,
                 editable: false,
+                removable: false,
             });
         }
         if facts.duration > 0.0 {
@@ -546,6 +561,7 @@ fn metadata_groups(
                 label: "Duration".into(),
                 value: format_duration(facts.duration),
                 editable: false,
+                removable: false,
             });
         }
     }
@@ -576,7 +592,8 @@ fn metadata_groups(
             key: key.clone(),
             label: key.clone(),
             value: value.clone(),
-            editable: writable.iter().any(|t| t.eq_ignore_ascii_case(key)) && removable,
+            editable: writable.iter().any(|t| t.eq_ignore_ascii_case(key)),
+            removable,
         });
         seen.push(key.to_ascii_lowercase());
     }
@@ -588,7 +605,8 @@ fn metadata_groups(
             key: tag.to_string(),
             label: tag.to_string(),
             value: String::new(),
-            editable: removable,
+            editable: true,
+            removable,
         });
     }
     groups.push(MetaGroupOut {

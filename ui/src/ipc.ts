@@ -539,6 +539,7 @@ export async function fileMetadata(path: string): Promise<MetaGroup[]> {
       label: str(field.label),
       value: str(field.value),
       editable: field.editable === true,
+      removable: field.removable === true,
     })),
   }));
 }

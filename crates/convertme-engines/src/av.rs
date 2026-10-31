@@ -1202,8 +1202,11 @@ fn normalize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let muxer = muxer_for_ext(&ext);
     let audio = audio_encode_args(cx, &ext)?;
 
-    // Two passes pay off on anything long enough that a dynamic pass would drift.
-    let two_pass = info.duration >= 20.0;
+    // Always two passes. A single `loudnorm` pass is a dynamic approximation and lands
+    // about a decibel away from the target — the acceptance is ±1 LUFS, so "about a
+    // decibel" is the whole budget. The measurement costs one decode of the file and
+    // buys an output that hits the number it promises.
+    let two_pass = true;
     let mut base = 0.0;
     let mut measured = None;
     if two_pass {
@@ -1763,6 +1766,40 @@ pub fn media_info(
         has_video: info.has_video,
         format,
     })
+}
+
+/// An existing test helper, kept next to the code it exercises.
+#[cfg(test)]
+mod loudness_tests {
+    use super::*;
+
+    /// The dialog shows "Input: -23.4 LUFS" from this function; if it returns an
+    /// error the dialog silently shows nothing, which is what the harness caught.
+    #[test]
+    fn measure_loudness_returns_numbers_for_a_real_recording() {
+        let tools = crate::Toolset::probe_now();
+        if tools.path(ToolKey::Ffmpeg).is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("tone.wav");
+        let ffmpeg = tools.path(ToolKey::Ffmpeg).unwrap();
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-nostdin", "-y", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:duration=3")
+            .arg(&clip)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success());
+
+        let loudness = measure_loudness(&tools, &clip).expect("a measurement for a real file");
+        assert!(
+            loudness.input_i < 0.0 && loudness.input_i > -60.0,
+            "integrated loudness looks wrong: {}",
+            loudness.input_i
+        );
+        assert!(loudness.input_tp <= 0.0);
+    }
 }
 
 /// Loudness of a file as measured, in the units the Normalize dialog shows.

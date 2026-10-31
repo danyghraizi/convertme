@@ -539,6 +539,7 @@ export function mockFileMetadata(path: string): MetaGroup[] {
           label: tag,
           value: '',
           editable: true,
+          removable: true,
         })),
       }
     : audio.includes(ext)
@@ -549,6 +550,7 @@ export function mockFileMetadata(path: string): MetaGroup[] {
             label: tag,
             value: tag === 'Title' ? baseName(path) : '',
             editable: true,
+            removable: true,
           })),
         }
       : {
@@ -558,15 +560,22 @@ export function mockFileMetadata(path: string): MetaGroup[] {
             label: tag,
             value: '',
             editable: true,
+            removable: true,
           })),
         };
   return [
     {
       name: 'File',
       fields: [
-        { key: 'Name', label: 'Name', value: baseName(path), editable: false },
-        { key: 'Size', label: 'Size', value: '2.4 MB', editable: false },
-        { key: 'Format', label: 'Format', value: ext.toUpperCase(), editable: false },
+        { key: 'Name', label: 'Name', value: baseName(path), editable: false, removable: false },
+        { key: 'Size', label: 'Size', value: '2.4 MB', editable: false, removable: false },
+        {
+          key: 'Format',
+          label: 'Format',
+          value: ext.toUpperCase(),
+          editable: false,
+          removable: false,
+        },
       ],
     },
     group,

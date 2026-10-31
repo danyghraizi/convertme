@@ -194,23 +194,34 @@ export default function VideoEditor(props: VideoEditorProps) {
     return { w: Math.round(box.w * media.width), h: Math.round(box.h * media.height) };
   });
 
+  /** The rectangle to resize: the drawn one, or a centred full frame to start from. */
+  function cropBox(): { box: { x: number; y: number; w: number; h: number } } | null {
+    const media = info();
+    if (!media) return null;
+    const drawn = asBoxes(props.values.boxes ?? [])[0];
+    if (drawn) return { box: drawn };
+    return { box: { x: 0, y: 0, w: 1, h: 1 } };
+  }
+
+  // Typing a size must work before anything is drawn: the reference lets you enter the
+  // exact output dimensions first, and a control that needs a prior drag is dead.
   function setCropWidth(width: number): void {
     const media = info();
-    const box = asBoxes(props.values.boxes ?? [])[0];
-    if (!media || !box || media.width === 0 || width <= 0) return;
+    const current = cropBox();
+    if (!media || !current || media.width === 0 || width <= 0) return;
     const fraction = Math.min(1, Math.max(0.02, width / media.width));
     props.setValue('boxes', [
-      { ...box, w: fraction, x: Math.min(box.x, 1 - fraction) },
+      { ...current.box, w: fraction, x: Math.min(current.box.x, 1 - fraction) },
     ] as FieldValue);
   }
 
   function setCropHeight(height: number): void {
     const media = info();
-    const box = asBoxes(props.values.boxes ?? [])[0];
-    if (!media || !box || media.height === 0 || height <= 0) return;
+    const current = cropBox();
+    if (!media || !current || media.height === 0 || height <= 0) return;
     const fraction = Math.min(1, Math.max(0.02, height / media.height));
     props.setValue('boxes', [
-      { ...box, h: fraction, y: Math.min(box.y, 1 - fraction) },
+      { ...current.box, h: fraction, y: Math.min(current.box.y, 1 - fraction) },
     ] as FieldValue);
   }
 
