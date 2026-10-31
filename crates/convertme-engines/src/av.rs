@@ -21,6 +21,12 @@ use std::path::{Path, PathBuf};
 /// `Snapshot` refuses to write more than this many stills in one job.
 const MAX_FRAMES: usize = 200;
 
+/// Remove a silent lead-in and tail, not the pauses inside the take: `stop_periods=1`
+/// trims the trailing run only. `silencedetect` on the fixture (1 s each end) leaves
+/// 2.02 s of a 4 s file.
+const SILENCE_FILTER: &str =
+    "silenceremove=start_periods=1:start_threshold=-50dB:stop_periods=1:stop_threshold=-50dB";
+
 /// GIF output never exceeds this width, and never exceeds 15 fps.
 const GIF_MAX_WIDTH: u32 = 640;
 const GIF_FPS: f64 = 12.0;
@@ -214,18 +220,22 @@ pub fn validate(job: &Job, category: Category) -> Result<(), JobError> {
             }
             match tool {
                 ToolId::Compress => validate_compress(job, category),
-                ToolId::Trim => trim_range(job).map(|_| ()),
+                ToolId::Trim => {
+                    trim_range(job)?;
+                    if let Some(params) = job.intent.params()
+                        && params.contains_key("trim_silence")
+                        && bool_param(Some(params), "trim_silence").is_none()
+                    {
+                        return Err(invalid("trim_silence must be true or false"));
+                    }
+                    Ok(())
+                }
                 ToolId::Crop => crop_spec(job).map(|_| ()),
                 ToolId::Speed => speed_factor(job).map(|_| ()),
-                ToolId::Mute | ToolId::Normalize => Ok(()),
+                ToolId::Mute => Ok(()),
+                ToolId::Normalize => normalize_targets(job).map(|_| ()),
                 ToolId::Snapshot => validate_snapshot(job),
-                ToolId::Join => {
-                    if job.inputs.len() < 2 {
-                        Err(invalid("join needs at least two clips"))
-                    } else {
-                        Ok(())
-                    }
-                }
+                ToolId::Join => validate_join(job),
                 ToolId::Split => sections_param(job).map(|_| ()),
                 ToolId::Channels => channels_param(job).map(|_| ()),
                 ToolId::Visualize => validate_visualize(job),
@@ -640,6 +650,10 @@ fn trim(job: &Job, category: Category, cx: &Context<'_>) -> Result<Vec<PathBuf>,
     let ext = source_ext(job);
     let output = cx.out(&out_name(job, Some("trimmed"), &ext));
     let budget = budget_for(category);
+    // Only the audio tool offers it: on a video the picture would keep its silent
+    // lead-in while the sound moved, which is a desynchronised clip, not a trim.
+    let trim_silence = matches!(category, Category::Audio)
+        && bool_param(job.intent.params(), "trim_silence").unwrap_or(false);
     cx.ctx.set_stage("trimming");
 
     let mut cmd = ffmpeg_cmd(&ffmpeg);
@@ -650,9 +664,16 @@ fn trim(job: &Job, category: Category, cx: &Context<'_>) -> Result<Vec<PathBuf>,
     if let Some(end) = end {
         cmd = cmd.arg("-t").arg(secs((end - start).max(0.0)));
     }
+    if trim_silence {
+        cmd = cmd.arg("-af").arg(SILENCE_FILTER);
+    }
 
-    if is_cut_friendly(&ext) {
-        cmd = cmd.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
+    // A filter means the stream is re-encoded; `-c copy` with `-af` silently drops
+    // the filter in some ffmpeg builds and would publish the silence back.
+    if is_cut_friendly(&ext) && !trim_silence {
+        // `-avoid_negative_ts make_zero` grows a seeked copy on this muxer (2→5 s
+    // produced 5.09 s): the default keeps the output at the requested length.
+    cmd = cmd.args(["-c", "copy"]);
     } else {
         if matches!(category, Category::Video) {
             for arg in video_encode_args(cx, &ext)? {
@@ -817,20 +838,80 @@ fn validate_snapshot(job: &Job) -> Result<(), JobError> {
     Ok(())
 }
 
+/// The inputs in the dialog's order. The editor sends every index; a missing key (a
+/// tool run from the CLI) keeps the selection's order.
+fn ordered_inputs(job: &Job) -> Result<Vec<PathBuf>, JobError> {
+    let count = job.inputs.len();
+    let Some(value) = job.intent.params().and_then(|p| p.get("order")) else {
+        return Ok(job.inputs.clone());
+    };
+    let array = value
+        .as_array()
+        .ok_or_else(|| invalid("order must be an array of input indices"))?;
+    if array.is_empty() {
+        return Ok(job.inputs.clone());
+    }
+    let mut seen = vec![false; count];
+    let mut ordered = Vec::with_capacity(count);
+    for item in array {
+        let index = item
+            .as_u64()
+            .ok_or_else(|| invalid("order must be an array of input indices"))?
+            as usize;
+        if index >= count || seen[index] {
+            return Err(invalid("order must list every input exactly once"));
+        }
+        seen[index] = true;
+        ordered.push(job.inputs[index].clone());
+    }
+    if ordered.len() != count {
+        return Err(invalid("order must list every input exactly once"));
+    }
+    Ok(ordered)
+}
+
+fn validate_join(job: &Job) -> Result<(), JobError> {
+    if job.inputs.len() < 2 {
+        return Err(invalid("join needs at least two clips"));
+    }
+    ordered_inputs(job).map(|_| ())
+}
+
 fn join(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
+    let inputs = ordered_inputs(job)?;
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
     let ext = source_ext(job);
     let list = cx.scratch("concat.txt");
     let mut body = String::new();
-    for input in &job.inputs {
+    for input in &inputs {
         body.push_str(&format!("file '{}'\n", concat_escape(input)));
     }
     std::fs::write(&list, body.as_bytes())
         .map_err(|e| JobError::io("writing the concat list", &e))?;
 
     let mut total = 0.0;
-    for input in &job.inputs {
-        total += probe(cx, input).map(|info| info.duration).unwrap_or(0.0);
+    let mut same_canvas = true;
+    let mut first_facts: Option<MediaInfo> = None;
+    for input in &inputs {
+        let facts = probe(cx, input).ok();
+        total += facts.map(|info| info.duration).unwrap_or(0.0);
+        if let Some(facts) = facts {
+            match first_facts {
+                None => first_facts = Some(facts),
+                Some(first) => {
+                    // The concat demuxer appends packets; it can only be copied when
+                    // every clip has the same frame size and audio layout.
+                    if facts.width != first.width
+                        || facts.height != first.height
+                        || facts.has_audio != first.has_audio
+                        || facts.audio_channels != first.audio_channels
+                        || facts.audio_rate != first.audio_rate
+                    {
+                        same_canvas = false;
+                    }
+                }
+            }
+        }
     }
 
     let output = cx.out(&out_name(job, Some("joined"), &ext));
@@ -838,42 +919,131 @@ fn join(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let budget = Budget::Long;
     cx.ctx.set_stage("joining clips");
 
-    let mut copy_cmd = ffmpeg_cmd(&ffmpeg);
-    copy_cmd = copy_cmd
-        .args(["-f", "concat", "-safe", "0", "-i"])
-        .arg(&list)
-        .args(["-c", "copy"]);
-    if let Some(m) = muxer {
-        copy_cmd = copy_cmd.args(["-f", m]);
-    }
-    copy_cmd = copy_cmd.arg(&output);
-
-    match run_ffmpeg(copy_cmd, cx, budget, total, 0.0, 1.0) {
-        Ok(()) => {}
-        Err(err) if err.code == ErrorCode::EngineFailed => {
-            // Streams differ between the clips; re-encode so the join still lands.
-            cx.ctx.checkpoint()?;
-            cx.ctx.set_stage("re-encoding the joined clip");
-            let mut encode = ffmpeg_cmd(&ffmpeg);
-            encode = encode.args(["-f", "concat", "-safe", "0", "-i"]).arg(&list);
-            for arg in video_encode_args(cx, &ext)? {
-                encode = encode.arg(arg);
-            }
-            if let Some(args) = audio_encode_args(cx, &ext)? {
-                for arg in args {
-                    encode = encode.arg(arg);
-                }
-            }
-            if let Some(m) = muxer {
-                encode = encode.args(["-f", m]);
-            }
-            encode = encode.arg(&output);
-            run_ffmpeg(encode, cx, budget, total, 0.0, 1.0)?;
+    if same_canvas {
+        let mut copy_cmd = ffmpeg_cmd(&ffmpeg);
+        copy_cmd = copy_cmd
+            .args(["-f", "concat", "-safe", "0", "-i"])
+            .arg(&list)
+            .args(["-c", "copy"]);
+        if let Some(m) = muxer {
+            copy_cmd = copy_cmd.args(["-f", m]);
         }
-        Err(err) => return Err(err),
+        copy_cmd = copy_cmd.arg(&output);
+
+        match run_ffmpeg(copy_cmd, cx, budget, total, 0.0, 1.0) {
+            Ok(()) => {}
+            Err(err) if err.code == ErrorCode::EngineFailed => {
+                // Streams differ between the clips despite the probe; re-encode.
+                cx.ctx.checkpoint()?;
+                cx.ctx.set_stage("re-encoding the joined clip");
+                join_reencode(cx, &ffmpeg, &inputs, &ext, muxer, total, &output)?;
+            }
+            Err(err) => return Err(err),
+        }
+    } else {
+        // The canvas differs: re-encode every clip onto the first clip's frame.
+        join_reencode(cx, &ffmpeg, &inputs, &ext, muxer, total, &output)?;
     }
     ensure_file(&output, "ffmpeg")?;
     Ok(vec![output])
+}
+
+/// The re-encode path: scale and pad each clip onto the first clip's canvas, resample
+/// its audio to the first clip's rate, then `concat` the normalised streams.
+///
+/// The concat *demuxer* appends packets, so a second clip with another frame size
+/// cannot be normalised after it — the filter has one input by then. A filter graph
+/// with one input per clip can scale before the join.
+fn join_reencode(
+    cx: &Context<'_>,
+    ffmpeg: &Path,
+    inputs: &[PathBuf],
+    ext: &str,
+    muxer: Option<&'static str>,
+    total: f64,
+    output: &Path,
+) -> Result<(), JobError> {
+    let first = probe(cx, &inputs[0])?;
+    if !first.has_video {
+        return Err(invalid("the first clip has no video track"));
+    }
+    let width = even(first.width.max(2));
+    let height = even(first.height.max(2));
+    let all_video = inputs.iter().all(|input| {
+        probe(cx, input)
+            .map(|info| info.has_video)
+            .unwrap_or(false)
+    });
+    if !all_video {
+        return Err(invalid("every clip needs a video track to be joined"));
+    }
+    let audio_all = first.has_audio
+        && inputs.iter().all(|input| {
+            probe(cx, input)
+                .map(|info| info.has_audio)
+                .unwrap_or(false)
+        });
+    let rate = if first.audio_rate > 0 {
+        first.audio_rate
+    } else {
+        48_000
+    };
+
+    let mut cmd = ffmpeg_cmd(ffmpeg);
+    for input in inputs {
+        cmd = cmd.arg("-i").arg(input);
+    }
+
+    let mut graph = String::new();
+    for (index, _) in inputs.iter().enumerate() {
+        graph.push_str(&format!(
+            "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,\
+             pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{index}];"
+        ));
+        if audio_all {
+            graph.push_str(&format!(
+                "[{index}:a]aresample={rate},aformat=sample_rates={rate}:\
+                 channel_layouts=stereo[a{index}];"
+            ));
+        }
+    }
+    let labels: String = (0..inputs.len())
+        .map(|index| {
+            if audio_all {
+                format!("[v{index}][a{index}]")
+            } else {
+                format!("[v{index}]")
+            }
+        })
+        .collect();
+    graph.push_str(&format!(
+        "{labels}concat=n={}:v=1:a={}[v]{}",
+        inputs.len(),
+        if audio_all { 1 } else { 0 },
+        if audio_all { "[a]" } else { "" },
+    ));
+    cmd = cmd.arg("-filter_complex").arg(graph);
+    cmd = cmd.args(["-map", "[v]"]);
+    if audio_all {
+        cmd = cmd.args(["-map", "[a]"]);
+    }
+    for arg in video_encode_args(cx, ext)? {
+        cmd = cmd.arg(arg);
+    }
+    if audio_all
+        && let Some(args) = audio_encode_args(cx, ext)?
+    {
+        for arg in args {
+            cmd = cmd.arg(arg);
+        }
+    } else if !audio_all {
+        cmd = cmd.arg("-an");
+    }
+    if let Some(m) = muxer {
+        cmd = cmd.args(["-f", m]);
+    }
+    cmd = cmd.arg(output);
+    run_ffmpeg(cmd, cx, Budget::Long, total, 0.0, 1.0)
 }
 
 fn split(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
@@ -898,7 +1068,9 @@ fn split(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             .arg(&job.source)
             .arg("-t")
             .arg(secs(*end - *start))
-            .args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
+            // No `-avoid_negative_ts make_zero`: on this muxer it turns a 2.5 s
+            // section into a 5 s one by keeping the original offset.
+            .args(["-c", "copy"]);
         if let Some(m) = muxer {
             cmd = cmd.args(["-f", m]);
         }
@@ -993,17 +1165,42 @@ fn times_param(job: &Job) -> Result<Vec<f64>, JobError> {
     Ok(times)
 }
 
+/// The loudnorm filter for a target. Every number the dialog offers is in the string:
+/// a hardcoded target was the "knob the engine ignores" bug.
+fn loudnorm_filter(lufs: f64, range: f64, true_peak: f64) -> String {
+    format!("loudnorm=I={lufs}:TP={true_peak}:LRA={range}")
+}
+
+/// Target loudness, loudness range and true-peak ceiling, validated.
+fn normalize_targets(job: &Job) -> Result<(f64, f64, f64), JobError> {
+    let p = job.intent.params();
+    let lufs = num_param(p, "lufs").unwrap_or(-16.0);
+    let range = num_param(p, "range").unwrap_or(11.0);
+    let peak = num_param(p, "true_peak").unwrap_or(-1.5);
+    if !lufs.is_finite() || !(-30.0..=-5.0).contains(&lufs) {
+        return Err(invalid("target loudness must be between -30 and -5 LUFS"));
+    }
+    if !range.is_finite() || !(1.0..=50.0).contains(&range) {
+        return Err(invalid("loudness range must be between 1 and 50 LU"));
+    }
+    if !peak.is_finite() || !(-9.0..=0.0).contains(&peak) {
+        return Err(invalid("true peak limit must be between -9 and 0 dBTP"));
+    }
+    Ok((lufs, range, peak))
+}
+
 fn normalize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
     let info = probe(cx, &job.source)?;
     if !info.has_audio {
         return Err(invalid("the input has no audio track"));
     }
+    let (lufs, loudness_range, true_peak) = normalize_targets(job)?;
+    let target = loudnorm_filter(lufs, loudness_range, true_peak);
     let ext = source_ext(job);
     let output = cx.out(&out_name(job, Some("normalized"), &ext));
     let muxer = muxer_for_ext(&ext);
     let audio = audio_encode_args(cx, &ext)?;
-    let target = "loudnorm=I=-16:TP=-1.5:LRA=11";
 
     // Two passes pay off on anything long enough that a dynamic pass would drift.
     let two_pass = info.duration >= 20.0;
@@ -1094,7 +1291,7 @@ pub(crate) fn measured_from_json(tail: &str) -> Option<String> {
 }
 
 fn channels(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
-    let count = channels_param(job)?;
+    let (count, left, right) = channels_params(job)?;
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
     let info = probe(cx, &job.source)?;
     if !info.has_audio {
@@ -1108,13 +1305,30 @@ fn channels(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         "converting to stereo"
     });
 
+    // One `pan` expression carries both the channel layout and the gains. A mono
+    // input has only `c0`, so a stereo output duplicates it; a stereo input mixed to
+    // mono sums the two weighted channels. Volumes are percentages of the source.
+    let pan = match (count, info.audio_channels) {
+        (2, 1) => format!(
+            "pan=stereo|c0={:.4}*c0|c1={:.4}*c0",
+            left / 100.0,
+            right / 100.0
+        ),
+        (2, _) => format!(
+            "pan=stereo|c0={:.4}*c0|c1={:.4}*c1",
+            left / 100.0,
+            right / 100.0
+        ),
+        (_, 1) => format!("pan=mono|c0={:.4}*c0", left / 100.0),
+        _ => format!(
+            "pan=mono|c0={:.4}*c0+{:.4}*c1",
+            left / 100.0,
+            right / 100.0
+        ),
+    };
+
     let mut cmd = ffmpeg_cmd(&ffmpeg);
-    cmd = cmd
-        .arg("-i")
-        .arg(&job.source)
-        .arg("-vn")
-        .arg("-ac")
-        .arg(count.to_string());
+    cmd = cmd.arg("-i").arg(&job.source).arg("-af").arg(pan).arg("-vn");
     if let Some(args) = audio_encode_args(cx, &ext)? {
         for arg in args {
             cmd = cmd.arg(arg);
@@ -1137,19 +1351,56 @@ fn channels(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     Ok(vec![output])
 }
 
+/// Output count and both channel gains, validated.
+fn channels_params(job: &Job) -> Result<(u32, f64, f64), JobError> {
+    let p = job.intent.params();
+    let count = num_param(p, "channels").unwrap_or(2.0);
+    if count != 1.0 && count != 2.0 {
+        return Err(invalid("channels must be 1 (mono) or 2 (stereo)"));
+    }
+    let gain = |key: &str| {
+        num_param(p, key)
+            .unwrap_or(100.0)
+            .clamp(0.0, 200.0)
+    };
+    Ok((count as u32, gain("left_volume"), gain("right_volume")))
+}
+
 fn channels_param(job: &Job) -> Result<u32, JobError> {
-    let count = num_param(job.intent.params(), "channels").unwrap_or(2.0);
-    if count == 1.0 {
-        Ok(1)
-    } else if count == 2.0 {
-        Ok(2)
-    } else {
-        Err(invalid("channels must be 1 (mono) or 2 (stereo)"))
+    channels_params(job).map(|(count, _, _)| count)
+}
+
+/// The canvas the shape names, and the showwaves mode the style names.
+fn visualize_shape(value: Option<&str>) -> Option<(u32, u32)> {
+    match value {
+        None | Some("16:9") => Some((1280, 720)),
+        Some("9:16") => Some((720, 1280)),
+        Some("1:1") => Some((1080, 1080)),
+        Some(_) => None,
+    }
+}
+
+fn visualize_style(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        None | Some("waveform") => Some("cline"),
+        Some("bars") => Some("p2p"),
+        Some("line") => Some("line"),
+        Some(_) => None,
     }
 }
 
 fn validate_visualize(job: &Job) -> Result<(), JobError> {
     let p = job.intent.params();
+    if let Some(shape) = str_param(p, "shape")
+        && visualize_shape(Some(shape)).is_none()
+    {
+        return Err(invalid("shape must be 16:9, 9:16 or 1:1"));
+    }
+    if let Some(style) = str_param(p, "style")
+        && visualize_style(Some(style)).is_none()
+    {
+        return Err(invalid("style must be waveform, bars or line"));
+    }
     if let Some(size) = str_param(p, "size")
         && parse_size(size).is_none()
     {
@@ -1173,9 +1424,12 @@ fn visualize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let p = job.intent.params();
     let (width, height) = str_param(p, "size")
         .and_then(parse_size)
-        .unwrap_or((1280, 720));
+        .or_else(|| visualize_shape(str_param(p, "shape")))
+        .ok_or_else(|| invalid("shape must be 16:9, 9:16 or 1:1"))?;
     let width = even(width).max(16);
     let height = even(height).max(16);
+    let mode = visualize_style(str_param(p, "style"))
+        .ok_or_else(|| invalid("style must be waveform, bars or line"))?;
 
     let output = cx.out(&out_name(job, Some("visualized"), "mp4"));
     cx.ctx.set_stage("rendering the waveform");
@@ -1192,7 +1446,9 @@ fn visualize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             .arg(format!("color=c={color}:s={width}x{height}:r=25"));
     }
 
-    let wave = format!("[0:a]showwaves=s={width}x{height}:mode=cline:rate=25,format=yuva420p[w]");
+    let wave = format!(
+        "[0:a]showwaves=s={width}x{height}:mode={mode}:rate=25,format=yuva420p[w]"
+    );
     let backdrop = format!(
         "[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,\
          pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[bg]"
@@ -1577,6 +1833,10 @@ struct MediaInfo {
     has_video: bool,
     width: u32,
     height: u32,
+    /// Input channel count, so the Channels dialog knows whether to duplicate or mix.
+    audio_channels: u32,
+    /// Input sample rate, used as the join's common rate when it must re-encode.
+    audio_rate: u32,
 }
 
 fn probe(cx: &Context<'_>, path: &Path) -> Result<MediaInfo, JobError> {
@@ -1594,7 +1854,7 @@ fn probe_argv(ffprobe: &Path, path: &Path) -> Cmd {
             "-v",
             "error",
             "-show_entries",
-            "format=duration,size:stream=codec_type,channels,width,height",
+            "format=duration,size:stream=codec_type,channels,sample_rate,width,height",
             "-of",
             "json",
         ])
@@ -1627,7 +1887,16 @@ fn parse_probe_json(stdout: &str) -> Result<MediaInfo, JobError> {
     if let Some(streams) = value["streams"].as_array() {
         for stream in streams {
             match stream["codec_type"].as_str() {
-                Some("audio") => info.has_audio = true,
+                Some("audio") if !info.has_audio => {
+                    info.has_audio = true;
+                    info.audio_channels = stream["channels"].as_u64().unwrap_or(0) as u32;
+                    info.audio_rate = stream["sample_rate"]
+                        .as_str()
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| stream["sample_rate"].as_u64())
+                        .unwrap_or(0) as u32;
+                }
+                Some("audio") => {}
                 Some("video") if !info.has_video => {
                     info.has_video = true;
                     info.width = stream["width"].as_u64().unwrap_or(0) as u32;
@@ -2051,6 +2320,19 @@ fn num_param(params: Option<&ToolParams>, key: &str) -> Option<f64> {
     }
 }
 
+fn bool_param(params: Option<&ToolParams>, key: &str) -> Option<bool> {
+    match params?.get(key)? {
+        Value::Bool(value) => Some(*value),
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        Value::Number(number) => Some(number.as_f64().unwrap_or(0.0) != 0.0),
+        _ => None,
+    }
+}
+
 fn str_param<'a>(params: Option<&'a ToolParams>, key: &str) -> Option<&'a str> {
     params?.get(key)?.as_str()
 }
@@ -2200,6 +2482,155 @@ mod tests {
                 );
             }
             path
+        }
+
+        /// A tone with one silent second at each end: what "trim silent ends" is for.
+        fn silent_wav(&self) -> PathBuf {
+            let path = self.dir.path().join("silent-ends.wav");
+            if !path.exists() {
+                let output = Command::new(self.ffmpeg())
+                    .args([
+                        "-hide_banner",
+                        "-y",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "sine=frequency=440:duration=2",
+                        "-af",
+                        "adelay=1000|1000,apad=pad_dur=1",
+                        "-c:a",
+                        "pcm_s16le",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .expect("building the silent-ends fixture");
+                assert!(
+                    output.status.success(),
+                    "silent fixture failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            path
+        }
+
+        /// The same tone on both channels, so a pan gain is measurable per side.
+        fn stereo_wav(&self) -> PathBuf {
+            let path = self.dir.path().join("stereo.wav");
+            if !path.exists() {
+                let output = Command::new(self.ffmpeg())
+                    .args([
+                        "-hide_banner",
+                        "-y",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "sine=frequency=440:duration=1",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "pcm_s16le",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .expect("building the stereo fixture");
+                assert!(
+                    output.status.success(),
+                    "stereo fixture failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            path
+        }
+
+        /// A solid-colour clip with a tone, for join order checks.
+        fn colored_clip(&self, color: &str, width: u32, height: u32) -> PathBuf {
+            let path = self.dir.path().join(format!("{color}-{width}x{height}.mp4"));
+            if !path.exists() {
+                let output = Command::new(self.ffmpeg())
+                    .args(["-hide_banner", "-y", "-f", "lavfi", "-i"])
+                    .arg(format!("color=c={color}:s={width}x{height}:r=25:d=1"))
+                    .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
+                    .args([
+                        "-c:v",
+                        "mpeg4",
+                        "-q:v",
+                        "4",
+                        "-c:a",
+                        "aac",
+                        "-shortest",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .expect("building a coloured clip");
+                assert!(
+                    output.status.success(),
+                    "coloured clip failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            path
+        }
+
+        /// RMS level in dBFS of one channel (0-based) or the mono mix.
+        fn rms_db(&self, path: &Path, channel: Option<u32>, length: f64) -> f64 {
+            let pan = match channel {
+                Some(channel) => format!("pan=mono|c0=c{channel},astats=metadata=1:reset=0"),
+                None => "astats=metadata=1:reset=0".to_string(),
+            };
+            let output = Command::new(self.ffmpeg())
+                .args(["-hide_banner", "-nostats", "-i"])
+                .arg(path)
+                .args(["-t", &length.to_string(), "-af", &pan, "-f", "null", "-"])
+                .output()
+                .expect("measuring RMS");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stderr
+                .lines()
+                .filter_map(|line| line.split("RMS level dB:").nth(1))
+                .filter_map(|value| value.trim().parse::<f64>().ok())
+                .next_back()
+                .expect("an RMS level")
+        }
+
+        /// The centre pixel of the first frame, as RGB.
+        fn first_frame_rgb(&self, path: &Path, width: u32, height: u32) -> [u8; 3] {
+            let output = Command::new(self.ffmpeg())
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .expect("decoding the first frame");
+            assert!(output.status.success());
+            let offset = (((height / 2) * width + width / 2) * 3) as usize;
+            [
+                output.stdout[offset],
+                output.stdout[offset + 1],
+                output.stdout[offset + 2],
+            ]
+        }
+
+        /// Integrated loudness the way the dialog measures an output.
+        fn measured_loudness(&self, path: &Path) -> f64 {
+            let output = Command::new(self.ffmpeg())
+                .args(["-hide_banner", "-nostats", "-i"])
+                .arg(path)
+                .args([
+                    "-af",
+                    "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .output()
+                .expect("measuring loudness");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let start = stderr.rfind('{').expect("a JSON block");
+            let end = stderr.rfind('}').expect("a JSON block");
+            let value: Value = serde_json::from_str(&stderr[start..=end]).expect("loudnorm JSON");
+            value["input_i"]
+                .as_str()
+                .and_then(|text| text.parse().ok())
+                .expect("input_i")
         }
 
         fn inspect(&self, path: &Path) -> serde_json::Value {
@@ -2442,5 +2873,168 @@ mod tests {
             .and_then(|s| s["channels"].as_u64())
             .expect("an audio stream");
         assert_eq!(channel_count, 1);
+    }
+
+    #[test]
+    fn loudnorm_filter_carries_every_knob() {
+        assert_eq!(
+            loudnorm_filter(-16.0, 11.0, -1.5),
+            "loudnorm=I=-16:TP=-1.5:LRA=11"
+        );
+        assert_eq!(
+            loudnorm_filter(-20.0, 7.0, -3.0),
+            "loudnorm=I=-20:TP=-3:LRA=7"
+        );
+        let source = PathBuf::from("voice.mp3");
+        for bad in [
+            json!({ "lufs": 0.0 }),
+            json!({ "range": 80.0 }),
+            json!({ "true_peak": -12.0 }),
+        ] {
+            let job = tool_job(&source, ToolId::Normalize, bad.clone());
+            let err = validate(&job, Category::Audio).expect_err("must refuse");
+            assert_eq!(err.code, ErrorCode::Unsupported, "{bad}");
+        }
+    }
+
+    #[test]
+    fn normalize_reaches_the_requested_loudness() {
+        let Some(env) = Env::new() else { return };
+        let job = tool_job(
+            &env.wav(),
+            ToolId::Normalize,
+            json!({ "lufs": -20.0, "range": 7.0, "true_peak": -3.0 }),
+        );
+        let artifacts = run_job(&env, &job);
+        let measured = env.measured_loudness(&artifacts[0]);
+        assert!(
+            (measured + 20.0).abs() <= 3.0,
+            "normalize to -20 LUFS measured {measured:.1}"
+        );
+    }
+
+    #[test]
+    fn trim_silence_removes_both_ends() {
+        let Some(env) = Env::new() else { return };
+        let source = env.silent_wav();
+        let before = duration_of(&env.inspect(&source));
+        let job = tool_job(
+            &source,
+            ToolId::Trim,
+            json!({ "start": 0.0, "end": before, "trim_silence": true }),
+        );
+        let artifacts = run_job(&env, &job);
+        let after = duration_of(&env.inspect(&artifacts[0]));
+        assert!(
+            (after - 2.0).abs() <= 0.35,
+            "silence trim left {after:.2}s of {before:.2}s"
+        );
+        let leading = env.rms_db(&artifacts[0], None, 0.1);
+        assert!(leading > -40.0, "the result starts with {leading} dBFS");
+    }
+
+    #[test]
+    fn channels_gain_halves_one_side() {
+        let Some(env) = Env::new() else { return };
+        let job = tool_job(
+            &env.stereo_wav(),
+            ToolId::Channels,
+            json!({ "channels": 2, "left_volume": 50, "right_volume": 100 }),
+        );
+        let artifacts = run_job(&env, &job);
+        let left = env.rms_db(&artifacts[0], Some(0), 1.0);
+        let right = env.rms_db(&artifacts[0], Some(1), 1.0);
+        let difference = right - left;
+        assert!(
+            (4.5..=7.5).contains(&difference),
+            "50 % left measured {difference:.2} dB below right"
+        );
+    }
+
+    #[test]
+    fn visualize_shapes_set_the_canvas() {
+        let Some(env) = Env::new() else { return };
+        for (shape, width, height) in [("16:9", 1280u64, 720u64), ("9:16", 720, 1280), ("1:1", 1080, 1080)] {
+            let job = tool_job(
+                &env.wav(),
+                ToolId::Visualize,
+                json!({ "shape": shape, "style": "bars" }),
+            );
+            let artifacts = run_job(&env, &job);
+            let info = env.inspect(&artifacts[0]);
+            let video = info["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|stream| stream["codec_type"] == "video")
+                .expect("a video stream");
+            assert_eq!(video["width"].as_u64(), Some(width), "{shape} width");
+            assert_eq!(video["height"].as_u64(), Some(height), "{shape} height");
+        }
+        let job = tool_job(
+            &env.wav(),
+            ToolId::Visualize,
+            json!({ "style": "noise" }),
+        );
+        assert!(validate(&job, Category::Audio).is_err());
+    }
+
+    #[test]
+    fn join_follows_the_order_and_the_canvas() {
+        let Some(env) = Env::new() else { return };
+        let red = env.colored_clip("red", 320, 240);
+        let blue = env.colored_clip("blue", 240, 320);
+        let job = Job::with_inputs(
+            vec![red.clone(), blue.clone()],
+            Intent::Tool {
+                tool: ToolId::Join,
+                params: tool_params(json!({})),
+            },
+        );
+        let artifacts = run_job(&env, &job);
+        let forward = env.first_frame_rgb(&artifacts[0], 320, 240);
+        assert!(forward[0] > forward[2] + 60, "first frame is {forward:?}, not red");
+
+        let reversed = Job::with_inputs(
+            vec![red, blue],
+            Intent::Tool {
+                tool: ToolId::Join,
+                params: tool_params(json!({ "order": [1, 0] })),
+            },
+        );
+        let artifacts = run_job(&env, &reversed);
+        let info = env.inspect(&artifacts[0]);
+        let video = info["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stream| stream["codec_type"] == "video")
+            .expect("a video stream");
+        assert_eq!(video["width"].as_u64(), Some(240));
+        assert_eq!(video["height"].as_u64(), Some(320));
+        let first = env.first_frame_rgb(&artifacts[0], 240, 320);
+        assert!(first[2] > first[0] + 60, "reversed first frame is {first:?}, not blue");
+    }
+
+    #[test]
+    fn join_rejects_a_non_permutation() {
+        let source = PathBuf::from("a.mp4");
+        let job = Job::with_inputs(
+            vec![source.clone(), PathBuf::from("b.mp4")],
+            Intent::Tool {
+                tool: ToolId::Join,
+                params: tool_params(json!({ "order": [0, 0] })),
+            },
+        );
+        let err = validate(&job, Category::Video).expect_err("must refuse");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+        let short = Job::with_inputs(
+            vec![source],
+            Intent::Tool {
+                tool: ToolId::Join,
+                params: tool_params(json!({})),
+            },
+        );
+        assert!(validate(&short, Category::Video).is_err());
     }
 }

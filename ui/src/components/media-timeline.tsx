@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import * as ipc from '../ipc';
 import { formatTimecode } from '../format';
 import './media-timeline.css';
@@ -17,6 +17,8 @@ interface MediaTimelineProps {
   range?: boolean;
   /** Container the browser can play; everything else is filmstrip-only. */
   playable?: boolean;
+  /** The playhead moved, so "Add frame"/"Add split" can read it. */
+  onPlayhead?: (seconds: number) => void;
 }
 
 /** One frame at 25 fps, the step the reference offers. */
@@ -38,11 +40,16 @@ export default function MediaTimeline(props: MediaTimelineProps) {
   const [playhead, setPlayhead] = createSignal(0);
   const [playing, setPlaying] = createSignal(false);
   const [failedPlayback, setFailedPlayback] = createSignal(false);
+  /** The media element is mounted by Play, not by opening the dialog. */
+  const [playback, setPlayback] = createSignal(false);
   let video: HTMLVideoElement | undefined;
 
-  onMount(() => {
+  // Keyed by path: switching files in a multi-file dialog reloads only the strip.
+  createEffect(() => {
     const path = props.path;
     if (!path) return;
+    setFrames([]);
+    setPlayback(false);
     void ipc
       .filmstrip(path, 12)
       .then((paths) => setFrames(paths.map((p) => ipc.assetUrl(p))))
@@ -56,6 +63,7 @@ export default function MediaTimeline(props: MediaTimelineProps) {
   function seek(seconds: number): void {
     const next = clamp(seconds, 0, props.duration);
     setPlayhead(next);
+    props.onPlayhead?.(next);
     if (video) video.currentTime = next;
   }
 
@@ -64,7 +72,20 @@ export default function MediaTimeline(props: MediaTimelineProps) {
   }
 
   function togglePlay(): void {
-    if (!video || !canPlay()) return;
+    if (!canPlay()) return;
+    if (!playback()) {
+      // WebKit initialises GStreamer as soon as a <video> exists; on a machine
+      // without an audio sink that stalls the web process for seconds. Mount it on
+      // Play, when the user asked for playback, and show the filmstrip until then.
+      setPlayback(true);
+      requestAnimationFrame(() => {
+        if (!video) return;
+        video.currentTime = playhead();
+        void video.play().catch(() => setFailedPlayback(true));
+      });
+      return;
+    }
+    if (!video) return;
     if (playing()) {
       video.pause();
     } else {
@@ -97,6 +118,39 @@ export default function MediaTimeline(props: MediaTimelineProps) {
     props.onMarkers?.(markers.filter((_, position) => position !== index));
   }
 
+  let markerDrag: { index: number; pointerId: number; startX: number } | null = null;
+
+  /** Dragging a marker line moves the split; the × inside it deletes. */
+  function markerDown(event: PointerEvent, index: number): void {
+    const target = event.currentTarget as HTMLElement;
+    markerDrag = { index, pointerId: event.pointerId, startX: event.clientX };
+    target.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function markerMove(event: PointerEvent): void {
+    const drag = markerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (Math.abs(event.clientX - drag.startX) < 3) return;
+    const track = (event.currentTarget as HTMLElement).parentElement;
+    const rect = track?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const next = fraction * props.duration;
+    const markers = (props.markers ?? []).map((marker, position) =>
+      position === drag.index ? next : marker,
+    );
+    props.onMarkers?.(markers);
+  }
+
+  function markerUp(event: PointerEvent): void {
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
+    markerDrag = null;
+  }
+
   onCleanup(() => {
     video?.pause();
   });
@@ -105,7 +159,7 @@ export default function MediaTimeline(props: MediaTimelineProps) {
     <div class="media-timeline">
       <div class="timeline-stage">
         <Show
-          when={canPlay()}
+          when={canPlay() && playback()}
           fallback={
             <div class="timeline-strip" aria-hidden="true">
               <Show
@@ -124,7 +178,10 @@ export default function MediaTimeline(props: MediaTimelineProps) {
             class="timeline-video"
             src={props.path ? ipc.assetUrl(props.path) : undefined}
             preload="metadata"
-            onTimeUpdate={(event) => setPlayhead(event.currentTarget.currentTime)}
+            onTimeUpdate={(event) => {
+              setPlayhead(event.currentTarget.currentTime);
+              props.onPlayhead?.(event.currentTarget.currentTime);
+            }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}
@@ -144,14 +201,25 @@ export default function MediaTimeline(props: MediaTimelineProps) {
           </Show>
           <For each={props.markers ?? []}>
             {(marker, index) => (
-              <button
-                type="button"
+              <span
                 class="timeline-marker"
                 style={{ left: `${percent(marker)}%` }}
-                aria-label={`Delete split ${index() + 1}`}
-                title={`${formatTimecode(marker)} · delete`}
-                onClick={() => dropMarker(index())}
-              />
+                title={formatTimecode(marker)}
+                onPointerDown={(event) => markerDown(event, index())}
+                onPointerMove={markerMove}
+                onPointerUp={markerUp}
+                onPointerCancel={markerUp}
+              >
+                <span class="timeline-marker-line" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="timeline-marker-drop"
+                  aria-label={`Delete split ${index() + 1}`}
+                  onClick={() => dropMarker(index())}
+                >
+                  ×
+                </button>
+              </span>
             )}
           </For>
           <span class="timeline-playhead" style={{ left: `${percent(playhead())}%` }} />
@@ -185,6 +253,21 @@ export default function MediaTimeline(props: MediaTimelineProps) {
             />
           </label>
         </Show>
+      </div>
+
+      <div class="timeline-handles">
+        <label class="timeline-handle">
+          <span class="timeline-handle-label">Playhead</span>
+          <input
+            type="range"
+            aria-label="Playhead"
+            min={0}
+            max={Math.max(0, props.duration)}
+            step={0.01}
+            value={playhead()}
+            onInput={(event) => seek(event.currentTarget.valueAsNumber)}
+          />
+        </label>
       </div>
 
       <div class="timeline-transport">

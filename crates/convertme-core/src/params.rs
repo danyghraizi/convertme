@@ -26,38 +26,52 @@ pub fn normalize(
         }
         match key.as_str() {
             // "0-10, 10-20" → [{"start":0,"end":10}, …]; same shape for the video
-            // split sections and the audio bleep ranges.
+            // split sections and the audio bleep ranges. The dialog sends the
+            // structured array directly (the timeline is the editor), so a value
+            // that is already typed must pass through untouched.
             "sections" | "ranges" => {
-                out.insert(
-                    key.clone(),
-                    Value::Array(parse_ranges(value.as_str().unwrap_or_default())?),
-                );
+                if value.is_array() {
+                    out.insert(key, value);
+                } else {
+                    out.insert(
+                        key.clone(),
+                        Value::Array(parse_ranges(value.as_str().unwrap_or_default())?),
+                    );
+                }
             }
             "times" => {
-                let text = value.as_str().unwrap_or_default();
-                let arr: Result<Vec<f64>, _> = text
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .map(|p| p.parse::<f64>())
-                    .collect();
-                out.insert(
-                    "times".into(),
-                    serde_json::json!(arr.map_err(|_| "times must be numbers")?),
-                );
+                if value.is_array() {
+                    out.insert(key, value);
+                } else {
+                    let text = value.as_str().unwrap_or_default();
+                    let arr: Result<Vec<f64>, _> = text
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.parse::<f64>())
+                        .collect();
+                    out.insert(
+                        "times".into(),
+                        serde_json::json!(arr.map_err(|_| "times must be numbers")?),
+                    );
+                }
             }
             "order" => {
-                let text = value.as_str().unwrap_or_default();
-                let arr: Result<Vec<u32>, _> = text
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .map(|p| p.parse::<u32>())
-                    .collect();
-                out.insert(
-                    "order".into(),
-                    serde_json::json!(arr.map_err(|_| "order must be page numbers")?),
-                );
+                if value.is_array() {
+                    out.insert(key, value);
+                } else {
+                    let text = value.as_str().unwrap_or_default();
+                    let arr: Result<Vec<u32>, _> = text
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.parse::<u32>())
+                        .collect();
+                    out.insert(
+                        "order".into(),
+                        serde_json::json!(arr.map_err(|_| "order must be page numbers")?),
+                    );
+                }
             }
             "rotate" => {
                 let text = value.as_str().unwrap_or_default();
@@ -127,6 +141,25 @@ mod tests {
         let sections = out.get("sections").unwrap().as_array().unwrap();
         assert_eq!(sections.len(), 2);
         assert_eq!(sections[1]["start"], 10.5);
+    }
+
+    #[test]
+    fn structured_values_pass_through() {
+        let map = serde_json::json!({
+            "sections": [{"start": 0, "end": 2.5}, {"start": 2.5, "end": 5}],
+            "times": [1.0, 3.0],
+            "order": [1, 0],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let out = normalize(Category::Video, ToolId::Split, map).unwrap();
+        assert_eq!(
+            out.get("sections").unwrap(),
+            &serde_json::json!([{"start": 0, "end": 2.5}, {"start": 2.5, "end": 5}])
+        );
+        assert_eq!(out.get("times").unwrap(), &serde_json::json!([1.0, 3.0]));
+        assert_eq!(out.get("order").unwrap(), &serde_json::json!([1, 0]));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
-import { baseName } from '../format';
+import { baseName, extensionOf } from '../format';
 import { asOrder } from '../fields';
 import type { FieldValue } from '../types';
 import './file-order.css';
@@ -12,6 +12,17 @@ interface FileOrderProps {
   value: FieldValue;
   onChange: (value: number[]) => void;
 }
+
+/** Containers whose thumbnail is a decoded frame, not an ImageMagick read. */
+const VIDEO_EXTENSIONS: Record<string, true> = {
+  mp4: true,
+  m4v: true,
+  mov: true,
+  mkv: true,
+  webm: true,
+  avi: true,
+  wmv: true,
+};
 
 /**
  * Reorder a multi-file tool's inputs (merge, join, collage).
@@ -35,8 +46,12 @@ export default function FileOrder(props: FileOrderProps) {
   createEffect(() => {
     for (const file of props.files) {
       if (thumbs()[file.path]) continue;
-      void ipc
-        .previewThumb(file.path, 96)
+      // ImageMagick walks every frame of a video; the filmstrip's first frame is
+      // the same picture at one decode instead of the whole clip.
+      const load = VIDEO_EXTENSIONS[extensionOf(file.path)]
+        ? ipc.filmstrip(file.path, 1).then((frames) => frames[0] ?? '')
+        : ipc.previewThumb(file.path, 96);
+      void load
         .then((url) => setThumbs((current) => ({ ...current, [file.path]: ipc.assetUrl(url) })))
         .catch(() => setThumbs((current) => ({ ...current, [file.path]: '' })));
     }

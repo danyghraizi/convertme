@@ -227,7 +227,7 @@ export default function CropEditor(props: CropEditorProps) {
         onPointerCancel={end}
       >
         <Show when={preview()} fallback={<p class="crop-placeholder">Preview unavailable</p>}>
-          <img src={preview()} alt="" draggable={false} />
+          <img src={preview()} alt="Crop preview" draggable={false} />
           <span class="crop-shade" />
           <div
             class="crop-region"

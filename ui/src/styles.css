@@ -1510,6 +1510,9 @@ input[type='color'] {
 
 .modal-fields {
   display: grid;
+  /* A preview image's intrinsic width must never size this column: a 1280 px
+     frame would push the 600 px sheet off-screen. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s-2);
   overflow-y: auto;
   overscroll-behavior: contain;

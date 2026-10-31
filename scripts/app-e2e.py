@@ -196,21 +196,46 @@ CONTROL_EXPECTATIONS = {
         ("slider", "Size (% of the original)"),
         ("check box", "Or a target file size"),
     ],
-    ("Video", "Crop"): [("combo box", "Aspect ratio")],
-    ("Video", "Speed"): [("entry", "Speed")],
-    ("Video", "Save frames"): [("entry", "Timestamps"), ("entry", "Or every")],
-    ("Video", "Redact"): [("entry", "Time ranges")],
-    ("Video", "Split"): [("entry", "Sections")],
-    ("Video", "Trim"): [("entry", "Start"), ("entry", "End")],
+    ("Video", "Crop"): [("button", "Free"), ("button", "1:1"), ("button", "16:9")],
+    ("Video", "Speed"): [("slider", "Speed")],
+    ("Video", "Save frames"): [("button", "Add frame")],
+    ("Video", "Redact"): [("button", "Solid"), ("button", "Blur")],
+    ("Video", "Split"): [
+        ("button", "Add split at playhead"),
+        ("entry", "Equal clips"),
+    ],
+    ("Video", "Trim"): [("slider", "Trim start"), ("slider", "Trim end")],
     ("Audio", "Compress"): [
         ("slider", "Size (% of the original)"),
         ("check box", "Or a bitrate"),
         ("check box", "Or a target file size"),
     ],
-    ("Audio", "Normalize"): [("entry", "Target loudness")],
-    ("Audio", "Channels"): [("combo box", "Channels")],
-    ("Audio", "Visualize"): [("entry", "Background"), ("combo box", "Size")],
-    ("Audio", "Bleep"): [("entry", "Ranges")],
+    ("Audio", "Normalize"): [
+        ("slider", "Target loudness"),
+        ("slider", "Loudness range"),
+        ("slider", "True peak limit"),
+        ("button", "Play Output"),
+    ],
+    ("Audio", "Channels"): [
+        ("button", "Mono"),
+        ("button", "Stereo"),
+        ("slider", "Left volume"),
+        ("slider", "Right volume"),
+        ("button", "Play Output"),
+    ],
+    ("Audio", "Visualize"): [
+        ("button", "Waveform"),
+        ("button", "Bars"),
+        ("button", "Line"),
+        ("button", "Landscape · 16:9"),
+        ("button", "Portrait · 9:16"),
+    ],
+    ("Audio", "Bleep"): [("button", "Original"), ("button", "With Bleeps")],
+    ("Audio", "Trim"): [
+        ("slider", "Trim start"),
+        ("slider", "Trim end"),
+        ("check box", "Trim silent ends automatically"),
+    ],
     ("Audio", "Metadata"): [
         ("entry", "Search metadata"),
         ("entry", "Title"),
@@ -1272,18 +1297,14 @@ class Session:
         match = re.search(r"(\d+) marked", self.subtree_text(dialog))
         return int(match.group(1)) if match else 0
 
-    def mark_region(self, dialog):
-        """Drag one rectangle on the boxes canvas inside the virtual display."""
-        image = self.preview_image(dialog)
-        if image is None:
-            detail = self.subtree_text(dialog).strip().replace("\n", " | ")[-300:]
-            raise Skip(f"the boxes canvas exposes no preview image to drag on: {detail}")
-        box = self.extents(image)
+    def drag_fraction(self, node, start_fraction, end_fraction):
+        """Drag between two fractions of a node's box, through intermediate moves."""
+        box = self.extents(node)
         if not box:
-            raise Skip("the boxes preview has no screen extents")
+            raise Skip("the surface has no screen extents to drag on")
         x, y, width, height = box
-        start = (x + int(width * 0.25), y + int(height * 0.3))
-        end = (x + int(width * 0.6), y + int(height * 0.7))
+        start = (x + int(width * start_fraction[0]), y + int(height * start_fraction[1]))
+        end = (x + int(width * end_fraction[0]), y + int(height * end_fraction[1]))
         run(["xdotool", "mousemove", str(start[0]), str(start[1])], timeout=10)
         time.sleep(0.15)
         run(["xdotool", "mousedown", "1"], timeout=10)
@@ -1296,6 +1317,21 @@ class Session:
             time.sleep(0.08)
         run(["xdotool", "mouseup", "1"], timeout=10)
         time.sleep(0.6)
+
+    def mark_region(self, dialog, start=(0.25, 0.3), end=(0.6, 0.7)):
+        """Drag one rectangle on the boxes canvas inside the virtual display."""
+        image = self.preview_image(dialog)
+        if image is None:
+            detail = self.subtree_text(dialog).strip().replace("\n", " | ")[-300:]
+            raise Skip(f"the boxes canvas exposes no preview image to drag on: {detail}")
+        self.drag_fraction(image, start, end)
+
+    def drag_bleep_range(self, dialog, start, end):
+        """Drag across the waveform lane, which is where a bleep is marked."""
+        surface = self.find(name="Bleep ranges", within=dialog)
+        if surface is None:
+            raise ScenarioFailure("the bleep lane is missing")
+        self.drag_fraction(surface, (start, 0.5), (end, 0.5))
 
     def detect_or_mark(self, dialog, timeout=12):
         """Run OCR, then draw one rectangle too: the drawn box is the guarantee.
@@ -1501,11 +1537,25 @@ class Session:
         }
 
     def set_slider_auto(self, label: str, value: float):
-        """Set a slider without being told its bounds: AT-SPI reports both."""
-        node = self.slider(label)
+        """Set a slider without being told its bounds: AT-SPI reports both.
+
+        A timeline's handles appear (and get their maximum) once the dialogue has
+        read the clip's length; pressing Home before that would clamp every step to
+        the initial 0. Wait for the handle and for a maximum that can hold the value.
+        """
+        deadline = time.time() + 20
+        node = None
+        value_iface = None
+        maximum = None
+        while time.time() < deadline:
+            node = self.slider(label)
+            value_iface = _safe(node, "get_value_iface") if node is not None else None
+            maximum = _safe(value_iface, "get_maximum_value") if value_iface is not None else None
+            if node is not None and (maximum is None or float(maximum) >= value):
+                break
+            time.sleep(0.3)
         if node is None:
             raise ScenarioFailure(f"slider {label!r} not found")
-        value_iface = _safe(node, "get_value_iface")
         minimum = (
             float(_safe(value_iface, "get_minimum_value"))
             if value_iface is not None and _safe(value_iface, "get_minimum_value") is not None
@@ -2279,6 +2329,9 @@ def scenario_dialogs(h, rec, checks, category):
                 continue
             dialog, frame, box, nodes = opened
             assert_dialog_inside(rec, checks, f"{category}/{label}", frame, box)
+            # A timeline/crop/waveform surface is fetched when the dialog opens;
+            # its controls (handles, transports) exist only after that.
+            time.sleep(0.6)
             roles = {node["role"] for node in nodes}
             # The reference footer has Reset and the tool's own action; the head has
             # Close. There is no generic Run and no Cancel.
@@ -2297,7 +2350,14 @@ def scenario_dialogs(h, rec, checks, category):
                 [name for name in labels if name in ("Run", "Cancel")],
             )
             for role, name in CONTROL_EXPECTATIONS.get((category, label), []):
-                found = session.find(role=role, name=name, within=dialog)
+                # WebKit names a pushed button `button`, some AT-SPI builds say
+                # `push button`; the contract is the control, not the spelling.
+                aliases = (role, "push button") if role == "button" else (role,)
+                found = None
+                for alias in aliases:
+                    found = session.find(role=alias, name=name, within=dialog)
+                    if found is not None:
+                        break
                 checks.add(
                     f"{category}/{label}: {name} is a {role}",
                     found is not None,
@@ -2957,21 +3017,91 @@ def scenario_tool_image_redact(h, rec, checks):
         checks.add("redact changes pixels", compare_pixels(os.path.join(session.workdir, "screenshot-text.png"), outputs[0]) > 0, "> 0", "0")
 
 
+def media_duration(record) -> float:
+    return float(record.get("media", {}).get("duration") or 0.0)
+
+
+def video_stream(record) -> dict:
+    return next(
+        (
+            stream
+            for stream in record.get("media", {}).get("streams", [])
+            if stream.get("type") == "video"
+        ),
+        {},
+    )
+
+
+def channel_rms_db(path: str, channel: int) -> float | None:
+    """RMS of one channel, so a pan gain can be measured on the side it applies to."""
+    result = run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            path,
+            "-af",
+            f"pan=mono|c0=c{channel},astats=metadata=1:reset=0",
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout=120,
+    )
+    matches = re.findall(r"RMS level dB:\s*(-?\d+\.?\d*)", result.stderr)
+    return float(matches[-1]) if matches else None
+
+
+def frame_pixel(path: str, at: float, x: int, y: int, directory: str, tag: str):
+    """One pixel of one decoded frame, for before/after redaction comparisons."""
+    out = os.path.join(directory, f"probe-{tag}-{at}.png")
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at}", "-i", path, "-frames:v", "1", out], timeout=60)
+    return validate.pixel(out, x, y)
+
+
+def pixel_distance(a, b) -> int:
+    if not a or not b:
+        return -1
+    return max(abs(int(pa) - int(pb)) for pa, pb in zip(a, b))
+
+
 def scenario_tool_video_trim(h, rec, checks):
     def apply(s):
-        s.set_entry("Start", "2")
-        s.set_entry("End", "5")
+        # The two timeline handles are the only trim controls: no text fields.
+        # End first: a start cannot pass the current end, which is 0 until the
+        # dialog has the clip's length.
+        s.set_slider_auto("Trim end", 5.0)
+        s.set_slider_auto("Trim start", 2.0)
 
     with h.launch("tool-video-trim", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
         outputs, _preview = run_tool_job(session, rec, checks, "Trim", category="Video", apply=apply)
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
         checks.add("trim keeps video and audio", {"video", "audio"} <= _stream_types(record), ["audio", "video"], sorted(_stream_types(record)))
-        checks.add("trim shortens the clip", 2.0 < media.get("duration", 0) < 9.0, "between 2 and 9 s", media.get("duration"))
+        checks.add(
+            "trim 2→5 s writes 3.0 s",
+            abs(media_duration(record) - 3.0) <= 0.2,
+            "3.0±0.2 s",
+            media_duration(record),
+        )
 
 
 def scenario_tool_video_crop(h, rec, checks):
+    def crop_free(s):
+        # The crop canvas has its own image; the timeline below it has frames with
+        # no name, and a drag there would never become a crop rectangle.
+        deadline = time.time() + 15
+        node = None
+        while time.time() < deadline:
+            node = s.find(name="Crop preview", within=s.dialog())
+            if node is not None:
+                break
+            time.sleep(0.3)
+        if node is None:
+            raise ScenarioFailure("the crop canvas never showed its preview")
+        s.drag_fraction(node, (0.25, 0.25), (0.75, 0.75))
+
     with h.launch("tool-video-crop", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
         outputs, _preview = run_tool_job(
@@ -2980,92 +3110,330 @@ def scenario_tool_video_crop(h, rec, checks):
             checks,
             "Crop",
             category="Video",
-            apply=lambda s: s.select_option("Aspect ratio", "1:1"),
+            apply=crop_free,
         )
         record = record_outputs(rec, outputs)[0]
-        video = next((stream for stream in record.get("media", {}).get("streams", []) if stream["type"] == "video"), {})
-        checks.add("1:1 crop is square", video.get("width") == video.get("height") and video.get("width") == 720, "720×720", [video.get("width"), video.get("height")])
+        video = video_stream(record)
+        check_dimensions = (video.get("width"), video.get("height")) == (640, 360)
+        checks.add("free crop 0.25–0.75 is 640×360", check_dimensions, [640, 360], [video.get("width"), video.get("height")])
         checks.add("audio survives the crop", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
+
+    with h.launch("tool-video-crop-aspect", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(
+            session,
+            rec,
+            checks,
+            "Crop",
+            category="Video",
+            apply=lambda s: s.press_in_dialog("1:1"),
+        )
+        record = record_outputs(rec, outputs)[0]
+        video = video_stream(record)
+        checks.add(
+            "1:1 crop is 720×720",
+            (video.get("width"), video.get("height")) == (720, 720),
+            [720, 720],
+            [video.get("width"), video.get("height")],
+        )
+        checks.add("aspect crop keeps the audio", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
 
 
 def scenario_tool_video_speed(h, rec, checks):
+    def at(factor):
+        return lambda s: s.set_slider_auto("Speed", factor)
+
     with h.launch("tool-video-speed", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Speed", category="Video")
+        outputs, _preview = run_tool_job(session, rec, checks, "Speed", category="Video", apply=at(2.0))
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
-        checks.add("2× halves the duration", 4.0 < media.get("duration", 0) < 6.0, "≈5 s", media.get("duration"))
+        checks.add("2× writes 5.0 s", abs(media_duration(record) - 5.0) <= 0.2, "5.0±0.2 s", media_duration(record))
         checks.add("speed keeps the audio", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
+
+    with h.launch("tool-video-speed-half", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Speed", category="Video", apply=at(0.5))
+        record = record_outputs(rec, outputs)[0]
+        checks.add("0.5× writes 20 s", abs(media_duration(record) - 20.0) <= 0.4, "20.0±0.4 s", media_duration(record))
+
+    with h.launch("tool-video-speed-silent", [h.fixture("video/clip-silent-720p-5s.mp4")]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Speed", category="Video", apply=at(2.0))
+        record = record_outputs(rec, outputs)[0]
+        checks.add("a silent clip still speeds up", abs(media_duration(record) - 2.5) <= 0.2, "2.5±0.2 s", media_duration(record))
+        checks.add("the silent clip stays silent", "audio" not in _stream_types(record), "no audio", sorted(_stream_types(record)))
 
 
 def scenario_tool_video_frames(h, rec, checks):
     def apply(s):
-        s.set_entry("Or every", "1")
+        # The chips are the value: scrub to a moment, add it, repeat.
+        s.set_slider_auto("Playhead", 1.0)
+        s.press_in_dialog("Add frame")
+        s.set_slider_auto("Playhead", 3.0)
+        s.press_in_dialog("Add frame")
+        time.sleep(0.4)
+        rec["parameters"]["primary"] = s.primary_label()
 
     with h.launch("tool-video-frames", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Save frames", category="Video", apply=apply, expect=10)
+        outputs, _preview = run_tool_job(session, rec, checks, "Save frames", category="Video", apply=apply, expect=2)
         records = record_outputs(rec, outputs)
-        checks.add("one frame per second", len(records) == 10, 10, len(records))
+        checks.add("two chips write two frames", len(records) == 2, 2, len(records))
         checks.add(
             "every frame is a 1280×720 PNG",
-            all(record["kind"] == "png" and (record.get("image", {}).get("width"), record.get("image", {}).get("height")) == (1280, 720) for record in records),
-            "10 PNGs 1280×720",
-            [(record["kind"], record.get("image", {}).get("width"), record.get("image", {}).get("height")) for record in records[:3]],
+            all(
+                record["kind"] == "png"
+                and (record.get("image", {}).get("width"), record.get("image", {}).get("height")) == (1280, 720)
+                for record in records
+            ),
+            "2 PNGs 1280×720",
+            [(record["kind"], record.get("image", {}).get("width"), record.get("image", {}).get("height")) for record in records],
+        )
+        checks.add(
+            "the primary names the frame count",
+            rec["parameters"].get("primary") == "Save 2 Frames",
+            "Save 2 Frames",
+            rec["parameters"].get("primary"),
+        )
+        checks.add(
+            "the two frames differ",
+            len(records) == 2 and records[0]["sha256"] != records[1]["sha256"],
+            "different pixels",
+            "identical",
         )
 
 
 def scenario_tool_video_split(h, rec, checks):
     def apply(s):
-        s.set_entry("Sections", "0-2,2-4")
+        s.set_slider_auto("Playhead", 2.5)
+        s.press_in_dialog("Add split at playhead")
+        s.set_slider_auto("Playhead", 5.0)
+        s.press_in_dialog("Add split at playhead")
+        time.sleep(0.4)
 
     with h.launch("tool-video-split", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Split", category="Video", apply=apply, expect=2)
+        outputs, _preview = run_tool_job(session, rec, checks, "Split", category="Video", apply=apply, expect=3)
         records = record_outputs(rec, outputs)
-        checks.add("two sections are written", len(records) == 2, 2, len(records))
-        checks.add("both sections are playable MP4s", all(record["kind"] == "mp4" and record.get("media", {}).get("duration", 0) > 0 for record in records), "two MP4s", [(record["kind"], record.get("media", {}).get("duration")) for record in records])
+        durations = [round(media_duration(record), 2) for record in records]
+        wanted = [2.5, 2.5, 5.0]
+        checks.add("two split points write three clips", len(records) == 3, 3, len(records))
+        checks.add(
+            "clips are 2.5/2.5/5.0 s",
+            len(durations) == 3
+            and all(abs(a - b) <= 0.2 for a, b in zip(sorted(durations), wanted)),
+            wanted,
+            sorted(durations),
+        )
+        checks.add("every clip keeps the audio", all("audio" in _stream_types(record) for record in records), "audio in all", [sorted(_stream_types(record)) for record in records])
+
+    with h.launch("tool-video-split-equal", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
+        rec["workdir"] = session.workdir
+
+        def equal(s):
+            s.set_entry("Equal clips", "4")
+            s.press_in_dialog("Set")
+            time.sleep(0.4)
+
+        outputs, _preview = run_tool_job(session, rec, checks, "Split", category="Video", apply=equal, expect=4)
+        records = record_outputs(rec, outputs)
+        durations = [round(media_duration(record), 2) for record in records]
+        checks.add("equal clips 4 writes four files", len(records) == 4, 4, len(records))
+        checks.add(
+            "each equal clip is 2.5 s",
+            len(durations) == 4 and all(abs(duration - 2.5) <= 0.2 for duration in durations),
+            [2.5, 2.5, 2.5, 2.5],
+            durations,
+        )
 
 
 def scenario_tool_video_redact(h, rec, checks):
-    def apply(s):
-        s.set_entry("Time ranges", "1-2")
-        s.mark_region(s.dialog())
+    source = h.fixture("video/clip-landscape-720p-10s.mp4")
+    # The fixture is colour bars: a sample on the green/yellow boundary inside the
+    # region is where a blur changes pixels (a flat patch would survive a blur).
+    inside = (420, 300)
+    plain = (544, 360)
 
-    with h.launch("tool-video-redact", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
+    def apply(solid: bool):
+        def run_redact(s):
+            s.mark_region(s.dialog(), (0.25, 0.3), (0.6, 0.7))
+            time.sleep(0.6)
+            rec["screenshots"].append(s.shot("marked"))
+            rec["measurements"]["marked_text"] = s.subtree_text(s.dialog())[-400:]
+            s.set_entry("Region 1 start", "0.5")
+            s.set_entry("Region 1 end", "2.0")
+            if solid:
+                s.press_in_dialog("#e4572e")
+
+        return run_redact
+
+    with h.launch("tool-video-redact", [source]) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Redact", category="Video", apply=apply)
+        outputs, _preview = run_tool_job(session, rec, checks, "Redact", category="Video", apply=apply(True))
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
-        checks.add("redact keeps the duration", 9.0 < media.get("duration", 0) < 11.0, "≈10 s", media.get("duration"))
+        checks.add("redact keeps the duration", abs(media_duration(record) - 10.0) <= 0.4, "≈10 s", media_duration(record))
         checks.add("redact keeps video and audio", {"video", "audio"} <= _stream_types(record), ["audio", "video"], sorted(_stream_types(record)))
+        before = frame_pixel(source, 1.5, *inside, session.workdir, "source")
+        covered = frame_pixel(outputs[0], 1.5, *inside, session.workdir, "covered")
+        early = frame_pixel(outputs[0], 0.2, *plain, session.workdir, "early")
+        late = frame_pixel(outputs[0], 2.5, *plain, session.workdir, "late")
+        source_early = frame_pixel(source, 0.2, *plain, session.workdir, "source-early")
+        source_late = frame_pixel(source, 2.5, *plain, session.workdir, "source-late")
+        checks.add(
+            "the box is the solid colour inside 0.5–2.0 s",
+            bool(covered) and covered[0] > 150 and covered[1] < 140,
+            "#e4572e",
+            covered,
+        )
+        checks.add("the frame at 0.2 s is unchanged", pixel_distance(early, source_early) <= 24, "≤24 levels", pixel_distance(early, source_early))
+        checks.add("the frame at 2.5 s is unchanged", pixel_distance(late, source_late) <= 24, "≤24 levels", pixel_distance(late, source_late))
+        checks.add("the source pixel was not already the fill", pixel_distance(before, covered) > 60, ">60 levels", pixel_distance(before, covered))
+
+    with h.launch("tool-video-redact-blur", [source]) as session:
+        rec["workdir"] = session.workdir
+
+        def blur(s):
+            s.press_in_dialog("Blur")
+            s.mark_region(s.dialog(), (0.25, 0.3), (0.6, 0.7))
+            time.sleep(0.3)
+
+        outputs, _preview = run_tool_job(session, rec, checks, "Redact", category="Video", apply=blur)
+        record = record_outputs(rec, outputs)[0]
+        checks.add("blur redaction writes a clip", media_duration(record) > 9.0, "≈10 s", media_duration(record))
+        blurred = frame_pixel(outputs[0], 5.0, *inside, session.workdir, "blurred")
+        source_frame = frame_pixel(source, 5.0, *inside, session.workdir, "source-mid")
+        checks.add(
+            "blur changes the covered pixels",
+            pixel_distance(blurred, source_frame) > 3,
+            ">3 levels",
+            pixel_distance(blurred, source_frame),
+        )
+        checks.add(
+            "blur is not the solid colour",
+            not (blurred and blurred[0] > 200 and blurred[1] < 120 and blurred[2] < 100),
+            "not #e4572e",
+            blurred,
+        )
 
 
 def scenario_tool_audio_normalize(h, rec, checks):
-    with h.launch("tool-audio-normalize", [h.fixture("audio/speech.mp3")]) as session:
+    def apply(s):
+        deadline = time.time() + 15
+        seen = ""
+        while time.time() < deadline:
+            seen = s.subtree_text(s.dialog())
+            if "Input:" in seen:
+                break
+            time.sleep(0.5)
+        checks.add("normalize shows the input measurement", "Input:" in seen, "Input: … LUFS", seen[-200:])
+
+    with h.launch("tool-audio-normalize", [h.fixture("audio/quiet-speech.mp3")]) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Normalize", category="Audio")
+        outputs, _preview = run_tool_job(session, rec, checks, "Normalize", category="Audio", apply=apply)
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
-        checks.add("normalize keeps the duration", 13.0 < media.get("duration", 0) < 15.0, "≈14.1 s", media.get("duration"))
+        checks.add("normalize keeps the duration", 13.0 < media_duration(record) < 15.0, "≈14.1 s", media_duration(record))
         checks.add("normalize keeps audio", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
+        loudness = validate.audio_loudness(outputs[0]) or {}
+        measured = loudness.get("input_i")
+        peak = loudness.get("input_tp")
+        checks.add(
+            "the output measures -16±1 LUFS",
+            measured is not None and abs(float(measured) + 16.0) <= 1.0,
+            "-16±1 LUFS",
+            measured,
+        )
+        checks.add(
+            "true peak stays at or under -1.5 dBTP",
+            peak is not None and float(peak) <= -1.0,
+            "≤ -1.5 dBTP",
+            peak,
+        )
 
 
 def scenario_tool_audio_trim(h, rec, checks):
     def apply(s):
-        s.set_entry("Start", "1")
-        s.set_entry("End", "4")
+        s.set_slider_auto("Trim end", 5.0)
+        s.set_slider_auto("Trim start", 2.0)
 
-    with h.launch("tool-audio-trim", [h.fixture("audio/speech.mp3")]) as session:
+    with h.launch("tool-audio-trim", [h.fixture("audio/speech.wav")]) as session:
         rec["workdir"] = session.workdir
         outputs, _preview = run_tool_job(session, rec, checks, "Trim", category="Audio", apply=apply)
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
-        checks.add("trim cuts to ~3 s", 2.5 < media.get("duration", 0) < 4.0, "≈3 s", media.get("duration"))
+        checks.add("trim cuts 2→5 s to 3.0 s", abs(media_duration(record) - 3.0) <= 0.1, "3.0±0.1 s", media_duration(record))
+
+    # 1 s of silence at each end: the checkbox must remove both, and the first
+    # 100 ms of the result must carry the tone.
+    silent = os.path.join(h.profile, "work", "silent-ends.wav")
+    os.makedirs(os.path.dirname(silent), exist_ok=True)
+    built = run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-af",
+            "adelay=1000|1000,apad=pad_dur=1",
+            "-c:a",
+            "pcm_s16le",
+            silent,
+        ],
+        timeout=60,
+    )
+    if built.returncode != 0:
+        raise Skip(f"could not build the silent-ended fixture: {built.stderr.strip()[:200]}")
+
+    with h.launch("tool-audio-trim-silence", [silent]) as session:
+        rec["workdir"] = session.workdir
+
+        def silence(s):
+            s.set_check("Trim silent ends automatically", True)
+            time.sleep(0.5)
+
+        outputs, _preview = run_tool_job(session, rec, checks, "Trim", category="Audio", apply=silence)
+        record = record_outputs(rec, outputs)[0]
+        checks.add(
+            "trim_silence removes 2 s of silent ends",
+            abs(media_duration(record) - 2.0) <= 0.3,
+            "≈2.0 s",
+            media_duration(record),
+        )
+        leading = validate.rms(outputs[0], 0.0, 0.1)
+        checks.add(
+            "the silence-removed clip starts with sound",
+            leading is not None and leading > -40.0,
+            "> -40 dBFS",
+            leading,
+        )
 
 
 def scenario_tool_audio_channels(h, rec, checks):
-    with h.launch("tool-audio-channels", [h.fixture("audio/speech.mp3")]) as session:
+    def gains(s):
+        s.set_slider_auto("Left volume", 50.0)
+
+    with h.launch("tool-audio-channels", [h.fixture("audio/tone-stereo-30s.wav")]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Channels", category="Audio", apply=gains)
+        record = record_outputs(rec, outputs)[0]
+        audio = next(
+            (stream for stream in record.get("media", {}).get("streams", []) if stream.get("type") == "audio"),
+            {},
+        )
+        checks.add("stereo output has 2 channels", audio.get("channels") == 2, 2, audio.get("channels"))
+        left = channel_rms_db(outputs[0], 0)
+        right = channel_rms_db(outputs[0], 1)
+        difference = (right - left) if left is not None and right is not None else None
+        checks.add(
+            "L=50 % is about half the right channel",
+            difference is not None and 4.5 <= difference <= 7.5,
+            "right − left ≈ 6 dB",
+            difference,
+        )
+
+    with h.launch("tool-audio-channels-mono", [h.fixture("audio/tone-stereo-30s.wav")]) as session:
         rec["workdir"] = session.workdir
         outputs, _preview = run_tool_job(
             session,
@@ -3073,38 +3441,114 @@ def scenario_tool_audio_channels(h, rec, checks):
             checks,
             "Channels",
             category="Audio",
-            apply=lambda s: s.select_option("Channels", "2"),
+            apply=lambda s: s.press_in_dialog("Mono"),
         )
         record = record_outputs(rec, outputs)[0]
-        audio = next((stream for stream in record.get("media", {}).get("streams", []) if stream["type"] == "audio"), {})
-        checks.add("stereo output has 2 channels", audio.get("channels") == 2, 2, audio.get("channels"))
+        audio = next(
+            (stream for stream in record.get("media", {}).get("streams", []) if stream.get("type") == "audio"),
+            {},
+        )
+        checks.add("mono output has 1 channel", audio.get("channels") == 1, 1, audio.get("channels"))
 
 
 def scenario_tool_audio_visualize(h, rec, checks):
-    with h.launch("tool-audio-visualize", [h.fixture("audio/speech.mp3")]) as session:
-        rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Visualize", category="Audio")
-        record = record_outputs(rec, outputs)[0]
-        video = next((stream for stream in record.get("media", {}).get("streams", []) if stream["type"] == "video"), {})
-        checks.add("visualize writes an MP4", record["kind"] == "mp4", "mp4", record["kind"])
-        checks.add("default size is 1280×720", (video.get("width"), video.get("height")) == (1280, 720), [1280, 720], [video.get("width"), video.get("height")])
+    def at(shape_label):
+        def choose(s):
+            s.press_in_dialog(shape_label)
+
+        return choose
+
+    cases = [
+        ("Landscape · 16:9", 1280, 720),
+        ("Portrait · 9:16", 720, 1280),
+        ("Square · 1:1", 1080, 1080),
+    ]
+    for index, (label, width, height) in enumerate(cases):
+        with h.launch(f"tool-audio-visualize-{index}", [h.fixture("audio/speech.mp3")]) as session:
+            rec["workdir"] = session.workdir
+            outputs, _preview = run_tool_job(
+                session,
+                rec,
+                checks,
+                "Visualize",
+                category="Audio",
+                apply=at(label) if label != "Landscape · 16:9" else None,
+            )
+            record = record_outputs(rec, outputs)[0]
+            video = video_stream(record)
+            checks.add(
+                f"visualize {label} is {width}×{height}",
+                (video.get("width"), video.get("height")) == (width, height),
+                [width, height],
+                [video.get("width"), video.get("height")],
+            )
+            checks.add(
+                f"visualize {label} keeps the duration",
+                abs(media_duration(record) - 14.1) <= 0.2,
+                "14.1±0.2 s",
+                media_duration(record),
+            )
+            checks.add(
+                f"visualize {label} keeps the audio",
+                "audio" in _stream_types(record),
+                "audio",
+                sorted(_stream_types(record)),
+            )
 
 
 def scenario_tool_audio_bleep(h, rec, checks):
-    with h.launch("tool-audio-bleep", [h.fixture("audio/speech.mp3")]) as session:
-        rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(
-            session,
-            rec,
-            checks,
-            "Bleep",
-            category="Audio",
-            apply=lambda s: s.set_entry("Ranges", "1-2"),
+    fixture = h.fixture("audio/speech.wav")
+
+    def apply(s):
+        dialog = s.dialog()
+        s.drag_bleep_range(dialog, 1.0 / 14.1, 2.0 / 14.1)
+        s.drag_bleep_range(dialog, 4.0 / 14.1, 5.0 / 14.1)
+        time.sleep(0.5)
+        # The "With Bleeps" preview runs the engine; the cache must gain its MP3.
+        s.press_in_dialog("With Bleeps")
+        deadline = time.time() + 40
+        cache = os.path.join(h.profile, "cache", "convertme", "previews")
+        while time.time() < deadline:
+            if os.path.isdir(cache) and any(
+                name.endswith(".mp3") for _root, _dirs, names in os.walk(cache) for name in names
+            ):
+                break
+            time.sleep(0.5)
+        rec["measurements"]["bleep_preview_cached"] = any(
+            name.endswith(".mp3") for _root, _dirs, names in os.walk(cache) for name in names
         )
+
+    with h.launch("tool-audio-bleep", [fixture]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Bleep", category="Audio", apply=apply)
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
-        checks.add("bleep keeps the duration", 13.0 < media.get("duration", 0) < 15.0, "≈14.1 s", media.get("duration"))
-        checks.add("bleep rewrites the audio", record["sha256"] != sha256(os.path.join(session.workdir, "speech.mp3")), "different bytes", record["sha256"][:12])
+        checks.add("bleep keeps the duration", 13.0 < media_duration(record) < 15.0, "≈14.1 s", media_duration(record))
+        checks.add("bleep rewrites the audio", record["sha256"] != sha256(os.path.join(session.workdir, "speech.wav")), "different bytes", record["sha256"][:12])
+        tone = validate.dominant_frequency(outputs[0], 1.3, 0.3)
+        checks.add(
+            "the first range is a 1 kHz tone",
+            tone is not None and 800.0 <= tone <= 1200.0,
+            "≈1000 Hz",
+            tone,
+        )
+        inside = validate.rms(outputs[0], 1.3, 0.3)
+        outside = validate.rms(outputs[0], 3.0, 0.4)
+        source_outside = validate.rms(fixture, 3.0, 0.4)
+        checks.add(
+            "outside the ranges the level matches the source",
+            inside is not None
+            and outside is not None
+            and source_outside is not None
+            and abs(outside - source_outside) <= 2.0,
+            "outside within 2 dB of the source",
+            [outside, source_outside],
+        )
+        checks.add(
+            "the bleep preview file was written",
+            bool(rec["measurements"].get("bleep_preview_cached")),
+            "an MP3 in the preview cache",
+            rec["measurements"].get("bleep_preview_cached"),
+        )
 
 
 def scenario_tool_audio_metadata(h, rec, checks):
@@ -3561,16 +4005,67 @@ def scenario_tool_video_join(h, rec, checks):
         rec["workdir"] = session.workdir
         outputs, _preview = run_tool_job(session, rec, checks, "Join", category="Video")
         record = record_outputs(rec, outputs)[0]
-        media = record.get("media", {})
+        video = video_stream(record)
         checks.add("join produces one clip", len(outputs) == 1, 1, len(outputs))
         checks.add(
             "joined duration covers both clips",
-            media.get("duration", 0) >= 15.0,
-            ">=15 s",
-            media.get("duration"),
+            media_duration(record) >= 15.5,
+            ">=15.5 s",
+            media_duration(record),
         )
-        streams = [stream["type"] for stream in media.get("streams", [])]
-        checks.add("join keeps the audio", "audio" in streams, "audio", streams)
+        checks.add(
+            "the join uses the first clip as its canvas",
+            (video.get("width"), video.get("height")) == (1280, 720),
+            [1280, 720],
+            [video.get("width"), video.get("height")],
+        )
+        checks.add("join keeps the audio", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
+        forward = frame_pixel(outputs[0], 0.3, 200, 500, session.workdir, "join-forward")
+
+    with h.launch("tool-video-join-reversed", clips) as session:
+        rec["workdir"] = session.workdir
+
+        def reverse(s):
+            dialog = s.dialog()
+            move = next(
+                (
+                    node
+                    for node in s.dialog_buttons()
+                    if "portrait" in (_safe(node, "get_name") or "")
+                    and (_safe(node, "get_name") or "").startswith("Move ")
+                ),
+                None,
+            )
+            if move is None:
+                raise ScenarioFailure("the portrait clip has no move-up row in Join")
+            if not s.press(move):
+                raise ScenarioFailure("could not move the portrait clip up")
+
+        outputs, _preview = run_tool_job(session, rec, checks, "Join", category="Video", apply=reverse)
+        record = record_outputs(rec, outputs)[0]
+        video = video_stream(record)
+        checks.add(
+            "reversing the order changes the canvas",
+            (video.get("width"), video.get("height")) == (1080, 1920),
+            [1080, 1920],
+            [video.get("width"), video.get("height")],
+        )
+        checks.add(
+            "reversing the order changes the first frame",
+            pixel_distance(
+                forward,
+                frame_pixel(outputs[0], 0.3, 200, 500, session.workdir, "join-reversed"),
+            )
+            > 30,
+            ">30 levels",
+            "same",
+        )
+        checks.add(
+            "the joined duration is order-independent",
+            media_duration(record) >= 15.5,
+            ">=15.5 s",
+            media_duration(record),
+        )
 
 
 def scenario_negative_corrupt(h, rec, checks):

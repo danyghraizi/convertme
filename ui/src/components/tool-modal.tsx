@@ -6,6 +6,8 @@ import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor, { BoxesEditor } from './field-editor';
 import ToolInfo from './tool-info';
+import VideoEditor from './video-editor';
+import AudioEditor from './audio-editor';
 import { collectParams, initialValue, visibleIn } from '../fields';
 import { formatBytes, isLosslessSelection, isPngSelection } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
@@ -82,6 +84,11 @@ export function actionLabel(action: string | undefined, count: number): string {
     .replace('Frame(s)', count === 1 ? 'Frame' : 'Frames');
 }
 
+/** Video tools whose dialog draws a timeline, crop canvas or redaction surface. */
+const VIDEO_SURFACES = ['trim', 'crop', 'speed', 'split', 'snapshot', 'redact'];
+/** Audio tools whose dialog draws the waveform, channels or a visualizer still. */
+const AUDIO_SURFACES = ['trim', 'normalize', 'channels', 'visualize', 'bleep'];
+
 export default function ToolModal(props: ToolModalProps) {
   const seed: Record<string, FieldValue> = {};
   for (const field of props.fields) seed[field.key] = initialValue(field);
@@ -126,6 +133,15 @@ export default function ToolModal(props: ToolModalProps) {
   const [error, setError] = createSignal('');
   /** How many items a counted action names ("Save 2 Frames"). */
   const [actionCount, setActionCount] = createSignal(0);
+  /** Parameters a dedicated editor owns (`times`, `sections`). */
+  const [extras, setExtras] = createSignal<Record<string, unknown>>({});
+  /** False while the surface says the action has nothing to do yet. */
+  const [editorReady, setEditorReady] = createSignal(true);
+  /** Bumped by Reset so an editor's own marks (split points, frames) clear too. */
+  const [resetToken, setResetToken] = createSignal(0);
+  const hasSurface = (): boolean =>
+    (props.category === 'video' && VIDEO_SURFACES.includes(props.tool.id)) ||
+    (props.category === 'audio' && AUDIO_SURFACES.includes(props.tool.id));
   let dialog: HTMLDivElement | undefined;
   let sheet: HTMLFormElement | undefined;
 
@@ -160,6 +176,9 @@ export default function ToolModal(props: ToolModalProps) {
     for (const field of props.fields) setValues(field.key, initialValue(field));
     setError('');
     setActionCount(0);
+    setExtras({});
+    setEditorReady(true);
+    setResetToken((token) => token + 1);
   }
 
   /**
@@ -208,7 +227,7 @@ export default function ToolModal(props: ToolModalProps) {
     setSubmitting(true);
     setError('');
     try {
-      const own = collected();
+      const own = { ...collected(), ...extras() };
       const entries = fileList().map((file, index) => ({
         path: file.path,
         params: shared() || index === shown() ? own : (perFile.get(index) ?? { ...own }),
@@ -325,7 +344,7 @@ export default function ToolModal(props: ToolModalProps) {
                 params={collected()}
               />
             </Show>
-            <Show when={props.tool.id === 'crop'}>
+            <Show when={props.tool.id === 'crop' && props.category === 'images'}>
               <div class="field">
                 <span class="field-label">Area to keep</span>
                 <CropEditor
@@ -336,17 +355,42 @@ export default function ToolModal(props: ToolModalProps) {
                 />
               </div>
             </Show>
-            <Show when={props.tool.id === 'redact'}>
+            <Show when={props.tool.id === 'redact' && props.category === 'images'}>
               <div class="field">
-                <span class="field-label">
-                  {props.category === 'video' ? 'Areas to blur' : 'Areas to fill'}
-                </span>
+                <span class="field-label">Areas to fill</span>
                 <BoxesEditor
                   value={Array.isArray(values.boxes) ? (values.boxes as FieldValue) : []}
                   previewPath={props.previewPath}
                   onChange={(next) => setValues('boxes', next)}
                 />
               </div>
+            </Show>
+            <Show when={hasSurface()}>
+              <Show when={props.category === 'video'}>
+                <VideoEditor
+                  tool={props.tool.id}
+                  path={shownPath()}
+                  values={values}
+                  setValue={(key, value) => setValues(key, value)}
+                  onExtras={setExtras}
+                  onCount={setActionCount}
+                  onReady={setEditorReady}
+                  resetToken={resetToken()}
+                />
+              </Show>
+              <Show when={props.category === 'audio'}>
+                <AudioEditor
+                  tool={props.tool.id}
+                  path={shownPath()}
+                  values={values}
+                  setValue={(key, value) => setValues(key, value)}
+                  collect={collected}
+                  onExtras={setExtras}
+                  onCount={setActionCount}
+                  onReady={setEditorReady}
+                  resetToken={resetToken()}
+                />
+              </Show>
             </Show>
             <Show when={props.tool.id === 'add-background'}>
               <BackgroundPreview
@@ -464,7 +508,11 @@ export default function ToolModal(props: ToolModalProps) {
                 type="submit"
                 class="button button-primary"
                 data-testid="primary"
-                disabled={submitting()}
+                disabled={
+                  submitting() ||
+                  !editorReady() ||
+                  ((props.tool.action ?? '').includes('{n}') && actionCount() === 0)
+                }
               >
                 {submitting() ? 'Starting…' : actionLabel(props.tool.action, actionCount())}
               </button>

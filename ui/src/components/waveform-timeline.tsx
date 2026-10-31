@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import * as ipc from '../ipc';
 import { formatTimecode } from '../format';
 import type { WaveformData } from '../types';
@@ -19,11 +19,16 @@ interface WaveformTimelineProps {
   mode: 'trim' | 'bleep' | 'channels';
   /** Read-only overlays: split points, marker positions. */
   markers?: number[];
+  /** The trim dialog's selected span, with its two handles. */
+  range?: WaveRange;
+  onRange?: (start: number, end: number) => void;
   /** Optional second channel row, drawn under the first. */
   channels?: { left: WaveformData; right: WaveformData } | null;
   /** Gains for the channel rows, as a percentage of the source (0..200). */
   gainLeft?: number;
   gainRight?: number;
+  /** Hide the transport where the dialog has its own Play Output row. */
+  transport?: boolean;
 }
 
 const BUCKETS = 900;
@@ -39,11 +44,20 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
   const [data, setData] = createSignal<WaveformData | null>(null);
   const [error, setError] = createSignal('');
   const [drag, setDrag] = createSignal<{ anchor: number; current: number } | null>(null);
+  const [playing, setPlaying] = createSignal(false);
+  const [playhead, setPlayhead] = createSignal(0);
+  const [failedPlayback, setFailedPlayback] = createSignal(false);
+  /** Mounted on Play: a <audio> on open initialises GStreamer for nothing. */
+  const [playback, setPlayback] = createSignal(false);
   let surface: HTMLDivElement | undefined;
+  let audio: HTMLAudioElement | undefined;
 
-  onMount(() => {
+  // Keyed by path: a new file (or the mock's switch) reloads its own peaks.
+  createEffect(() => {
     const path = props.path;
     if (!path) return;
+    setData(null);
+    setPlayback(false);
     void ipc
       .waveformData(path)
       .then((waveform) => setData(waveform))
@@ -91,6 +105,37 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
   function removeRange(index: number): void {
     props.onRanges(props.ranges.filter((_, position) => position !== index));
   }
+
+  function togglePlay(): void {
+    if (failedPlayback()) return;
+    if (!playback()) {
+      setPlayback(true);
+      requestAnimationFrame(() => {
+        void audio?.play().catch(() => setFailedPlayback(true));
+      });
+      return;
+    }
+    if (!audio) return;
+    if (playing()) {
+      audio.pause();
+    } else {
+      void audio.play().catch(() => setFailedPlayback(true));
+    }
+  }
+
+  function setStart(value: number): void {
+    const end = props.range?.end ?? duration();
+    props.onRange?.(Math.min(value, Math.max(0, end - 0.01)), end);
+  }
+
+  function setEnd(value: number): void {
+    const start = props.range?.start ?? 0;
+    props.onRange?.(start, Math.max(value, start + 0.01));
+  }
+
+  onCleanup(() => {
+    audio?.pause();
+  });
 
   /**
    * One lane per drawn row: the peaks reduced to at most `BUCKETS` bars, scaled by the
@@ -214,6 +259,31 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
               />
             )}
           </For>
+          <Show when={props.range && props.onRange}>
+            <span
+              class="waveform-selection"
+              style={{
+                left: `${((props.range?.start ?? 0) / Math.max(duration(), 0.001)) * 100}%`,
+                width: `${
+                  (((props.range?.end ?? 0) - (props.range?.start ?? 0)) /
+                    Math.max(duration(), 0.001)) *
+                  100
+                }%`,
+              }}
+            />
+          </Show>
+          <span
+            class="waveform-playhead"
+            style={{ left: `${(playhead() / Math.max(duration(), 0.001)) * 100}%` }}
+          />
+        </Show>
+        <Show when={props.channels}>
+          <span class="waveform-lane-label" style={{ top: '10%' }}>
+            L
+          </span>
+          <span class="waveform-lane-label" style={{ top: '55%' }}>
+            R
+          </span>
         </Show>
       </div>
       <div class="waveform-legend">
@@ -223,6 +293,70 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
         </Show>
         <span class="waveform-time">{formatTimecode(duration())}</span>
       </div>
+      <Show when={props.range && props.onRange}>
+        <div class="waveform-handles">
+          <label class="waveform-handle">
+            <span class="waveform-handle-label">Trim start</span>
+            <input
+              type="range"
+              aria-label="Trim start"
+              min={0}
+              max={Math.max(0, duration())}
+              step={0.01}
+              value={props.range?.start ?? 0}
+              onInput={(event) => setStart(event.currentTarget.valueAsNumber)}
+            />
+          </label>
+          <label class="waveform-handle">
+            <span class="waveform-handle-label">Trim end</span>
+            <input
+              type="range"
+              aria-label="Trim end"
+              min={0}
+              max={Math.max(0, duration())}
+              step={0.01}
+              value={props.range?.end ?? 0}
+              onInput={(event) => setEnd(event.currentTarget.valueAsNumber)}
+            />
+          </label>
+          <span class="waveform-selection-readout">
+            {formatTimecode(props.range?.start ?? 0)} – {formatTimecode(props.range?.end ?? 0)}
+          </span>
+        </div>
+      </Show>
+      <Show when={props.transport !== false && props.path}>
+        <div class="waveform-transport">
+          <button
+            type="button"
+            class="timeline-button"
+            aria-label={playing() ? 'Pause' : 'Play'}
+            disabled={failedPlayback()}
+            onClick={togglePlay}
+          >
+            {playing() ? '❚❚' : '▶'}
+          </button>
+          <span class="waveform-timecode">
+            {formatTimecode(playhead())}
+            <span class="waveform-timecode-total"> / {formatTimecode(duration())}</span>
+          </span>
+          <Show when={failedPlayback()}>
+            <span class="waveform-note">This format cannot be played here.</span>
+          </Show>
+          <Show when={playback()}>
+            <audio
+              ref={audio}
+              src={props.path ? ipc.assetUrl(props.path) : undefined}
+              preload="metadata"
+              class="waveform-audio"
+              onTimeUpdate={(event) => setPlayhead(event.currentTarget.currentTime)}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              onEnded={() => setPlaying(false)}
+              onError={() => setFailedPlayback(true)}
+            />
+          </Show>
+        </div>
+      </Show>
       <Show when={props.mode === 'bleep'}>
         <p class="field-help">
           {props.ranges.length === 0

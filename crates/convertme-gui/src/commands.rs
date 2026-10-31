@@ -930,40 +930,81 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             )
             .when("size_target", "true"),
         ],
-        (Category::Video, ToolId::Trim) | (Category::Audio, ToolId::Trim) => vec![
-            num("start", "Start", 0.0, 0.0, 86_400.0, 0.1, "s"),
-            num("end", "End", 0.0, 0.0, 86_400.0, 0.1, "s"),
+        // The timeline draws start and end: two number inputs would be a second,
+        // unused control for the handles. They still travel to the engine.
+        (Category::Video, ToolId::Trim) => vec![
+            num("start", "Start", 0.0, 0.0, 86_400.0, 0.01, "s").hidden(),
+            num("end", "End", 0.0, 0.0, 86_400.0, 0.01, "s").hidden(),
+        ],
+        (Category::Audio, ToolId::Trim) => vec![
+            num("start", "Start", 0.0, 0.0, 86_400.0, 0.01, "s").hidden(),
+            num("end", "End", 0.0, 0.0, 86_400.0, 0.01, "s").hidden(),
+            checkbox("trim_silence", "Trim silent ends automatically", false).help(
+                "Removes a silent lead-in and tail; pauses inside the recording are kept.",
+            ),
         ],
         (Category::Video, ToolId::Crop) => {
-            vec![select(
+            let mut aspect = select(
                 "aspect",
                 "Aspect ratio",
                 "free",
                 &["free", "1:1", "16:9", "4:3", "9:16", "3:2"],
-            )]
+            )
+            .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:2"]);
+            aspect.kind = "segmented".into();
+            vec![
+                Field {
+                    key: "boxes".into(),
+                    label: "Area to keep".into(),
+                    kind: "boxes".into(),
+                    default: serde_json::json!([]),
+                    ..Default::default()
+                }
+                .hidden(),
+                aspect,
+            ]
         }
-        (Category::Video, ToolId::Speed) => vec![num("factor", "Speed", 2.0, 0.25, 8.0, 0.05, "×")],
+        (Category::Video, ToolId::Speed) => {
+            vec![ranged("factor", "Speed", 1.0, 0.25, 4.0, 0.05, "×")]
+        }
         (Category::Video, ToolId::Mute) => vec![],
-        (Category::Video, ToolId::Snapshot) => vec![
-            text("times", "Timestamps", "", Some("seconds, comma separated")),
-            num("interval", "Or every", 0.0, 0.0, 3600.0, 0.1, "s"),
-        ],
-        (Category::Video, ToolId::Redact) => vec![
-            Field {
-                key: "boxes".into(),
-                label: "Areas to blur".into(),
-                kind: "boxes".into(),
-                default: serde_json::json!([]),
-                ..Default::default()
-            }
-            .hidden(),
-            text(
-                "ranges",
-                "Time ranges",
-                "",
-                Some("start-end, comma separated"),
-            ),
-        ],
+        // The still-frame chips are the value; the editor injects `times`, and the
+        // hidden field keeps the tool's dialog open instead of running immediately.
+        (Category::Video, ToolId::Snapshot) => vec![Field {
+            key: "times".into(),
+            label: "Frames".into(),
+            kind: "text".into(),
+            default: serde_json::json!([]),
+            ..Default::default()
+        }
+        .hidden()],
+        (Category::Video, ToolId::Redact) => {
+            let mut style = select("style", "Style", "solid", &["solid", "blur"])
+                .labelled(&["Solid", "Blur"]);
+            style.kind = "segmented".into();
+            vec![
+                Field {
+                    key: "boxes".into(),
+                    label: "Areas to blur".into(),
+                    kind: "boxes".into(),
+                    default: serde_json::json!([]),
+                    ..Default::default()
+                }
+                .hidden(),
+                style,
+                Field {
+                    key: "color".into(),
+                    label: "Colour".into(),
+                    kind: "color".into(),
+                    default: serde_json::json!("#000000"),
+                    show_if: Some(ShowIf {
+                        key: "style".into(),
+                        equals: "solid".into(),
+                    }),
+                    ..Default::default()
+                },
+            ]
+        }
         // A multi-input tool orders its inputs in the dialog; the editor owns the
         // list and the value travels as indices into the selection.
         (Category::Video, ToolId::Join) | (Category::Pdf, ToolId::Merge) => vec![Field {
@@ -972,47 +1013,61 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             kind: "files".into(),
             default: serde_json::json!([]),
             ..Default::default()
+        }],
+        // The split points are the timeline's markers; `submitModal` turns them into
+        // consecutive sections. The field exists so the card opens a dialog.
+        (Category::Video, ToolId::Split) => vec![Field {
+            key: "sections".into(),
+            label: "Sections".into(),
+            kind: "text".into(),
+            default: serde_json::json!([]),
+            ..Default::default()
         }
         .hidden()],
-        (Category::Video, ToolId::Split) => {
-            vec![text(
-                "sections",
-                "Sections",
-                "",
-                Some("start-end, comma separated"),
-            )]
-        }
-        (Category::Audio, ToolId::Normalize) => {
-            vec![num(
-                "lufs",
-                "Target loudness",
-                -16.0,
-                -30.0,
-                -5.0,
-                0.5,
-                "LUFS",
-            )]
-        }
-        (Category::Audio, ToolId::Channels) => {
-            vec![select("channels", "Channels", "1", &["1", "2"])]
-        }
-        (Category::Audio, ToolId::Visualize) => vec![
-            text("color", "Background", "#0b0d10", None),
-            select(
-                "size",
-                "Size",
-                "1280x720",
-                &["1280x720", "1920x1080", "1080x1080"],
-            ),
+        (Category::Audio, ToolId::Normalize) => vec![
+            ranged("lufs", "Target loudness", -16.0, -30.0, -5.0, 0.5, "LUFS"),
+            ranged("range", "Loudness range", 11.0, 1.0, 50.0, 1.0, "LU"),
+            ranged("true_peak", "True peak limit", -1.5, -9.0, 0.0, 0.5, "dBTP"),
         ],
-        (Category::Audio, ToolId::Bleep) => {
-            vec![text(
-                "ranges",
-                "Ranges",
-                "",
-                Some("start-end, comma separated"),
-            )]
+        (Category::Audio, ToolId::Channels) => {
+            let mut output = select("channels", "Output", "2", &["1", "2"])
+                .labelled(&["Mono", "Stereo"]);
+            output.kind = "segmented".into();
+            vec![
+                output,
+                ranged("left_volume", "Left volume", 100.0, 0.0, 200.0, 1.0, "%"),
+                ranged("right_volume", "Right volume", 100.0, 0.0, 200.0, 1.0, "%")
+                    .when("channels", "2"),
+            ]
         }
+        (Category::Audio, ToolId::Visualize) => {
+            let mut style = select("style", "Style", "waveform", &["waveform", "bars", "line"])
+                .labelled(&["Waveform", "Bars", "Line"]);
+            style.kind = "segmented".into();
+            let mut shape = select("shape", "Shape", "16:9", &["16:9", "9:16", "1:1"])
+                .labelled(&["Landscape · 16:9", "Portrait · 9:16", "Square · 1:1"]);
+            shape.kind = "segmented".into();
+            vec![
+                style,
+                shape,
+                Field {
+                    key: "color".into(),
+                    label: "Background".into(),
+                    kind: "color".into(),
+                    default: serde_json::json!("#101014"),
+                    ..Default::default()
+                },
+            ]
+        }
+        // The waveform lane is the value; `submitModal` injects `ranges`.
+        (Category::Audio, ToolId::Bleep) => vec![Field {
+            key: "ranges".into(),
+            label: "Ranges".into(),
+            kind: "text".into(),
+            default: serde_json::json!([]),
+            ..Default::default()
+        }
+        .hidden()],
         (Category::Audio, ToolId::Metadata) => vec![metadata_field()],
         (Category::Pdf, ToolId::Compress) => vec![
             select(
@@ -1423,8 +1478,13 @@ mod field_payload {
                                 rule.key
                             )
                         });
+                    // A compress switch exists only to reveal another control, so it
+                    // must not travel. A style/channel switch is itself a parameter the
+                    // engine reads (`style=blur`, `channels=1`): hiding one row is the
+                    // point, sending the driver is correct.
+                    let parameter_driver = matches!(rule.key.as_str(), "style" | "channels");
                     assert!(
-                        driver.control,
+                        driver.control || parameter_driver,
                         "{} {}: `{}` drives `{}` but is not a control",
                         category.key(),
                         tool.id.as_str(),

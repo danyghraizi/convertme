@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createSignal, onMount } from 'solid-js';
+import { For, Match, Show, Switch, createEffect, createSignal } from 'solid-js';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import * as ipc from '../ipc';
 import ColourPicker from './colour-picker';
@@ -59,9 +59,12 @@ export function BoxesEditor(props: BoxesEditorProps) {
 
   const boxes = (): Box[] => asBoxes(props.value);
 
-  onMount(() => {
+  // The dialog can switch files (or, for a video, wait for the frame): the preview
+  // follows the path instead of being asked for once on mount.
+  createEffect(() => {
     const path = props.previewPath;
     if (!path) return;
+    setPreview('');
     void ipc
       .previewThumb(path, 640)
       .then((url) => setPreview(ipc.assetUrl(url)))
