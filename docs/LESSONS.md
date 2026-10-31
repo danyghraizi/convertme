@@ -9,6 +9,10 @@ commands, and the exact measurements that proved each fix. Each item states the 
 that exposed it, and the rule that prevents it. Read this before touching the UI, the
 engines, or the build.
 
+Lessons 1–41 came from the first build-out, 42–56 from the design-alignment session, and
+57–63 from its first round of real use. When a rule sounds abstract, the scenario named
+under **Evidence** is its executable version in `scripts/app-e2e.py` or `scripts/ui-shots.py`.
+
 ## 1. A rebuilt binary is not a new window
 
 **Trap.** The UI kept showing an old design after `npm run build && cargo build`. Two
@@ -864,19 +868,24 @@ output and reading the field back.
 as `Title`), and the metadata scenarios now reopen the published file and check the
 `Title` entry reads `Harness`.
 
-## 61. Never mount a media element to find out whether it plays
+## 61. Never decode media in the web view
 
 **Trap.** Pressing Play mounted `<video>` on the source clip. WebKitGTK's media stack
 (GStreamer without a working sink) took the whole process down, so a transport button
-could kill the app; the same class of failure made "Play Output" render an audio file and
-leave the user to press the native control.
+could kill the app. Replacing it with an off-DOM `new Audio(...).play()` was not enough:
+initialising the backend alone wedged the web process, the dialog vanished from the
+accessibility tree, and the harness could no longer press Save.
 
-**Rule.** A preview must not depend on the platform decoder to stay alive. The video
-transport walks the filmstrip playhead (no decode); an audio preview starts playing when
-it is produced, and says so if the machine cannot play it.
+**Rule.** The window must not depend on the platform decoder to stay alive. The video
+transport walks the filmstrip playhead over a strip of frames (no decode), and an audio
+preview is written as a file and handed to the desktop's own player through one spawn
+helper. If in-app playback is ever wanted back, it needs a proven sink and a fallback
+that cannot take the process down — and a test that plays a file in the real window.
 
-**Evidence.** The video dialogs keep the running process alive through Play/Step
-(`dialogs-video` passes); `Play Output` now plays the produced file on mount.
+**Evidence.** `dialogs-video` keeps the process alive through Play/Step;
+`tool-audio-bleep` finds the MP3 in the cache, the tone at the drawn range, and the
+dialog still open after the preview (`press_primary` now retries for 3 s because the
+earlier attempt lost the tree).
 
 ## 62. A keyed list of inputs loses the character being typed
 

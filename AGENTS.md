@@ -17,8 +17,17 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 ## The UI/backend contract
 
 - `crates/convertme-gui/src/commands.rs` describes every tool's fields; the UI renders
-  them in `ui/src/components/field-editor.tsx`.
-- The dialog's copy (title, primary action, rail benefits, eyebrow) lives on `Tool` in
+  them in `ui/src/components/field-editor.tsx`. An editor that owns a value (a crop
+  surface, the page grid, a timeline) marks its field `hidden`, so the dialog cannot show
+  a second control for it.
+- A tool dialog is **one sheet**: head (drag handle, close at the top right), optional
+  preview band, scrolling settings, footer. The preview is pinned *outside* the scroller;
+  a control row is as tall as its content (`align-self: start` in a flex column) — a
+  stretched row let tall controls paint over the next one.
+- The front end never decodes audio or video: WebKitGTK's media stack crashed the process.
+  The video transport walks the filmstrip; a produced audio preview is handed to the
+  desktop player (`play_preview`).
+- The dialog's copy (title, primary action, benefit lines) lives on `Tool` in
   `crates/convertme-core/src/formats.rs` and reaches the UI through the wheel payload,
   `ui/src/catalog.ts` (the empty-wheel fallback) and `convertme probe --tools`.
 - The mock renders `ui/src/fields.generated.json`, which is the backend's own table.
@@ -45,19 +54,28 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 
 ## Dialogs
 
-- The tool dialog is two panes: the sheet (`600px`) and a rail (`336px`) holding the
-  tool's own copy. `ui/src/components/tool-info.tsx` renders the rail; every string it
-  shows comes from the tool table.
-- `./scripts/ui-shots.py` measures the contract (pane widths, rail copy against the
-  backend table, the primary button's label, label/control alignment) and
-  `./scripts/app-e2e.py --only dialogs-images` measures it in the real window.
+- The tool dialog is one sheet (`600px`): head, optional preview band, scrolling
+  settings, footer. The reference's explanatory side panel was annotation, not product;
+  it is gone, and the tool's copy still lives on the tool card and in the tool table.
+- `ui/src/components/tool-modal.tsx` owns the shell; `styles.css` owns `.modal-*`.
+  A per-tool editor's CSS lives beside its component (`*.css` imported there), never in
+  the shared file.
+- `./scripts/ui-shots.py` measures the contract (sheet margins and width, title against
+  the backend table, primary label, row alignment, **overlaps between controls**, the
+  crop ratio probes) and `./scripts/app-e2e.py --only dialogs-images` re-measures it in
+  the real window, including a drag of the head (`dialog-moves`).
 - The primary button is named by the tool (`Save Organized PDF`), never "Run". Use
   `press_primary()` in the harness, not a literal label.
 
 ## Verification
 
 - A UI change is verified by a measurement (bounding box, computed style, element
-  identity, pixel sample), not by a screenshot alone.
+  identity, pixel sample, **overlap between controls**), not by a screenshot alone.
+  Screenshots of this app are scaled and cropped by the window manager; coordinates read
+  from them are not measurements.
+- The harness's `set_entry` / `press_primary` re-locate the node and retry: WebKit
+  rebuilds the accessibility tree when a preview inserts media, and a click that used
+  pre-shift extents lands elsewhere.
 - An engine change is verified by sampling the output (dimensions, corner pixels, alpha).
 - Reproduce the user's exact parameters and files before concluding anything about a bug.
 - A test that only runs through the mock proves the mock.
@@ -66,4 +84,8 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 
 - Effects that write state compare against `untrack`ed values.
 - User-edited lists keep stable identities (store with ids, mutate items); sort copies for
-  display, never the list being edited.
+  display, never the list being edited. While a row is being *typed into*, key it by
+  index (`<Index>`) and commit on `change` — replacing the object on every keystroke
+  rebuilds the focused input and loses the character.
+- A control that shows a pixel size must measure the picture's own frame, not its
+  container: percentages over a letterboxed preview are not percentages of the photo.
