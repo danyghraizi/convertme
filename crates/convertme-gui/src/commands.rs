@@ -329,7 +329,7 @@ pub async fn analyze(state: State<'_, AppState>, paths: Vec<String>) -> Result<A
     let cap = state.settings.lock().preview_cache_bytes;
     let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
     let wanted: Vec<PathBuf> = files.iter().take(8).cloned().collect();
-    let ctx = state.preview_guard.begin();
+    let ctx = state.preview_guard.begin("strip");
     let thumbs_result = tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::new();
         for path in wanted {

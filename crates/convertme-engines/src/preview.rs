@@ -80,25 +80,40 @@ pub struct PageImage {
 /// this bounds the work to the request that matters.
 #[derive(Default)]
 pub struct PreviewGuard {
-    current: Mutex<Option<JobCtx>>,
+    /// One slot per preview stream, keyed by what the request is *for*.
+    ///
+    /// A single global slot made two unrelated previews cancel each other: the crop
+    /// dialog asks for a filmstrip and a waveform for the same file, the second
+    /// `begin()` killed the first's process, and the canvas stayed empty. A key is the
+    /// file plus the kind of preview, so only a request that supersedes the same thing
+    /// cancels anything.
+    current: Mutex<std::collections::HashMap<String, JobCtx>>,
 }
 
 impl PreviewGuard {
-    /// Start a request, cancelling whatever it replaced.
-    pub fn begin(&self) -> JobCtx {
+    /// Start a request for `key`, cancelling the request it supersedes.
+    pub fn begin(&self, key: &str) -> JobCtx {
         let mut current = self.current.lock().unwrap();
-        if let Some(previous) = current.take() {
+        if let Some(previous) = current.remove(key) {
             previous.cancel();
         }
         let fresh = JobCtx::new();
-        *current = Some(fresh.clone());
+        current.insert(key.to_string(), fresh.clone());
         fresh
     }
 
-    /// Drop the current request without starting another (the dialog closed).
-    pub fn finish(&self) {
+    /// Drop one stream's request without starting another (its dialog closed).
+    pub fn finish(&self, key: &str) {
         let mut current = self.current.lock().unwrap();
-        if let Some(previous) = current.take() {
+        if let Some(previous) = current.remove(key) {
+            previous.cancel();
+        }
+    }
+
+    /// Drop every request, e.g. the window closed.
+    pub fn finish_all(&self) {
+        let mut current = self.current.lock().unwrap();
+        for (_key, previous) in current.drain() {
             previous.cancel();
         }
     }
@@ -874,13 +889,26 @@ mod tests {
     #[test]
     fn a_new_preview_request_cancels_the_one_before_it() {
         let guard = PreviewGuard::default();
-        let first = guard.begin();
+        let first = guard.begin("filmstrip:/a.mp4");
         assert!(!first.is_cancelled());
-        let second = guard.begin();
+        let second = guard.begin("filmstrip:/a.mp4");
         assert!(first.is_cancelled(), "the superseded request must be cancelled");
         assert!(!second.is_cancelled());
-        guard.finish();
+        guard.finish("filmstrip:/a.mp4");
         assert!(second.is_cancelled(), "closing the dialog cancels the request");
+    }
+
+    /// Two different previews of the same file must not cancel each other: the video
+    /// crop dialog asks for a filmstrip and a waveform at the same time.
+    #[test]
+    fn different_preview_streams_do_not_cancel_each_other() {
+        let guard = PreviewGuard::default();
+        let film = guard.begin("filmstrip:/a.mp4");
+        let wave = guard.begin("waveform:/a.mp4");
+        assert!(!film.is_cancelled(), "an unrelated preview killed the filmstrip");
+        assert!(!wave.is_cancelled());
+        guard.finish_all();
+        assert!(film.is_cancelled() && wave.is_cancelled());
     }
 
     /// The age sweep removes cold files and keeps what is being used.

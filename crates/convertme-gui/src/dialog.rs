@@ -68,9 +68,10 @@ pub async fn filmstrip(
     frames: usize,
 ) -> Result<Vec<String>, String> {
     let cache = state.cache.clone();
-    // A new request supersedes the one before it: the superseded encoder is killed,
-    // not merely ignored.
-    let ctx = state.preview_guard.begin();
+    // A new request supersedes the one before it *for the same file and kind*: the
+    // superseded encoder is killed, not merely ignored, and a waveform asked for at the
+    // same time is not collaterally cancelled.
+    let ctx = state.preview_guard.begin(&format!("filmstrip:{path}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache
@@ -95,7 +96,7 @@ pub struct WaveformOut {
 #[tauri::command]
 pub async fn waveform_data(state: State<'_, AppState>, path: String) -> Result<WaveformOut, String> {
     let cache = state.cache.clone();
-    let ctx = state.preview_guard.begin();
+    let ctx = state.preview_guard.begin(&format!("waveform:{path}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache.waveform(&file, &ctx).map(|w| {
@@ -125,7 +126,7 @@ pub async fn channel_waveforms(
     path: String,
 ) -> Result<ChannelsOut, String> {
     let cache = state.cache.clone();
-    let ctx = state.preview_guard.begin();
+    let ctx = state.preview_guard.begin(&format!("channels:{path}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache.waveform_channels(&file, &ctx).map(|(left, right)| ChannelsOut {
@@ -182,7 +183,7 @@ pub struct PageOut {
 #[tauri::command]
 pub async fn pdf_pages(state: State<'_, AppState>, path: String) -> Result<Vec<PageOut>, String> {
     let cache = state.cache.clone();
-    let ctx = state.preview_guard.begin();
+    let ctx = state.preview_guard.begin(&format!("pdf-pages:{path}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache.pdf_pages(&file, &ctx).map(|pages| {
