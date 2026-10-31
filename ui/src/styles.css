@@ -2935,3 +2935,55 @@ select:focus {
   color: var(--ink-2);
   cursor: pointer;
 }
+
+/* The crop dialog's pixel row: W and H in source pixels, beside the surface. */
+.crop-size-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--t-sm, 13px);
+  color: var(--ink-2);
+}
+
+.crop-size-row input {
+  width: 82px;
+  min-height: 28px;
+}
+
+.collage-order {
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+
+.collage-order summary {
+  cursor: pointer;
+  font-size: var(--t-2xs, 11px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.fill-preset-rows {
+  display: grid;
+  gap: 6px;
+}
+
+/* The per-slider reset arrow: visible only when the value left its default. */
+.range-reset {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.range-reset:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

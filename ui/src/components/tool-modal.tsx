@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import BackgroundPreview from './background-preview';
+import CollagePreview from './collage-preview';
 import CompressPreview from './compress-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
@@ -126,6 +127,8 @@ export default function ToolModal(props: ToolModalProps) {
   const [error, setError] = createSignal('');
   /** How many items a counted action names ("Save 2 Frames"). */
   const [actionCount, setActionCount] = createSignal(0);
+  /** Source pixels of the preview, for the crop dialog's W/H inputs. */
+  const [natural, setNatural] = createSignal({ w: 0, h: 0 });
   let dialog: HTMLDivElement | undefined;
   let sheet: HTMLFormElement | undefined;
 
@@ -199,7 +202,44 @@ export default function ToolModal(props: ToolModalProps) {
   }
 
   function collected(from: Record<string, FieldValue> = values): Record<string, unknown> {
-    return collectParams(activeFields(), from);
+    const params = collectParams(activeFields(), from);
+    // The redaction style is a mode switch (a control), but the engine needs to know
+    // which treatment the boxes get.
+    if (props.tool.id === 'redact') params.style = String(from.style ?? 'solid');
+    return params;
+  }
+
+  /** The kept rectangle in source pixels, as the crop dialog shows it. */
+  function cropPixels(): { w: number; h: number } {
+    const size = natural();
+    const box = Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null;
+    const w = box ? box.w : 1;
+    const h = box ? box.h : 1;
+    return {
+      w: size.w > 0 ? Math.round(w * size.w) : 0,
+      h: size.h > 0 ? Math.round(h * size.h) : 0,
+    };
+  }
+
+  /**
+   * Editing a dimension moves the matching edge and keeps the origin, in fractions of
+   * the source. The rectangle is clamped inside the picture and never collapses.
+   */
+  function setCropPixels(axis: 'w' | 'h', pixels: number): void {
+    const size = natural();
+    const total = axis === 'w' ? size.w : size.h;
+    if (total <= 0 || !Number.isFinite(pixels) || pixels <= 0) return;
+    const current = Array.isArray(values.boxes)
+      ? ((values.boxes as Box[])[0] ?? { x: 0, y: 0, w: 1, h: 1 })
+      : { x: 0, y: 0, w: 1, h: 1 };
+    const fraction = Math.min(axis === 'w' ? 1 - current.x : 1 - current.y, pixels / total);
+    if (fraction <= 0) return;
+    setValues(
+      'boxes',
+      axis === 'w'
+        ? [{ ...current, w: fraction }]
+        : [{ ...current, h: fraction }],
+    );
   }
 
   async function submit(event: SubmitEvent): Promise<void> {
@@ -326,15 +366,42 @@ export default function ToolModal(props: ToolModalProps) {
               />
             </Show>
             <Show when={props.tool.id === 'crop'}>
-              <div class="field">
+              <div class="field is-block">
                 <span class="field-label">Area to keep</span>
                 <CropEditor
                   previewPath={props.previewPath}
                   value={Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null}
                   aspect={String(values.aspect ?? 'free')}
+                  onSize={(size) => setNatural(size)}
                   onChange={(box) => setValues('boxes', [box])}
                 />
               </div>
+              <Show when={props.category === 'images'}>
+                <div class="field crop-size">
+                  <span class="field-label">Crop size</span>
+                  <span class="crop-size-row">
+                    <label for="crop-width">Width</label>
+                    <input
+                      id="crop-width"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={cropPixels().w}
+                      onInput={(event) => setCropPixels('w', event.currentTarget.valueAsNumber)}
+                    />
+                    <label for="crop-height">Height</label>
+                    <input
+                      id="crop-height"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={cropPixels().h}
+                      onInput={(event) => setCropPixels('h', event.currentTarget.valueAsNumber)}
+                    />
+                    <span class="field-unit">px</span>
+                  </span>
+                </div>
+              </Show>
             </Show>
             <Show when={props.tool.id === 'redact'}>
               <div class="field">
@@ -362,6 +429,7 @@ export default function ToolModal(props: ToolModalProps) {
                 radiusPct={Number(values.radius_pct ?? 0)}
                 shadowPct={Number(values.shadow_pct ?? 0)}
                 shadowAngle={Number(values.shadow_angle ?? 180)}
+                bgBlur={Number(values.bg_blur ?? 0)}
                 aspect={String(values.aspect ?? 'source')}
                 onPlace={(x, y) => {
                   setValues('bg_x', x);
@@ -373,58 +441,75 @@ export default function ToolModal(props: ToolModalProps) {
             <Show when={props.tool.id === 'edit-photo'}>
               <PhotoPreview
                 path={props.files?.[shown()]?.path ?? props.previewPath}
-                exposure={Number(values.exposure ?? 0)}
-                brightness={Number(values.brightness ?? 0)}
-                contrast={Number(values.contrast ?? 0)}
-                saturation={Number(values.saturation ?? 0)}
-                hue={Number(values.hue ?? 0)}
-                temperature={Number(values.temperature ?? 0)}
+                params={collected()}
               />
             </Show>
             <Show when={props.tool.id === 'add-background' && values.mode !== 'image'}>
-              <div class="fill-presets" role="group" aria-label="Ready-made backgrounds">
-                <For each={SOLID_PRESETS}>
-                  {(preset) => (
-                    <button
-                      type="button"
-                      class="fill-preset"
-                      style={{ background: preset.css }}
-                      title={preset.label}
-                      aria-label={preset.label}
-                      onClick={() => applyFill(preset)}
-                    />
-                  )}
-                </For>
-                <span class="fill-separator" aria-hidden="true" />
-                <For each={GRADIENT_PRESETS}>
-                  {(preset) => (
-                    <button
-                      type="button"
-                      class="fill-preset"
-                      style={{ background: preset.css }}
-                      title={preset.label}
-                      aria-label={preset.label}
-                      onClick={() => applyFill(preset)}
-                    />
-                  )}
-                </For>
-                <span class="fill-gap" aria-hidden="true" />
-                <button
-                  type="button"
-                  class="fill-preset fill-preset-image"
-                  title="Use another image"
-                  aria-label="Use another image"
-                  onClick={() => setValues('mode', 'image')}
-                >
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
-                    <circle cx="5.6" cy="6.4" r="1.3" />
-                    <path d="M2.6 12.2l3.6-3.7 2.6 2.4 2.2-2.1 2.4 3.4" />
-                  </svg>
-                </button>
+              <div class="fill-preset-rows">
+                <div class="fill-presets" role="group" aria-label="Solid backgrounds">
+                  <For each={SOLID_PRESETS}>
+                    {(preset) => (
+                      <button
+                        type="button"
+                        class="fill-preset"
+                        style={{ background: preset.css }}
+                        title={preset.label}
+                        aria-label={preset.label}
+                        onClick={() => applyFill(preset)}
+                      />
+                    )}
+                  </For>
+                </div>
+                <div class="fill-presets" role="group" aria-label="Gradient backgrounds">
+                  <For each={GRADIENT_PRESETS}>
+                    {(preset) => (
+                      <button
+                        type="button"
+                        class="fill-preset"
+                        style={{ background: preset.css }}
+                        title={preset.label}
+                        aria-label={preset.label}
+                        onClick={() => applyFill(preset)}
+                      />
+                    )}
+                  </For>
+                  <button
+                    type="button"
+                    class="fill-preset fill-preset-image"
+                    title="Use another image"
+                    aria-label="Use another image"
+                    onClick={() => setValues('mode', 'image')}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+                      <circle cx="5.6" cy="6.4" r="1.3" />
+                      <path d="M2.6 12.2l3.6-3.7 2.6 2.4 2.2-2.1 2.4 3.4" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </Show>
 
+            <Show when={props.tool.id === 'collage'}>
+              <CollagePreview
+                paths={fileList().map((file) => file.path)}
+                params={collected()}
+              />
+              <Show when={props.fields.find((field) => field.key === 'order')}>
+                {(field) => (
+                  <details class="collage-order" open>
+                    <summary>Image order</summary>
+                    <FieldEditor
+                      field={field()}
+                      value={values.order ?? initialValue(field())}
+                      previewPath={shownPath()}
+                      files={fileList()}
+                      onChange={(value) => setValues('order', value)}
+                    />
+                  </details>
+                )}
+              </Show>
+            </Show>
             <For each={visibleFields()}>
               {(field, index) => (
                 <>
@@ -441,6 +526,9 @@ export default function ToolModal(props: ToolModalProps) {
                     value={values[field.key] ?? initialValue(field)}
                     previewPath={shownPath()}
                     files={fileList()}
+                    ink={String(values.color ?? '#ff5a36')}
+                    onInk={(color) => setValues('color', color)}
+                    resetValue={initialValue(field)}
                     onChange={(value) => setValues(field.key, value)}
                   />
                 </>

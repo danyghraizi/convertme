@@ -21,6 +21,8 @@ interface BackgroundPreviewProps {
   radiusPct: number;
   shadowPct: number;
   shadowAngle: number;
+  /** Blur applied to the chosen background picture, in pixels. */
+  bgBlur: number;
   aspect: string;
   /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
   onPlace?: (x: number, y: number) => void;
@@ -201,11 +203,25 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                   : undefined,
             }}
           >
+            <Show when={props.mode === 'image' && backdrop() && props.bgBlur > 0}>
+              <span
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  inset: '0',
+                  background: `url(${backdrop()}) center / ${Math.max(100, props.imageZoom * 100)}% auto no-repeat`,
+                  'background-position': `calc(50% + ${props.imageX / 2}%) calc(50% + ${props.imageY / 2}%)`,
+                  filter: `blur(${props.bgBlur}px)`,
+                  transform: 'scale(1.06)',
+                }}
+              />
+            </Show>
             <img
               src={src()}
               alt=""
               draggable={false}
               style={{
+                position: 'relative',
                 width: `${layout().photoW}px`,
                 height: `${layout().photoH}px`,
                 'border-radius': `${layout().radiusPx}px`,

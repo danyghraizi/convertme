@@ -119,6 +119,7 @@ pub fn tool_default_ext(tool: ToolId) -> Option<&'static str> {
         ToolId::Compress
         | ToolId::Crop
         | ToolId::Annotate
+        | ToolId::Collage
         | ToolId::AddBackground
         | ToolId::EditPhoto
         | ToolId::Metadata

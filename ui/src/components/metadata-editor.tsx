@@ -132,6 +132,7 @@ export default function MetadataEditor(props: MetadataEditorProps) {
                             id={`meta-${group.name}-${field.key}`}
                             class="metadata-input"
                             type="text"
+                            aria-label={field.label}
                             value={value()}
                             disabled={removed()}
                             onInput={(event) => edited(field.key, event.currentTarget.value)}

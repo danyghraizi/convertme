@@ -548,3 +548,41 @@ preview-fitted rectangle is not user input and must not travel as one.
 
 **Evidence.** `tool-image-crop` failed before the fix; after it, 1:1 produces
 2,000×2,000. `tool-video-crop` exercises the same branch.
+
+## 42. An ImageMagick setting is process-global, even across `( … )` groups
+
+**Trap.** Collage composed every cell with `-gravity center -extent` inside a parenthesised
+group, then placed it with `-geometry +x+y -composite`. The composite used the
+group's `center` gravity, so every picture landed in the middle of the canvas and the
+rest was background. The engine test sampled each quadrant and saw `(0,0,0)`.
+
+**Rule.** Reset inherited settings explicitly before an operation that depends on them:
+`-gravity NorthWest` before `-geometry`. A group scopes the image list, not the
+settings.
+
+**Evidence.** Before: quadrants `(0,0,0)`; after: `(255,0,0)`, `(0,128,0)`, `(0,0,255)`
+and the background gutter, `2048×2048` with 16 px spacing and 1000 px cells.
+
+## 43. A preview must call the same engine function as the job
+
+**Trap.** The photo dialog drew its sliders with CSS filters and a tint overlay while the
+job used the ImageMagick chain; gamma and grain could not be approximated, so the preview
+and the saved file disagreed. The new editor controls (grain, noise, clarity) made the
+gap impossible to hide.
+
+**Rule.** One function computes the filter arguments (`photo_filter_args`), and both the
+job and `photo_preview` call it. The preview is debounced and a stale response is
+dropped by a request token. `tool-image-edit` measured mean luma 0.398 → 0.731 for +1 EV
+(≥10 % required), grain 100 raised variance and noise 100 lowered it.
+
+## 44. A redaction style is a mode switch, not a parameter
+
+**Trap.** The Style segmented control drove the colour field's `show_if`, but the field
+table contract says a `show_if` driver is a control — and controls are not submitted.
+Marking it a plain parameter left the colour visible in blur mode (a dead control);
+marking it a control without a hand-off dropped `style` from the job entirely.
+
+**Rule.** Send the value explicitly from the modal (`params.style = values.style` for
+redact) so the switch can be a control. The engine validates `style` and rejects unknown
+keys; `solid` fills the box, `blur` uses `-region … -blur`. `tool-image-redact` asserts
+the solid centre is black and the blurred centre differs from both the source and black.

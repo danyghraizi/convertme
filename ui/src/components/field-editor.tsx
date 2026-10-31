@@ -6,8 +6,10 @@ import FileOrder from './file-order';
 import MetadataEditor from './metadata-editor';
 import PageOrganizer from './page-organizer';
 import GradientEditor from './gradient-editor';
+import AnnotateEditor from './annotate-editor';
 import { asBool, asBoxes, asNumber, asOrder, asText } from '../fields';
-import type { Box, Field, FieldValue } from '../types';
+import type { Box, Field, FieldValue, Shape } from '../types';
+import './boxes-editor.css';
 
 interface FieldEditorProps {
   field: Field;
@@ -15,6 +17,11 @@ interface FieldEditorProps {
   previewPath: string | null;
   /** The whole selection: a reorder editor lists every file, not just the preview. */
   files?: { path: string; label: string }[];
+  /** The dialog's ink colour, for the annotation toolbar and its swatch. */
+  ink?: string;
+  onInk?: (color: string) => void;
+  /** The value this field started with, for a slider's reset arrow. */
+  resetValue?: FieldValue;
   onChange: (value: FieldValue) => void;
 }
 
@@ -48,16 +55,29 @@ interface BoxesEditorProps {
   onChange: (value: FieldValue) => void;
 }
 
+type BoxHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+const BOX_MIN = 0.01;
+
 export function BoxesEditor(props: BoxesEditorProps) {
   const [preview, setPreview] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   const [detecting, setDetecting] = createSignal(false);
   const [note, setNote] = createSignal('');
+  const [selected, setSelected] = createSignal<number | null>(null);
+  const [live, setLive] = createSignal<Box[] | null>(null);
   let surface: HTMLDivElement | undefined;
   let surfaceRect: DOMRect | null = null;
   let origin: { x: number; y: number } | null = null;
+  let drag: {
+    index: number;
+    mode: 'move' | 'resize';
+    handle: BoxHandle | null;
+    start: { x: number; y: number };
+    box: Box;
+  } | null = null;
 
   const boxes = (): Box[] => asBoxes(props.value);
+  const shown = (): Box[] => live() ?? boxes();
 
   onMount(() => {
     const path = props.previewPath;
@@ -75,17 +95,96 @@ export function BoxesEditor(props: BoxesEditorProps) {
     };
   }
 
+  function commit(next: Box[]): void {
+    props.onChange(next);
+    setLive(null);
+  }
+
   function onPointerDown(event: PointerEvent): void {
     if (!surface || !preview()) return;
     surfaceRect = surface.getBoundingClientRect();
     if (surfaceRect.width === 0 || surfaceRect.height === 0) return;
     origin = localPoint(event, surfaceRect);
+    setSelected(null);
     surface.setPointerCapture(event.pointerId);
     setDraft({ x: origin.x, y: origin.y, w: 0, h: 0 });
     event.preventDefault();
   }
 
+  function beginRegion(event: PointerEvent, index: number): void {
+    if (!surface) return;
+    surfaceRect = surface.getBoundingClientRect();
+    const box = boxes()[index];
+    setSelected(index);
+    drag = {
+      index,
+      mode: 'move',
+      handle: null,
+      start: localPoint(event, surfaceRect),
+      box: { ...box },
+    };
+    setLive(boxes());
+    surface.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    event.preventDefault();
+  }
+
+  function beginHandle(event: PointerEvent, index: number, handle: BoxHandle): void {
+    if (!surface) return;
+    surfaceRect = surface.getBoundingClientRect();
+    const box = boxes()[index];
+    setSelected(index);
+    drag = {
+      index,
+      mode: 'resize',
+      handle,
+      start: localPoint(event, surfaceRect),
+      box: { ...box },
+    };
+    setLive(boxes());
+    surface.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    event.preventDefault();
+  }
+
+  function movedBox(base: Box, handle: BoxHandle, delta: { x: number; y: number }): Box {
+    let { x, y, w, h } = base;
+    if (handle.includes('e')) w = Math.max(BOX_MIN, base.w + delta.x);
+    if (handle.includes('s')) h = Math.max(BOX_MIN, base.h + delta.y);
+    if (handle.includes('w')) {
+      const nextX = Math.min(base.x + base.w - BOX_MIN, Math.max(0, base.x + delta.x));
+      w = base.w + (base.x - nextX);
+      x = nextX;
+    }
+    if (handle.includes('n')) {
+      const nextY = Math.min(base.y + base.h - BOX_MIN, Math.max(0, base.y + delta.y));
+      h = base.h + (base.y - nextY);
+      y = nextY;
+    }
+    w = Math.min(w, 1 - x);
+    h = Math.min(h, 1 - y);
+    return { x, y, w, h };
+  }
+
   function onPointerMove(event: PointerEvent): void {
+    if (drag) {
+      if (!surfaceRect) return;
+      const point = localPoint(event, surfaceRect);
+      const delta = { x: point.x - drag.start.x, y: point.y - drag.start.y };
+      const next = boxes().map((box, index) => {
+        if (index !== drag?.index) return box;
+        if (drag.mode === 'move') {
+          return {
+            ...box,
+            x: Math.min(1 - box.w, Math.max(0, drag.box.x + delta.x)),
+            y: Math.min(1 - box.h, Math.max(0, drag.box.y + delta.y)),
+          };
+        }
+        return drag.handle ? movedBox(drag.box, drag.handle, delta) : box;
+      });
+      setLive(next);
+      return;
+    }
     if (!origin || !surfaceRect) return;
     const point = localPoint(event, surfaceRect);
     setDraft({
@@ -97,17 +196,28 @@ export function BoxesEditor(props: BoxesEditorProps) {
   }
 
   function onPointerUp(event: PointerEvent): void {
-    const rect = draft();
     if (surface?.hasPointerCapture(event.pointerId)) {
       surface.releasePointerCapture(event.pointerId);
     }
-    if (rect && rect.w > 0.01 && rect.h > 0.01) {
-      props.onChange([...boxes(), rect]);
+    if (drag) {
+      drag = null;
+      const next = live();
+      if (next) commit(next);
+      return;
+    }
+    const region = draft();
+    if (region && region.w > BOX_MIN && region.h > BOX_MIN) {
+      commit([...boxes(), region]);
       setNote('');
     }
     setDraft(null);
     origin = null;
     surfaceRect = null;
+  }
+
+  function remove(index: number): void {
+    commit(boxes().filter((_, position) => position !== index));
+    setSelected(null);
   }
 
   async function detect(faces: boolean): Promise<void> {
@@ -132,6 +242,8 @@ export function BoxesEditor(props: BoxesEditorProps) {
       setDetecting(false);
     }
   }
+
+  const handles: BoxHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
   return (
     <div class="boxes-editor">
@@ -174,17 +286,45 @@ export function BoxesEditor(props: BoxesEditorProps) {
         <Show when={preview()} fallback={<p class="boxes-placeholder">Preview unavailable</p>}>
           <img src={preview()} alt="Preview" draggable={false} />
         </Show>
-        <For each={boxes()}>
-          {(box) => (
+        <For each={shown()}>
+          {(box, index) => (
             <span
               class="boxes-region"
+              classList={{ 'is-selected': selected() === index() }}
+              role="group"
+              aria-label={`Region ${index() + 1}`}
               style={{
                 left: `${box.x * 100}%`,
                 top: `${box.y * 100}%`,
                 width: `${box.w * 100}%`,
                 height: `${box.h * 100}%`,
               }}
-            />
+              onPointerDown={(event) => beginRegion(event, index())}
+            >
+              <button
+                type="button"
+                class="boxes-remove"
+                aria-label={`Remove region ${index() + 1}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  remove(index());
+                }}
+              >
+                ×
+              </button>
+              <Show when={selected() === index()}>
+                <For each={handles}>
+                  {(handle) => (
+                    <span
+                      class={`boxes-handle boxes-handle-${handle}`}
+                      aria-hidden="true"
+                      onPointerDown={(event) => beginHandle(event, index(), handle)}
+                    />
+                  )}
+                </For>
+              </Show>
+            </span>
           )}
         </For>
         <Show when={draft()}>
@@ -201,7 +341,9 @@ export function BoxesEditor(props: BoxesEditorProps) {
           )}
         </Show>
       </div>
-      <p class="field-help">Drag on the preview to mark a rectangle.</p>
+      <p class="field-help">
+        Drag on the preview to mark a rectangle; click one to move or resize it.
+      </p>
       <Show when={note()}>
         <p class="field-help" role="status">
           {note()}
@@ -342,6 +484,17 @@ export default function FieldEditor(props: FieldEditorProps) {
               {asNumber(props.value)}
               {unit()}
             </output>
+            <Show when={props.resetValue !== undefined}>
+              <button
+                type="button"
+                class="range-reset"
+                aria-label={`Reset ${props.field.label}`}
+                disabled={asNumber(props.value) === asNumber(props.resetValue ?? 0)}
+                onClick={() => props.onChange(asNumber(props.resetValue ?? 0))}
+              >
+                ↺
+              </button>
+            </Show>
           </span>
         </Match>
         <Match when={props.field.kind === 'text'}>
@@ -452,6 +605,15 @@ export default function FieldEditor(props: FieldEditorProps) {
         </Match>
         <Match when={props.field.kind === 'order'}>
           <OrderEditor value={props.value} onChange={props.onChange} />
+        </Match>
+        <Match when={props.field.kind === 'shapes'}>
+          <AnnotateEditor
+            previewPath={props.previewPath}
+            value={props.value}
+            color={props.ink ?? '#ff5a36'}
+            onInk={props.onInk}
+            onChange={(value: Shape[]) => props.onChange(value)}
+          />
         </Match>
       </Switch>
       <Show when={props.field.help}>

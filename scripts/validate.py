@@ -36,7 +36,7 @@ def _have(tool: str) -> bool:
 
 # ------------------------------------------------------------------- images
 
-IDENTIFY = "{magick}|{width}|{height}|{colorspace}|{type}|{channel-depth}|{format}"
+IDENTIFY = "%[magick]|%w|%h|%[colorspace]|%[type]|%z|%m"
 
 
 def image(path: str | Path) -> dict | None:

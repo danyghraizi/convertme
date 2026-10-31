@@ -208,7 +208,22 @@ def serve(directory: Path):
 
 
 def start_firefox(profile: Path):
-    env = dict(os.environ, MOZ_HEADLESS="1")
+    env = dict(os.environ, MOZ_HEADLESS="1", MOZ_FORCE_DISABLE_E10S="1")
+    # A fresh profile has no marionette preference, and Firefox 15x accepts the
+    # connection then closes it without a greeting. Write the prefs before launch.
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "user.js").write_text(
+        "\n".join(
+            [
+                'user_pref("marionette.enabled", true);',
+                f'user_pref("marionette.port", {MARIONETTE});',
+                'user_pref("marionette.debugging.clicktostart", false);',
+                'user_pref("browser.shell.checkDefaultBrowser", false);',
+                'user_pref("browser.startup.page", 0);',
+                "",
+            ]
+        )
+    )
     proc = subprocess.Popen(
         ["firefox", "--headless", "--no-remote", "--marionette", "--profile", str(profile), "about:blank"],
         env=env,
@@ -340,6 +355,143 @@ def close_dialog(m: Marionette):
     m.wait_for("!document.querySelector('.modal')")
 
 
+def open_browser() -> tuple[Marionette, subprocess.Popen, Path]:
+    profile = Path(tempfile.mkdtemp(prefix="convertme-shots-"))
+    firefox = start_firefox(profile)
+    try:
+        m = Marionette()
+        m.cmd("WebDriver:NewSession", {"capabilities": {}})
+        m.cmd("WebDriver:SetWindowRect", {"x": 0, "y": 0, "width": 1280, "height": 940})
+    except Exception:
+        stop_browser(firefox, profile)
+        raise
+    return m, firefox, profile
+
+
+def stop_browser(firefox: subprocess.Popen, profile: Path) -> None:
+    firefox.terminate()
+    try:
+        firefox.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        firefox.kill()
+        firefox.wait(timeout=5)
+    shutil.rmtree(profile, ignore_errors=True)
+
+
+def run_category(
+    key: str,
+    label: str,
+    base: str,
+    out: Path,
+    table: dict,
+    failures: list[str],
+) -> list[dict]:
+    """One category in a fresh browser.
+
+    A long single-browser session accumulated renderer channel errors on this host
+    (the PDF category died after the fourth dialog); restarting per category keeps a
+    crash from taking the rest of the report with it.
+    """
+    report: list[dict] = []
+    m, firefox, profile = open_browser()
+    try:
+        m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files={key}"})
+        if not m.wait_for("document.querySelector('.tool-card')", 10):
+            failures.append(f"{key}: tool cards never appeared")
+            return report
+        open_category(m, label)
+        time.sleep(0.3)
+        m.screenshot(out / f"{key}-main.png")
+        tools = m.js(
+            "return [...document.querySelectorAll('.tool-card')].map((c) => "
+            "(c.querySelector('.tool-label') || c).innerText.trim());"
+        )
+        print(f"{key}: {len(tools)} tools", flush=True)
+        if key == "images":
+            # Lossless-only selection: the quality slider must be absent.
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files=images-lossless"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "Images")
+            m.js("document.querySelectorAll('.tool-card')[0].click(); return true;")
+            if m.wait_for("document.querySelector('.modal')", 4):
+                time.sleep(0.8)
+                lossless = measure_modal(m)
+                lossless.update({"category": "images-lossless", "tool": "compress",
+                                 "screenshot": "images-lossless-compress.png"})
+                m.screenshot(out / lossless["screenshot"])
+                report.append(lossless)
+                if "Quality" in lossless.get("labels", []):
+                    failures.append("images-lossless/compress: Quality is shown for a lossless selection")
+                if lossless.get("preview") and not lossless.get("previewLoaded"):
+                    failures.append("images-lossless/compress: preview did not load")
+                # Both options at once, with a target no PNG can reach: the palette
+                # control appears and the dialog says the target is out of reach.
+                m.js("""
+                const rows = [...document.querySelectorAll('.checkbox-row')];
+                for (const prefix of ['Reduce colours', 'Compress to a target']) {
+                  const row = rows.find((r) => r.innerText.trim().startsWith(prefix));
+                  if (row && !row.querySelector('input').checked) row.click();
+                }
+                const input = document.querySelector('.modal input[type=number]');
+                if (input) {
+                  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                  setter.call(input, '1000');
+                  input.dispatchEvent(new Event('input', {bubbles: true}));
+                }
+                return true;
+                """)
+                noted = m.wait_for("document.querySelector('.compress-target-miss')", 6)
+                time.sleep(0.3)
+                combined = measure_modal(m)
+                combined.update({
+                    "category": "images-lossless",
+                    "tool": "compress-combined",
+                    "screenshot": "images-lossless-compress-combined.png",
+                    "note": m.js("const n = document.querySelector('.compress-target-miss'); "
+                                 "return n ? n.innerText.trim() : null;"),
+                })
+                m.screenshot(out / combined["screenshot"])
+                report.append(combined)
+                if not noted:
+                    failures.append("images-lossless/compress: no out-of-reach target note")
+                if "Colours" not in combined.get("labels", []):
+                    failures.append("images-lossless/compress: Colours did not appear with Reduce colours")
+                if combined.get("preview") and not combined.get("previewLoaded"):
+                    failures.append("images-lossless/compress-combined: preview did not load")
+                close_dialog(m)
+            else:
+                failures.append("images-lossless/compress: no dialog")
+        for index, tool in enumerate(tools):
+            m.js(
+                "document.querySelectorAll('.tool-card')[%d].click(); return true;" % index
+            )
+            had_dialog = m.wait_for("document.querySelector('.modal')", 4)
+            if not had_dialog:
+                report.append({"category": key, "tool": tool, "dialog": False})
+                time.sleep(0.3)
+                continue
+            time.sleep(0.8)
+            info = measure_modal(m)
+            info.update({"category": key, "tool": tool, "screenshot": f"{key}-{tool.lower().replace(' ', '-')}.png"})
+            m.screenshot(out / info["screenshot"])
+            report.append(info)
+            modal = info.get("modal") or {}
+            screen = info.get("screen") or {}
+            if modal and (modal.get("w", 0) > screen.get("w", 0) or modal.get("h", 0) > screen.get("h", 0)):
+                failures.append(f"{key}/{tool}: modal larger than the viewport")
+            failures.extend(design_failures(info, key, tool, table))
+            if info.get("overflow"):
+                failures.append(f"{key}/{tool}: a field overflows the modal horizontally")
+            if info.get("preview") and not info.get("previewLoaded"):
+                failures.append(f"{key}/{tool}: the preview image did not load")
+            close_dialog(m)
+        entries = [r for r in report if r["category"] == key]
+        print(f"  captured {sum(1 for r in entries if r.get('dialog'))} dialogs of {len(entries)} tools", flush=True)
+    finally:
+        stop_browser(firefox, profile)
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
@@ -357,118 +509,19 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     httpd = serve(UI_DIST)
     base = f"http://127.0.0.1:{httpd.server_port}/index.html"
-    profile = Path(tempfile.mkdtemp(prefix="convertme-shots-"))
-    firefox = start_firefox(profile)
-    failures = []
-    report = []
+    failures: list[str] = []
+    report: list[dict] = []
     table = tool_table()
     try:
-        m = Marionette()
-        m.cmd("WebDriver:NewSession", {"capabilities": {}})
-        m.cmd("WebDriver:SetWindowRect", {"x": 0, "y": 0, "width": 1280, "height": 940})
         categories = [(k, v) for k, v in CATEGORIES if not args.category or k == args.category]
         for key, label in categories:
-            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files={key}"})
-            if not m.wait_for("document.querySelector('.tool-card')", 10):
-                failures.append(f"{key}: tool cards never appeared")
-                continue
-            open_category(m, label)
-            time.sleep(0.3)
-            m.screenshot(out / f"{key}-main.png")
-            tools = m.js(
-                "return [...document.querySelectorAll('.tool-card')].map((c) => "
-                "(c.querySelector('.tool-label') || c).innerText.trim());"
-            )
-            print(f"{key}: {len(tools)} tools", flush=True)
-            if key == "images":
-                # Lossless-only selection: the quality slider must be absent.
-                m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files=images-lossless"})
-                m.wait_for("document.querySelector('.tool-card')", 10)
-                open_category(m, "Images")
-                m.js("document.querySelectorAll('.tool-card')[0].click(); return true;")
-                if m.wait_for("document.querySelector('.modal')", 4):
-                    time.sleep(0.8)
-                    lossless = measure_modal(m)
-                    lossless.update({"category": "images-lossless", "tool": "compress",
-                                     "screenshot": "images-lossless-compress.png"})
-                    m.screenshot(out / lossless["screenshot"])
-                    report.append(lossless)
-                    if "Quality" in lossless.get("labels", []):
-                        failures.append("images-lossless/compress: Quality is shown for a lossless selection")
-                    if lossless.get("preview") and not lossless.get("previewLoaded"):
-                        failures.append("images-lossless/compress: preview did not load")
-                    # Both options at once, with a target no PNG can reach: the palette
-                    # control appears and the dialog says the target is out of reach.
-                    m.js("""
-                    const rows = [...document.querySelectorAll('.checkbox-row')];
-                    for (const prefix of ['Reduce colours', 'Compress to a target']) {
-                      const row = rows.find((r) => r.innerText.trim().startsWith(prefix));
-                      if (row && !row.querySelector('input').checked) row.click();
-                    }
-                    const input = document.querySelector('.modal input[type=number]');
-                    if (input) {
-                      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-                      setter.call(input, '1000');
-                      input.dispatchEvent(new Event('input', {bubbles: true}));
-                    }
-                    return true;
-                    """)
-                    noted = m.wait_for("document.querySelector('.compress-target-miss')", 6)
-                    time.sleep(0.3)
-                    combined = measure_modal(m)
-                    combined.update({
-                        "category": "images-lossless",
-                        "tool": "compress-combined",
-                        "screenshot": "images-lossless-compress-combined.png",
-                        "note": m.js("const n = document.querySelector('.compress-target-miss'); "
-                                     "return n ? n.innerText.trim() : null;"),
-                    })
-                    m.screenshot(out / combined["screenshot"])
-                    report.append(combined)
-                    if not noted:
-                        failures.append("images-lossless/compress: no out-of-reach target note")
-                    if "Colours" not in combined.get("labels", []):
-                        failures.append("images-lossless/compress: Colours did not appear with Reduce colours")
-                    if combined.get("preview") and not combined.get("previewLoaded"):
-                        failures.append("images-lossless/compress-combined: preview did not load")
-                    close_dialog(m)
-                else:
-                    failures.append("images-lossless/compress: no dialog")
-            for index, tool in enumerate(tools):
-                m.js(
-                    "document.querySelectorAll('.tool-card')[%d].click(); return true;" % index
-                )
-                had_dialog = m.wait_for("document.querySelector('.modal')", 4)
-                if not had_dialog:
-                    report.append({"category": key, "tool": tool, "dialog": False})
-                    time.sleep(0.3)
-                    continue
-                time.sleep(0.8)
-                info = measure_modal(m)
-                info.update({"category": key, "tool": tool, "screenshot": f"{key}-{tool.lower().replace(' ', '-')}.png"})
-                m.screenshot(out / info["screenshot"])
-                report.append(info)
-                modal = info.get("modal") or {}
-                screen = info.get("screen") or {}
-                if modal and (modal.get("w", 0) > screen.get("w", 0) or modal.get("h", 0) > screen.get("h", 0)):
-                    failures.append(f"{key}/{tool}: modal larger than the viewport")
-                failures.extend(design_failures(info, key, tool, table))
-                if info.get("overflow"):
-                    failures.append(f"{key}/{tool}: a field overflows the modal horizontally")
-                if info.get("preview") and not info.get("previewLoaded"):
-                    failures.append(f"{key}/{tool}: the preview image did not load")
-                close_dialog(m)
-            entries = [r for r in report if r["category"] == key]
-            print(f"  captured {sum(1 for r in entries if r.get('dialog'))} dialogs of {len(entries)} tools", flush=True)
+            try:
+                report.extend(run_category(key, label, base, out, table, failures))
+            except RuntimeError as error:
+                failures.append(f"{key}: browser session failed ({error})")
         (out / "report.json").write_text(json.dumps(report, indent=2))
     finally:
-        firefox.terminate()
-        try:
-            firefox.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            firefox.kill()
         httpd.shutdown()
-        shutil.rmtree(profile, ignore_errors=True)
 
     print(f"screenshots: {out}", flush=True)
     if failures:
