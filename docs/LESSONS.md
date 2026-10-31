@@ -548,3 +548,120 @@ preview-fitted rectangle is not user input and must not travel as one.
 
 **Evidence.** `tool-image-crop` failed before the fix; after it, 1:1 produces
 2,000×2,000. `tool-video-crop` exercises the same branch.
+
+## 42. A CLI verb that is missing from the dispatch list hangs a headless run
+
+**Trap.** `main` decides between the CLI and the window from a hardcoded list of verbs.
+A new `preview` subcommand existed in `cli::run` but not in that list, so
+`convertme preview …` launched the *window*; without a display it waited forever. The
+performance harness had already been running for seven minutes on its first case before
+anyone looked at the process list.
+
+**Rule.** One list, in one place (`cli::is_cli_command`), used by `main` to route and by
+`cli::run` to dispatch. And a harness must not be able to hang: pass a per-run timeout to
+every child process, so a mis-dispatch fails in seconds with a message instead of
+blocking the gate.
+
+**Evidence.** The hung child was `convertme /tmp/…/photo.jpg --kind thumb --size 512`,
+i.e. a path where a verb should have been. With the verb shared, the same case reports a
+number in ~90 ms.
+
+## 43. A file copied at build time is a second build to prove
+
+**Trap.** Tauri copies `externalBin` next to the executable at build time. Rebuilding
+the PDF sidecar and installing it into `vendor/bin` looked like an update, but the app
+kept running the copy in `target/release/` from the previous build. PDF→DOCX still
+produced the old document (one Heading 1, no list items) while the same sidecar binary,
+run directly, produced 7/4/29.
+
+**Rule.** When a build step copies an artifact, the copy is part of "which build is
+running": rebuild the consumer or refresh the copy, and record the *running* binary's
+version in the harness report (`tool_versions` now includes `convertme-pdf`). A sidecar
+should print a build stamp, not just a semver.
+
+**Evidence.** `target/release/convertme-pdf` was 4 minutes older than
+`vendor/bin/convertme-pdf-x86_64-unknown-linux-gnu`; after copying, the same scenario
+reported 7 Heading 1, 4 Heading 2, 29 list items, coverage 1.0.
+
+## 44. A mock with its own copy of the field tables is a second product
+
+**Trap.** The browser mock kept its own hand-written `TOOL_FIELDS`. It drifted from the
+Rust table: the crop dialog showed a `boxes` editor the real dialog hides, so the
+screenshot harness measured a dialog with the surface drawn twice, and the "Fill colour"
+row measured 19 px out of alignment for a control the app does not have.
+
+**Rule.** Generate the mock's tables from the product's own table
+(`ui/src/fields.generated.json` from `convertme probe --fields`) and fail a test when the
+file is stale. A mock may fake *data*; it must not fake *structure*.
+
+**Evidence.** After the switch, `ui-shots` went from "31 dialogs of 50 tools" with three
+alignment failures to "26 dialogs of 51 tools, no layout failures", and the crop dialog
+shows one "Area to keep" surface.
+
+## 45. A tool card is a promise that a dialog opens
+
+**Trap.** The reference has a Collage tool, so it was added to the tool table with its
+copy — before its engine existed. The card appeared on the Images wheel, ran immediately
+(the field table was empty), and failed with "unsupported". Discovery would have produced
+a broken card for every user.
+
+**Rule.** Register a tool together with its engine and its fields, and keep a test that
+every non-fieldless tool has a field table (`only_fieldless_tools_run_without_a_dialog`).
+A card that cannot do its job is worse than a missing card.
+
+**Evidence.** `dialogs-images` failed with `Images/Collage: dialog opened — collage ·
+failed · unsupported`; after removing the card, the same scenario passes.
+
+## 46. PDF → DOCX is a structure problem, not a text problem
+
+**Trap.** The first writer emitted one paragraph per block and a Heading 1 for the
+largest font on each page. A résumé became 36 paragraphs, 1 heading, no lists, no images
+— text-complete and structurally useless.
+
+**Rule.** Decide the structure once, in an analyser both writers share
+(`sidecars/pdf/convertme_pdf/reflow.py`): body size from character counts, heading levels
+from size rank, list items from bullet glyphs, sub-entries from an all-bold first line,
+icons from short spans with no alphanumerics (rasterised, never written as text), and no
+page breaks at all. `scripts/docx-quality.py` is the contract: coverage ≥ 0.98, one
+Heading 1, two Heading 2s, ten list paragraphs *and* ten `w:numPr`, four drawings, zero
+page breaks, and within ±1 heading of the reference.
+
+**Evidence.** Before: 36 paragraphs, 1 H1, 0 lists, 0 numPr, 0 images. After: 68
+paragraphs, 7 H1, 4 H2, 29 list paragraphs, 29 `w:numPr`, 14 drawings, 0 page breaks,
+coverage 1.0 — against a reference with 8 H1, 4 H2, 30 lists, 29 numPr.
+
+## 47. `w:pStyle` is not numbering
+
+**Trap.** Python-docx's `List Bullet` style renders bullets, so the DOCX *looked* like a
+list — but the package had zero `w:numPr`, so the document did not declare its own lists
+and any tool reading it saw plain paragraphs.
+
+**Rule.** Write the numbering, not just the style: create a `w:num` with a bullet
+`w:abstractNum` and point every list paragraph at it. Measure `w:numPr`, not the visual
+result.
+
+**Evidence.** `numpr: 0` with `lists: 29` before; `lists: 29, numpr: 29` after the fix.
+
+## 48. ImageMagick's identify format is not a template language
+
+**Trap.** The shared validator asked for `{width}|{height}|…`; ImageMagick printed the
+braces back, and the audit died on `int("{width}")` rather than reporting a fact.
+
+**Rule.** Use the tool's own specifiers (`%m|%w|%h|%[colorspace]|%[type]|%z`) and parse
+defensively: a validator that raises reports less than one that says "unreadable".
+
+**Evidence.** `magick identify -format '%m|%w|%h|%[colorspace]|%[type]|%z'` returns
+`PNG|2000|3000|sRGB|TrueColorAlpha|16`.
+
+## 49. The first measurement attempt is part of the harness
+
+**Trap.** The performance harness passed the file path where the subcommand belongs
+(`convertme <path> --kind thumb`), which opened the window and blocked. Nothing measured
+anything, and the run looked like a slow benchmark instead of a broken command.
+
+**Rule.** Give every measured child a timeout (`timeout=`), print the exact argv on
+failure, and make an unavailable case say so (`unavailable: <stderr>`) instead of
+waiting. A harness that cannot fail fast is a harness that lies.
+
+**Evidence.** The hung job showed `convertme /tmp/…/photo.jpg --kind thumb --size 512`
+as its child; with the verb and a timeout the whole suite finishes in about a minute.

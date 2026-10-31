@@ -79,7 +79,7 @@ impl Default for Settings {
             actions_key: ModifierKey::Alt,
             overwrite: "never".into(),
             history_limit: 500,
-            preview_cache_bytes: 256 * 1024 * 1024,
+            preview_cache_bytes: 128 * 1024 * 1024,
             ocr_languages: vec!["eng".into()],
             extra_tools_dir: None,
             update_check: true,

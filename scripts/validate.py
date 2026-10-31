@@ -36,7 +36,8 @@ def _have(tool: str) -> bool:
 
 # ------------------------------------------------------------------- images
 
-IDENTIFY = "{magick}|{width}|{height}|{colorspace}|{type}|{channel-depth}|{format}"
+# ImageMagick's own format specifiers: %m is the magick, %w/%h the pixel size.
+IDENTIFY = "%m|%w|%h|%[colorspace]|%[type]|%z"
 
 
 def image(path: str | Path) -> dict | None:
@@ -46,7 +47,10 @@ def image(path: str | Path) -> dict | None:
     out = _run(["magick", "identify", "-format", IDENTIFY, str(path)])
     if out is None or out.returncode != 0 or "|" not in out.stdout:
         return None
-    magick, width, height, colorspace, kind, depth, fmt = out.stdout.split("|", 6)
+    fields = out.stdout.split("|")
+    if len(fields) < 6:
+        return None
+    magick, width, height, colorspace, kind, depth = fields[:6]
     return {
         "magick": magick,  # e.g. "PNG"
         "width": int(width),
@@ -54,7 +58,7 @@ def image(path: str | Path) -> dict | None:
         "colorspace": colorspace,
         "type": kind,
         "depth": depth,
-        "format": fmt,
+        "format": magick,
         "alpha": "a" in kind.lower() or "alpha" in colorspace.lower(),
         "bytes": Path(path).stat().st_size,
     }

@@ -30,6 +30,8 @@ pub struct AppState {
     /// Live progress per running job, so a window that opens late still shows it.
     pub progress: Mutex<HashMap<JobId, (f64, String)>>,
     pub previews: Mutex<HashMap<PathBuf, bool>>,
+    /// The dialog previews in flight: starting one cancels the one before it.
+    pub preview_guard: convertme_engines::preview::PreviewGuard,
     pub shutting_down: AtomicBool,
     pub drag: Mutex<Option<Box<dyn DragSurface>>>,
     /// Receiving end of the queue's event channel, taken once by the bridge thread.

@@ -90,6 +90,14 @@ CASES: list[dict] = [
         "ceiling": 1.5,
     },
     {
+        # The photo editor's preview: bounded at 1024 px, then the engine's own chain.
+        "name": "photo-preview-1024",
+        "kind": "preview",
+        "fixture": "images/photo-landscape-4000x3000.jpg",
+        "args": ["--kind", "photo", "--size", "1024", "--params", "{}"],
+        "ceiling": 0.70,
+    },
+    {
         "name": "compress-preview-poster",
         "kind": "preview",
         "fixture": "images/poster-portrait.png",
@@ -318,9 +326,23 @@ def run_once(case: dict, fixtures: Path, startup: float) -> dict:
         before = set(p.name for p in work.iterdir())
         with TempWatch(Path(env["TMPDIR"])) as watch:
             begin = time.perf_counter()
-            completed = subprocess.run(
-                command, env=env, capture_output=True, text=True, check=False
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    # A mis-dispatched verb opened a window and hung the first
+                    # version of this harness for seven minutes; a measured child
+                    # gets a deadline so that fails in seconds instead.
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                record["status"] = "failed"
+                record["note"] = "timed out after 600 s: " + " ".join(command[:4])
+                record["exit"] = -1
+                return record
             wall = time.perf_counter() - begin
         record["wall_s"] = round(wall, 3)
         record["net_s"] = round(max(0.0, wall - startup), 3)

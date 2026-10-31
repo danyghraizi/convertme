@@ -68,10 +68,13 @@ pub async fn filmstrip(
     frames: usize,
 ) -> Result<Vec<String>, String> {
     let cache = state.cache.clone();
+    // A new request supersedes the one before it: the superseded encoder is killed,
+    // not merely ignored.
+    let ctx = state.preview_guard.begin();
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
         cache
-            .filmstrip(&file, frames)
+            .filmstrip(&file, frames, &ctx)
             .map(|frames| frames.iter().map(|p| p.to_string_lossy().into_owned()).collect())
     })
     .await
@@ -92,9 +95,10 @@ pub struct WaveformOut {
 #[tauri::command]
 pub async fn waveform_data(state: State<'_, AppState>, path: String) -> Result<WaveformOut, String> {
     let cache = state.cache.clone();
+    let ctx = state.preview_guard.begin();
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        cache.waveform(&file).map(|w| {
+        cache.waveform(&file, &ctx).map(|w| {
             let peaks = downsample_peaks(&w.peaks, 4000);
             WaveformOut {
                 duration_ms: w.duration_ms,
@@ -121,9 +125,10 @@ pub async fn channel_waveforms(
     path: String,
 ) -> Result<ChannelsOut, String> {
     let cache = state.cache.clone();
+    let ctx = state.preview_guard.begin();
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        cache.waveform_channels(&file).map(|(left, right)| ChannelsOut {
+        cache.waveform_channels(&file, &ctx).map(|(left, right)| ChannelsOut {
             left: WaveformOut {
                 duration_ms: left.duration_ms,
                 truncated: left.truncated,
@@ -177,9 +182,10 @@ pub struct PageOut {
 #[tauri::command]
 pub async fn pdf_pages(state: State<'_, AppState>, path: String) -> Result<Vec<PageOut>, String> {
     let cache = state.cache.clone();
+    let ctx = state.preview_guard.begin();
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        cache.pdf_pages(&file).map(|pages| {
+        cache.pdf_pages(&file, &ctx).map(|pages| {
             pages
                 .into_iter()
                 .map(|page| PageOut {

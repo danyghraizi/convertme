@@ -42,7 +42,7 @@ DEFAULT_FIXTURES = Path(
 class Case:
     """One CLI run and the facts its output must show."""
 
-    def __init__(self, name, source, argv, check):
+    def __init__(self, name, source, argv, check):  # source: str | list[str]
         self.name = name
         self.source = source
         self.argv = argv
@@ -93,10 +93,12 @@ def image_check(format_name=None, size=None, alpha=None, unchanged_size=False):
             {"name": "magic", "ok": True, "actual": facts["magick"]}
         )
         if format_name:
+            # ImageMagick calls JPEG "JPEG"; the registry calls it JPG.
+            expected = {"JPG": "JPEG"}.get(format_name.upper(), format_name.upper())
             checks.append(
                 {
                     "name": f"container is {format_name}",
-                    "ok": facts["magick"].upper().startswith(format_name.upper()),
+                    "ok": facts["magick"].upper().startswith(expected),
                     "actual": facts["magick"],
                 }
             )
@@ -329,6 +331,22 @@ def epub_check(min_chapters=1):
     return check
 
 
+def members_check(min_files=1):
+    """A tool that publishes a folder: its members are the artifact."""
+
+    def check(produced: list[Path]) -> list[dict]:
+        return [
+            {
+                "name": f"at least {min_files} file(s) extracted",
+                "ok": len(produced) >= min_files,
+                "actual": len(produced),
+            },
+            {"name": "the names are intact", "ok": all(p.name for p in produced), "actual": True},
+        ]
+
+    return check
+
+
 def archive_check(min_entries=1, expect_name=None):
     def check(produced: list[Path]) -> list[dict]:
         if len(produced) != 1:
@@ -427,17 +445,137 @@ CASES: list[Case] = [
     convert("archive-zip-to-tar", "archives/project.zip", "TAR",
             archive_check(3)),
     tool_case("archive-extract", "archives/project.zip", "extract", "archives", {},
-              archive_check(1)),
+              members_check(3)),
 ]
 
 
+# ------------------------------------------------------------------- matrix
+
+# One fixture per source format. A pair whose source has no fixture is skipped with
+# that reason rather than quietly missing from the audit.
+MATRIX_FIXTURES = {
+    "JPG": "images/photo-landscape-4000x3000.jpg",
+    "PNG": "images/poster-portrait.png",
+    "WEBP": "images/photo.webp",
+    "TIFF": "images/photo.tiff",
+    "AVIF": "images/photo.avif",
+    "BMP": "images/photo.bmp",
+    "GIF": "video/animated.gif",
+    "MP4": "video/clip-landscape-720p-10s.mp4",
+    "MOV": "video/clip-landscape-720p-10s.mov",
+    "MKV": "video/clip-landscape-720p-10s.mkv",
+    "WEBM": "video/clip-landscape-720p-10s.webm",
+    "AVI": "video/clip-landscape-720p-10s.avi",
+    "WMV": "video/clip-landscape-720p-10s.wmv",
+    "MP3": "audio/speech.mp3",
+    "M4A": "audio/speech.m4a",
+    "WAV": "audio/speech.wav",
+    "FLAC": "audio/speech.flac",
+    "OGG": "audio/speech.ogg",
+    "OPUS": "audio/speech.opus",
+    "AIFF": "audio/speech.aiff",
+    "WMA": "audio/speech.wma",
+    "PDF": "pdf/report-5-pages.pdf",
+    "DOCX": "documents/report.docx",
+    "ODT": "documents/report.odt",
+    "MD": "documents/report.md",
+    "TXT": "documents/notes.txt",
+    "HTML": "documents/report.html",
+    "PPTX": "slides/deck-8-slides.pptx",
+    "XLSX": "spreadsheets/sheet.xlsx",
+    "ODS": "spreadsheets/sheet.ods",
+    "CSV": "spreadsheets/sales-1000-rows.csv",
+    "TSV": "spreadsheets/sheet.tsv",
+    "EPUB": "epub/report.epub",
+    "SRT": "subtitles/cues.srt",
+    "VTT": "subtitles/cues.vtt",
+    "ZIP": "archives/project.zip",
+    "TAR": "archives/bundle.tar",
+    "GZIP": "archives/bundle.gz",
+}
+
+IMAGE_TARGETS = {"PNG", "JPG", "WEBP", "HEIC", "TIFF", "AVIF", "BMP", "ICO", "JXL", "TGA"}
+VIDEO_TARGETS = {"MP4", "MOV", "MKV", "WEBM", "AVI", "WMV", "GIF"}
+AUDIO_TARGETS = {"MP3", "M4A", "WAV", "FLAC", "OGG", "OPUS", "AIFF", "WMA"}
+TEXT_TARGETS = {"TXT", "MD", "HTML", "CSV", "TSV", "SRT", "VTT"}
+PACKAGE_TARGETS = {"DOCX", "ODT", "XLSX", "ODS", "PPTX"}
+ARCHIVE_TARGETS = {"ZIP", "TAR", "GZIP", "7Z"}
+
+
+def check_for_target(target: str):
+    """The facts a target family must show, whatever the source was."""
+    if target in IMAGE_TARGETS:
+        return image_check(None)
+    if target in VIDEO_TARGETS:
+        return media_check(None, None, audio=None, video=True)
+    if target in AUDIO_TARGETS:
+        return audio_check(None, audio_only=False)
+    if target == "PDF":
+        return pdf_check(at_least_one_page=True)
+    if target == "EPUB":
+        return epub_check(1)
+    if target in TEXT_TARGETS:
+        return text_check(1)
+    if target in PACKAGE_TARGETS:
+        return package_check(target)
+    if target in ARCHIVE_TARGETS:
+        return archive_check(1)
+    return package_check(target)
+
+
+def matrix_cases() -> list[Case]:
+    """One case per conversion the product offers.
+
+    The pair list is derived from the registry snapshot (a target is offered when it is
+    writable and listed in the source's category — the same rule `Registry::wheel_targets`
+    applies), so a reached pair that the audit does not cover would mean the snapshot
+    and the product disagree.
+    """
+    snapshot = json.loads(
+        (REPO / "crates/convertme-core/tests/formats.snapshot.json").read_text()
+    )
+    formats = {item["id"]: item for item in snapshot["formats"]}
+    cases: list[Case] = []
+    for source, fixture in sorted(MATRIX_FIXTURES.items()):
+        entry = formats.get(source)
+        if entry is None:
+            continue
+        category = entry["category"]
+        for target, target_entry in sorted(formats.items()):
+            if not target_entry["write"] or category not in target_entry["wheels"]:
+                continue
+            if target == source:
+                continue
+            cases.append(
+                convert(
+                    f"matrix-{source.lower()}-to-{target.lower()}",
+                    fixture,
+                    target,
+                    check_for_target(target),
+                )
+            )
+    return cases
+
+
 def hint_for(stderr: str) -> str | None:
-    """A skip reason when the failure is this machine's, not the product's."""
+    """A skip reason when the failure is this machine's, not the product's.
+
+    Four things are the environment talking rather than the conversion being wrong: a
+    tool that is not installed, a bundled tool that went missing, an ImageMagick build
+    without a codec for the source (`no decode delegate`, `unable to load module`), and
+    the planner refusing a pair whose engine is absent ("CSV → JPG is not supported").
+    Every other non-zero exit is a failure and must be fixed.
+    """
     lowered = stderr.lower()
-    if "is not installed" in lowered or "not installed" in lowered:
-        return stderr.strip().splitlines()[0][:160]
-    if "reinstall convertme" in lowered:
-        return stderr.strip().splitlines()[0][:160]
+    for marker in (
+        "not installed",
+        "reinstall convertme",
+        "no decode delegate",
+        "unable to load module",
+        "is not supported",
+    ):
+        if marker in lowered:
+            return stderr.strip().splitlines()[0][:160]
     return None
 
 
@@ -445,16 +583,24 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
     work = Path(tempfile.mkdtemp(prefix="convertme-audit-"))
     record = {"name": case.name, "status": "passed", "checks": [], "outputs": []}
     try:
-        source = fixtures / case.source
-        if not source.is_file():
-            record["status"] = "skipped"
-            record["reason"] = f"missing fixture {case.source}"
-            return record
-        copy = work / source.name
-        shutil.copy2(source, copy)
-        argv = [str(BIN)] + [
-            copy.as_posix() if part == "{input}" else part for part in case.argv
-        ]
+        sources = [case.source] if isinstance(case.source, str) else list(case.source)
+        copies: list[Path] = []
+        for relative in sources:
+            source = fixtures / relative
+            if not source.is_file():
+                record["status"] = "skipped"
+                record["reason"] = f"missing fixture {relative}"
+                return record
+            copy = work / source.name
+            shutil.copy2(source, copy)
+            copies.append(copy)
+        inputs = [copy.as_posix() for copy in copies]
+        argv = [str(BIN)]
+        for part in case.argv:
+            if part == "{input}":
+                argv.extend(inputs)
+            else:
+                argv.append(part)
         completed = subprocess.run(argv, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             reason = hint_for(completed.stderr)
@@ -463,10 +609,11 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
             record["checks"] = [{"name": "cli exit", "ok": False, "actual": completed.returncode}]
             return record
 
+        input_names = {copy.name for copy in copies}
         produced = sorted(
             path
             for path in work.iterdir()
-            if path.name != source.name and not path.name.endswith(".log")
+            if path.name not in input_names and not path.name.endswith(".log")
         )
         record["outputs"] = [p.name for p in produced]
         if case.check is None:
@@ -496,16 +643,30 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def all_cases(with_matrix: bool) -> list[Case]:
+    cases = list(CASES)
+    if with_matrix:
+        known = {case.name for case in cases}
+        cases.extend(case for case in matrix_cases() if case.name not in known)
+    return cases
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fixtures", default=str(DEFAULT_FIXTURES))
     parser.add_argument("--out", help="report directory (default artifacts/quality-audit/<stamp>)")
     parser.add_argument("--only", help="only cases whose name contains this")
     parser.add_argument("--list", action="store_true", help="list the cases and exit")
+    parser.add_argument(
+        "--no-matrix",
+        action="store_true",
+        help="only the curated cases, not the full conversion matrix",
+    )
     args = parser.parse_args(argv)
 
+    selected_cases = all_cases(not args.no_matrix)
     if args.list:
-        for case in CASES:
+        for case in selected_cases:
             print(case.name)
         return 0
     if not BIN.is_file():
@@ -521,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out) if args.out else REPO / "artifacts/quality-audit" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    selected = [case for case in CASES if not args.only or args.only in case.name]
+    selected = [case for case in selected_cases if not args.only or args.only in case.name]
     results = []
     for case in selected:
         record = run_case(case, fixtures, out_dir)

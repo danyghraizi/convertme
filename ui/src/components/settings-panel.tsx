@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from 'solid-js';
+import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type {
   AboutInfo,
@@ -7,6 +7,7 @@ import type {
   OverwritePolicy,
   Settings,
 } from '../types';
+import * as ipc from '../ipc';
 import { WHEEL_KEYS, keyLabel } from '../keys';
 import { formatBytes } from '../format';
 
@@ -43,6 +44,27 @@ export default function SettingsPanel(props: SettingsPanelProps) {
   );
   const [saving, setSaving] = createSignal(false);
   const [message, setMessage] = createSignal('');
+  // The cache is the one setting whose effect the user can see immediately.
+  const [cacheStats, setCacheStats] = createSignal<{ bytes: number; files: number } | null>(null);
+  const [clearing, setClearing] = createSignal(false);
+
+  onMount(() => {
+    void ipc.cacheStats().then(setCacheStats).catch(() => setCacheStats(null));
+  });
+
+  async function clearCache(): Promise<void> {
+    if (clearing()) return;
+    setClearing(true);
+    try {
+      const stats = await ipc.clearCache();
+      setCacheStats(stats);
+      setMessage('Preview cache cleared');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not clear the cache');
+    } finally {
+      setClearing(false);
+    }
+  }
 
   const duplicateKeys = createMemo(
     () => new Set([draft.convert_key, draft.tools_key, draft.actions_key]).size !== 3,
@@ -222,6 +244,32 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                 {formatBytes(Math.max(0, cacheMiB()) * 1024 * 1024)}.
               </span>
             </label>
+            <div class="field field-cache-now">
+              <span class="field-label">Cache in use</span>
+              <span class="number-row">
+                <span class="field-value" aria-live="polite">
+                  <Show when={cacheStats()} fallback="measuring…">
+                    {(stats) => (
+                      <>
+                        {formatBytes(stats().bytes)} · {stats().files} file
+                        {stats().files === 1 ? '' : 's'}
+                      </>
+                    )}
+                  </Show>
+                </span>
+                <button
+                  type="button"
+                  class="button button-quiet"
+                  onClick={() => void clearCache()}
+                  disabled={clearing()}
+                >
+                  {clearing() ? 'Clearing…' : 'Clear preview cache'}
+                </button>
+              </span>
+              <span class="field-help">
+                Every preview here can be regenerated from the file it came from.
+              </span>
+            </div>
             <label class="field" for="settings-ocr">
               <span class="field-label">OCR languages</span>
               <input

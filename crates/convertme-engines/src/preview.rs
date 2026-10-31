@@ -71,6 +71,39 @@ pub struct PageImage {
     pub thumb: Option<PathBuf>,
 }
 
+/// One dialog's preview requests, in order.
+///
+/// A slider drag asks for a new preview every few hundred milliseconds. Each request
+/// cancels the one it supersedes, so the ImageMagick or ffmpeg process behind a
+/// preview the user has already moved past is *killed* rather than left to finish and
+/// burn a core. Sharing one `PreviewCache` already bounds the pool to two processes;
+/// this bounds the work to the request that matters.
+#[derive(Default)]
+pub struct PreviewGuard {
+    current: Mutex<Option<JobCtx>>,
+}
+
+impl PreviewGuard {
+    /// Start a request, cancelling whatever it replaced.
+    pub fn begin(&self) -> JobCtx {
+        let mut current = self.current.lock().unwrap();
+        if let Some(previous) = current.take() {
+            previous.cancel();
+        }
+        let fresh = JobCtx::new();
+        *current = Some(fresh.clone());
+        fresh
+    }
+
+    /// Drop the current request without starting another (the dialog closed).
+    pub fn finish(&self) {
+        let mut current = self.current.lock().unwrap();
+        if let Some(previous) = current.take() {
+            previous.cancel();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PreviewCache {
     root: PathBuf,
@@ -185,7 +218,12 @@ impl PreviewCache {
     }
 
     /// Thumbnail path, generating it at `size` px on the longest edge if missing.
-    pub fn thumbnail(&self, source: &Path, size: u32) -> Result<PathBuf, JobError> {
+    pub fn thumbnail(
+        &self,
+        source: &Path,
+        size: u32,
+        ctx: &JobCtx,
+    ) -> Result<PathBuf, JobError> {
         let size = size.min(512);
         let path = self
             .key(source, "thumb", &size.to_string())
@@ -199,7 +237,6 @@ impl PreviewCache {
             return Ok(path);
         }
 
-        let ctx = JobCtx::new();
         let magick =
             crate::probe::which("magick").ok_or_else(|| JobError::missing_tool("ImageMagick"))?;
         let tmp = path.with_extension("tmp.jpg");
@@ -213,7 +250,7 @@ impl PreviewCache {
                 .arg("-quality")
                 .arg("82")
                 .arg(&tmp),
-            &ctx,
+            ctx,
         );
         match result {
             Ok(out) if out.success => {
@@ -255,7 +292,12 @@ impl PreviewCache {
     }
 
     /// Filmstrip frames for a video, evenly spaced.
-    pub fn filmstrip(&self, source: &Path, frames: usize) -> Result<Vec<PathBuf>, JobError> {
+    pub fn filmstrip(
+        &self,
+        source: &Path,
+        frames: usize,
+        ctx: &JobCtx,
+    ) -> Result<Vec<PathBuf>, JobError> {
         let frames = frames.clamp(1, 12);
         let _permit = Permit::acquire();
         let dir = self
@@ -273,7 +315,6 @@ impl PreviewCache {
 
         let ffmpeg =
             crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
-        let ctx = JobCtx::new();
         let out_pattern = dir.join("frame%03d.jpg");
         proc::run(
             Cmd::new(ffmpeg)
@@ -286,7 +327,7 @@ impl PreviewCache {
                 .arg(frames.to_string())
                 .arg(&out_pattern)
                 .budget(proc::Budget::Long),
-            &ctx,
+            ctx,
         )?
         .ok()?;
 
@@ -298,8 +339,8 @@ impl PreviewCache {
     }
 
     /// Waveform peaks, 8 kHz mono, capped at 10 minutes.
-    pub fn waveform(&self, source: &Path) -> Result<Waveform, JobError> {
-        self.waveform_filtered(source, "8k", None)
+    pub fn waveform(&self, source: &Path, ctx: &JobCtx) -> Result<Waveform, JobError> {
+        self.waveform_filtered(source, "8k", None, ctx)
     }
 
     /// The two source channels, one waveform each, for the Channels dialog: the
@@ -308,11 +349,12 @@ impl PreviewCache {
     pub fn waveform_channels(
         &self,
         source: &Path,
+        ctx: &JobCtx,
     ) -> Result<(Waveform, Waveform), JobError> {
         // A mono file has one channel; the second row then shows the same signal,
         // which is what the engine does when it duplicates it.
-        let left = self.waveform_filtered(source, "8k-c0", Some("pan=mono|c0=c0"))?;
-        let right = match self.waveform_filtered(source, "8k-c1", Some("pan=mono|c0=c1")) {
+        let left = self.waveform_filtered(source, "8k-c0", Some("pan=mono|c0=c0"), ctx)?;
+        let right = match self.waveform_filtered(source, "8k-c1", Some("pan=mono|c0=c1"), ctx) {
             Ok(right) => right,
             Err(_) => left.clone(),
         };
@@ -326,6 +368,7 @@ impl PreviewCache {
         source: &Path,
         arg: &str,
         filter: Option<&str>,
+        ctx: &JobCtx,
     ) -> Result<Waveform, JobError> {
         let _permit = Permit::acquire();
         let cache = self
@@ -339,7 +382,6 @@ impl PreviewCache {
 
         let ffmpeg =
             crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
-        let ctx = JobCtx::new();
         let raw = cache.with_extension("raw");
         let mut cmd = Cmd::new(ffmpeg).arg("-y").arg("-i").arg(source);
         if let Some(filter) = filter {
@@ -356,7 +398,7 @@ impl PreviewCache {
                 .arg("s16le")
                 .arg(&raw)
                 .budget(proc::Budget::Long),
-            &ctx,
+            ctx,
         )?
         .ok()?;
 
@@ -373,7 +415,7 @@ impl PreviewCache {
     /// The page organizer's data: every page's size, plus a thumbnail for the first
     /// hundred. A document longer than that keeps every page editable — the grid
     /// draws a numbered card where there is no image.
-    pub fn pdf_pages(&self, source: &Path) -> Result<Vec<PageImage>, JobError> {
+    pub fn pdf_pages(&self, source: &Path, ctx: &JobCtx) -> Result<Vec<PageImage>, JobError> {
         let _permit = Permit::acquire();
         let sizes = pdf_page_sizes(source)?;
         let dir = self
@@ -385,7 +427,7 @@ impl PreviewCache {
         let thumbs: Vec<PathBuf> = if rendered.len() >= wanted && wanted > 0 {
             rendered
         } else {
-            render_pdf_pages(source, &dir, wanted)?
+            render_pdf_pages(source, &dir, wanted, ctx)?
         };
 
         Ok(sizes
@@ -571,7 +613,12 @@ fn read_frames(dir: &Path) -> Option<Vec<PathBuf>> {
 }
 
 /// Render the first `wanted` pages at the grid's DPI.
-fn render_pdf_pages(source: &Path, dir: &Path, wanted: usize) -> Result<Vec<PathBuf>, JobError> {
+fn render_pdf_pages(
+    source: &Path,
+    dir: &Path,
+    wanted: usize,
+    ctx: &JobCtx,
+) -> Result<Vec<PathBuf>, JobError> {
     if wanted == 0 {
         return Ok(Vec::new());
     }
@@ -579,7 +626,6 @@ fn render_pdf_pages(source: &Path, dir: &Path, wanted: usize) -> Result<Vec<Path
         .map_err(|e| JobError::io("creating the page cache", &e))?;
     let pdftoppm = crate::probe::which("pdftoppm")
         .ok_or_else(|| JobError::missing_tool("Poppler (pdftoppm)"))?;
-    let ctx = JobCtx::new();
     let prefix = dir.join("page");
     proc::run(
         Cmd::new(pdftoppm)
@@ -597,6 +643,39 @@ fn render_pdf_pages(source: &Path, dir: &Path, wanted: usize) -> Result<Vec<Path
     )?
     .ok()?;
     Ok(read_frames(dir).unwrap_or_default())
+}
+
+/// Drop preview files nobody has looked at for `max_age_days`.
+///
+/// Age is the file's mtime, not its atime: `touch` already bumps mtime when a preview
+/// is served (atime is unreliable under relatime/noatime), so this is the same clock the
+/// LRU uses. The cap stays the hard ceiling; this only removes the truly cold entries of
+/// a cache whose owner has not opened the app in a while.
+pub fn sweep_previews(root: std::path::PathBuf, max_age_days: u64) -> usize {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(max_age_days * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let Ok(read) = std::fs::read_dir(&root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in read.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let used = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if used >= cutoff {
+            continue;
+        }
+        let path = entry.path();
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if result.is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn tree_usage(dir: &Path) -> (u64, usize) {
@@ -788,6 +867,41 @@ mod tests {
             "the artifact just stored must not be evicted"
         );
         assert!(!old.exists(), "older entries go first");
+    }
+
+    /// A slider drag asks for a preview per frame; the one the user moved past must be
+    /// cancelled, or twenty encoders run for one answer.
+    #[test]
+    fn a_new_preview_request_cancels_the_one_before_it() {
+        let guard = PreviewGuard::default();
+        let first = guard.begin();
+        assert!(!first.is_cancelled());
+        let second = guard.begin();
+        assert!(first.is_cancelled(), "the superseded request must be cancelled");
+        assert!(!second.is_cancelled());
+        guard.finish();
+        assert!(second.is_cancelled(), "closing the dialog cancels the request");
+    }
+
+    /// The age sweep removes cold files and keeps what is being used.
+    #[test]
+    fn the_sweep_removes_only_cold_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("fresh.jpg");
+        let cold = dir.path().join("cold.jpg");
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(&cold, b"y").unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(9 * 86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cold)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        let removed = sweep_previews(dir.path().to_path_buf(), 7);
+        assert_eq!(removed, 1, "only the cold file goes");
+        assert!(fresh.exists(), "a preview from today stays");
+        assert!(!cold.exists());
     }
 
     #[test]

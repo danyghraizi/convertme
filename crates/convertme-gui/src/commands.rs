@@ -4,7 +4,7 @@
 
 use crate::state::AppState;
 use convertme_core::formats::{Category, Registry, ToolId};
-use convertme_core::job::{Intent, Job};
+use convertme_core::job::{Intent, Job, JobCtx};
 use convertme_core::settings::Settings;
 use convertme_core::{Store, plan};
 use serde::{Deserialize, Serialize};
@@ -329,10 +329,11 @@ pub async fn analyze(state: State<'_, AppState>, paths: Vec<String>) -> Result<A
     let cap = state.settings.lock().preview_cache_bytes;
     let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
     let wanted: Vec<PathBuf> = files.iter().take(8).cloned().collect();
+    let ctx = state.preview_guard.begin();
     let thumbs_result = tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::new();
         for path in wanted {
-            if let Ok(thumb) = cache.thumbnail(&path, 512) {
+            if let Ok(thumb) = cache.thumbnail(&path, 512, &ctx) {
                 out.push(Thumb {
                     path: path.to_string_lossy().into_owned(),
                     thumb: thumb.to_string_lossy().into_owned(),
@@ -1055,6 +1056,37 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
     }
 }
 
+#[derive(Serialize)]
+pub struct CacheStats {
+    pub bytes: u64,
+    pub files: usize,
+    pub cap_bytes: u64,
+}
+
+/// What the preview cache is holding, so Settings can show it and offer to clear it.
+#[tauri::command]
+pub fn cache_stats(state: State<'_, AppState>) -> CacheStats {
+    let (bytes, files) = state.cache.stats();
+    CacheStats {
+        bytes,
+        files,
+        cap_bytes: state.cache.cap(),
+    }
+}
+
+/// Drop every cached preview. It is a cache: nothing is lost that cannot be regenerated
+/// from the source file, so there is no confirmation dialog.
+#[tauri::command]
+pub fn clear_cache(state: State<'_, AppState>) -> Result<CacheStats, String> {
+    state.cache.clear().map_err(err_to_string)?;
+    let (bytes, files) = state.cache.stats();
+    Ok(CacheStats {
+        bytes,
+        files,
+        cap_bytes: state.cache.cap(),
+    })
+}
+
 #[tauri::command]
 pub fn history(state: State<'_, AppState>, limit: usize) -> Result<Vec<HistoryRowOut>, String> {
     let store = Store::open(&state.db_path).map_err(err_to_string)?;
@@ -1160,13 +1192,14 @@ pub async fn preview_thumb(
         let is_video = Registry::detect(source)
             .map(|format| format.category == Category::Video)
             .unwrap_or(false);
+        let ctx = JobCtx::new();
         let thumb = if is_video {
-            let mut frames = cache.filmstrip(source, 1).map_err(err_to_string)?;
+            let mut frames = cache.filmstrip(source, 1, &ctx).map_err(err_to_string)?;
             frames
                 .pop()
                 .ok_or_else(|| "the video produced no preview frame".to_string())?
         } else {
-            cache.thumbnail(source, size).map_err(err_to_string)?
+            cache.thumbnail(source, size, &ctx).map_err(err_to_string)?
         };
         Ok(thumb.to_string_lossy().into_owned())
     })

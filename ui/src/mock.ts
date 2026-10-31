@@ -49,7 +49,7 @@ const DEFAULT_SETTINGS: Settings = {
   actions_key: 'alt',
   overwrite: 'never',
   history_limit: 100,
-  preview_cache_bytes: 256 * 1024 * 1024,
+  preview_cache_bytes: 128 * 1024 * 1024,
   ocr_languages: ['eng'],
   update_check: false,
   drag_backend: 'auto',
@@ -571,4 +571,20 @@ export function mockFileMetadata(path: string): MetaGroup[] {
     },
     group,
   ];
+}
+
+/** The mock's cache: a plausible number that resetting takes to zero. */
+let mockCacheBytes = 41 * 1024 * 1024;
+
+export function mockCacheStats(): { bytes: number; files: number; cap_bytes: number } {
+  return {
+    bytes: mockCacheBytes,
+    files: mockCacheBytes > 0 ? 37 : 0,
+    cap_bytes: 128 * 1024 * 1024,
+  };
+}
+
+export function mockClearCache(): { bytes: number; files: number; cap_bytes: number } {
+  mockCacheBytes = 0;
+  return mockCacheStats();
 }

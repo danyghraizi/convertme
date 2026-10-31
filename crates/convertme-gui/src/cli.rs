@@ -368,12 +368,13 @@ fn preview(args: &[String]) -> i32 {
         );
     };
 
+    let ctx = convertme_core::job::JobCtx::new();
     match kind {
-        "thumb" => match cache.thumbnail(&source, size) {
+        "thumb" => match cache.thumbnail(&source, size, &ctx) {
             Ok(path) => report(vec![path.to_string_lossy().into_owned()]),
             Err(e) => return engine_error(e),
         },
-        "filmstrip" => match cache.filmstrip(&source, frames) {
+        "filmstrip" => match cache.filmstrip(&source, frames, &ctx) {
             Ok(paths) => report(
                 paths
                     .iter()
@@ -382,7 +383,7 @@ fn preview(args: &[String]) -> i32 {
             ),
             Err(e) => return engine_error(e),
         },
-        "waveform" => match cache.waveform(&source) {
+        "waveform" => match cache.waveform(&source, &ctx) {
             Ok(w) => {
                 println!(
                     "{}",
@@ -396,7 +397,7 @@ fn preview(args: &[String]) -> i32 {
             }
             Err(e) => return engine_error(e),
         },
-        "channels" => match cache.waveform_channels(&source) {
+        "channels" => match cache.waveform_channels(&source, &ctx) {
             Ok((left, right)) => println!(
                 "{}",
                 serde_json::json!({
@@ -408,7 +409,7 @@ fn preview(args: &[String]) -> i32 {
             ),
             Err(e) => return engine_error(e),
         },
-        "pdf-pages" => match cache.pdf_pages(&source) {
+        "pdf-pages" => match cache.pdf_pages(&source, &ctx) {
             Ok(pages) => {
                 let paths: Vec<String> = pages
                     .iter()

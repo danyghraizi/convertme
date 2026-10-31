@@ -102,9 +102,11 @@ fn extract_text(job: &Job, cx: &Context<'_>, flavor: TextFlavor) -> Result<Vec<P
             write_text(&plain, &text)?;
             let out = cx.out("text.md");
             cx.ctx.set_stage("Converting text to Markdown");
+            // Pandoc 3 removed the `plain` reader; extracted text is valid Markdown,
+            // and saying so is what keeps this path working across pandoc upgrades.
             proc::run(
                 Cmd::new(&pandoc)
-                    .args(["-f", "plain", "-t", "gfm", "-o"])
+                    .args(["-f", "markdown", "-t", "gfm", "--wrap=none", "-o"])
                     .arg(&out)
                     .arg(&plain)
                     .budget(Budget::Short),
@@ -1357,6 +1359,33 @@ mod tests {
         assert!(
             widths[0] < 300.0,
             "the wide page is scaled down, not the narrow one up: {widths:?}"
+        );
+    }
+
+    /// PDF → Markdown runs through pandoc, whose reader names change between major
+    /// versions: `plain` was removed in pandoc 3, and nothing noticed because no test
+    /// exercised this path.
+    #[test]
+    fn pdf_to_markdown_keeps_the_words() {
+        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Pdftotext, ToolKey::Pandoc])
+        else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let Some(pdf) = make_pdf(&tools, dir.path(), "md", 1) else {
+            return;
+        };
+        let job = Job::new(
+            pdf,
+            Intent::Convert {
+                target: convertme_core::formats::FormatId("MD"),
+            },
+        );
+        let artifacts = run_in(&tools, dir.path(), &job).unwrap();
+        let text = fs::read_to_string(&artifacts[0]).unwrap();
+        assert!(
+            text.to_lowercase().contains("page"),
+            "the markdown lost the page's words: {text:?}"
         );
     }
 

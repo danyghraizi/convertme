@@ -36,6 +36,9 @@ pub fn run() -> i32 {
 
     // A crashed run must not leave work directories behind.
     convertme_core::queue::sweep_temp_dirs();
+    // Previews have an age limit too: the cap is a hard ceiling, but a file nobody has
+    // opened in a week is worth more as disk than as cache.
+    convertme_engines::preview::sweep_previews(convertme_core::paths::previews_dir(), 7);
 
     // Second launch: hand the paths over and exit without a window — unless the running
     // window is an older build, in which case it closes and this one takes over.
@@ -113,6 +116,8 @@ pub fn run() -> i32 {
             dialog::bleep_preview,
             dialog::photo_preview,
             dialog::file_metadata,
+            commands::cache_stats,
+            commands::clear_cache,
             commands::history,
             commands::cancel_job,
             commands::cancel_all,
@@ -145,6 +150,11 @@ pub fn run() -> i32 {
             1
         }
     }
+}
+
+/// Shrink an existing cache to the configured cap.
+fn enforce_cache_cap(root: &std::path::Path, cap: u64) {
+    convertme_engines::preview::PreviewCache::new(root.to_path_buf(), cap).enforce_cap();
 }
 
 /// Build the shared state once. Kept separate so tests can construct the same
@@ -190,6 +200,11 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
         tx,
     );
 
+    // The cap may have been lowered while the app was closed: apply it now rather
+    // than after the next preview.
+    let preview_cap = settings.preview_cache_bytes;
+    enforce_cache_cap(&paths::previews_dir(), preview_cap);
+
     let backend = convertme_drag::select(&settings.drag_backend);
     let mut selection = Selection::default();
     selection.set(initial_paths.clone());
@@ -201,9 +216,12 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
         settings: Mutex::new(settings),
         settings_path,
         db_path,
+        // One cap for both caches: the dispatcher's and the app state's. They used to
+        // be two literals (256 MB and the setting), so "clear the cache" and "shrink
+        // the cache" were talking about different objects.
         cache: convertme_engines::preview::PreviewCache::new(
             paths::previews_dir(),
-            256 * 1024 * 1024,
+            preview_cap,
         ),
         backend,
         background: false,
@@ -211,6 +229,7 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
         selection: Mutex::new(selection),
         progress: Mutex::new(Default::default()),
         previews: Mutex::new(Default::default()),
+        preview_guard: convertme_engines::preview::PreviewGuard::default(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         drag: Mutex::new(None),
         events: Mutex::new(Some(rx)),

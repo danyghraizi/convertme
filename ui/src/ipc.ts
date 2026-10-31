@@ -131,7 +131,7 @@ function readSettings(raw: unknown): Settings {
     overwrite:
       overwrite === 'ask' || overwrite === 'replace' || overwrite === 'never' ? overwrite : 'never',
     history_limit: num(o.history_limit, 100),
-    preview_cache_bytes: num(o.preview_cache_bytes, 256 * 1024 * 1024),
+    preview_cache_bytes: num(o.preview_cache_bytes, 128 * 1024 * 1024),
     ocr_languages: strings(o.ocr_languages),
     update_check: bool(o.update_check, false),
     drag_backend: str(o.drag_backend, 'auto'),
@@ -343,6 +343,32 @@ export async function toolFields(category: string, tool: string): Promise<Field[
   // The mock is parsed by the same reader the app uses, so a dropped kind fails here too.
   if (isMock()) return readFields(mock.mockToolFields(category, tool));
   return readFields(await invoke('tool_fields', { category, tool }));
+}
+
+export interface CacheStats {
+  bytes: number;
+  files: number;
+  cap_bytes: number;
+}
+
+export async function cacheStats(): Promise<CacheStats> {
+  if (isMock()) return mock.mockCacheStats();
+  const o = record(await invoke('cache_stats'), 'cache stats');
+  return {
+    bytes: typeof o.bytes === 'number' ? o.bytes : 0,
+    files: typeof o.files === 'number' ? o.files : 0,
+    cap_bytes: typeof o.cap_bytes === 'number' ? o.cap_bytes : 0,
+  };
+}
+
+export async function clearCache(): Promise<CacheStats> {
+  if (isMock()) return mock.mockClearCache();
+  const o = record(await invoke('clear_cache'), 'cache stats');
+  return {
+    bytes: typeof o.bytes === 'number' ? o.bytes : 0,
+    files: typeof o.files === 'number' ? o.files : 0,
+    cap_bytes: typeof o.cap_bytes === 'number' ? o.cap_bytes : 0,
+  };
 }
 
 export async function history(limit: number): Promise<HistoryRow[]> {
