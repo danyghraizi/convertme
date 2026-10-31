@@ -196,7 +196,8 @@ fn video_size(path: &Path, cx: &Context<'_>) -> Result<(u32, u32), JobError> {
 }
 
 /// Run a redaction job. `params.boxes` is an array of `Rect`; `params.color`
-/// (default `#000000`), `params.ranges` for video (array of `{start,end}`).
+/// (default `#000000`), `params.style` (`solid` | `blur`) for video, `params.ranges`
+/// for video (array of `{start,end}`) when the boxes carry no range of their own.
 pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let params = job.intent.params().cloned().unwrap_or_default();
     let boxes: Vec<Rect> = params
@@ -225,7 +226,7 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     );
 
     if is_video {
-        redact_video(job, cx, &boxes, &params)
+        redact_video(job, cx, &params)
     } else {
         redact_image(job, cx, &boxes, &color)
     }
@@ -269,10 +270,61 @@ fn redact_image(
     Ok(vec![out])
 }
 
+/// A box with its own time range. The dialog writes `start`/`end` on each box; the
+/// CLI may instead pass one global `ranges` list, which every box inherits.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct TimedRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
+    end: Option<f64>,
+}
+
+impl TimedRect {
+    fn rect(self) -> Rect {
+        Rect {
+            x: self.x,
+            y: self.y,
+            w: self.w,
+            h: self.h,
+        }
+    }
+}
+
+/// A time range as ffmpeg's filter `enable` expression, or an empty string for the
+/// whole clip.
+fn enable_expr(windows: &[(f64, f64)]) -> Option<String> {
+    if windows.is_empty() {
+        return None;
+    }
+    Some(
+        windows
+            .iter()
+            .map(|(start, end)| format!("between(t,{start:.3},{end:.3})"))
+            .collect::<Vec<_>>()
+            .join("+"),
+    )
+}
+
+/// `#rrggbb` as a filter colour accepted inside `drawbox=` (the `#` would start a
+/// comment in some filter parsers).
+fn filter_color(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(hex) = trimmed.strip_prefix('#') {
+        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("0x{hex}");
+        }
+    }
+    trimmed.to_string()
+}
+
 fn redact_video(
     job: &Job,
     cx: &Context<'_>,
-    boxes: &[Rect],
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<PathBuf>, JobError> {
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
@@ -284,7 +336,35 @@ fn redact_video(
     let out = cx.out(&format!("{}-redacted.{ext}", stem_of(&job.source)));
     let (w, h) = video_size(&job.source, cx)?;
 
-    // Time ranges the boxes apply to; default: the whole clip.
+    let style = params
+        .get("style")
+        .and_then(|v| v.as_str())
+        .unwrap_or("solid");
+    if style != "solid" && style != "blur" {
+        return Err(JobError::new(
+            ErrorCode::Unsupported,
+            "style must be solid or blur",
+        ));
+    }
+    let color = filter_color(
+        params
+            .get("color")
+            .and_then(|v| v.as_str())
+            .unwrap_or("#000000"),
+    );
+
+    let boxes: Vec<TimedRect> = serde_json::from_value(
+        params
+            .get("boxes")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(Vec::new())),
+    )
+    .map_err(|_| JobError::new(ErrorCode::Unsupported, "boxes must be rectangles"))?;
+    if boxes.is_empty() {
+        return Err(JobError::new(ErrorCode::Unsupported, "no boxes to redact"));
+    }
+
+    // The fallback when a box has no range of its own.
     let ranges: Vec<(f64, f64)> = params
         .get("ranges")
         .and_then(|v| v.as_array())
@@ -299,25 +379,45 @@ fn redact_video(
         })
         .unwrap_or_default();
 
-    // Per box: split the frame, crop the region, blur it, overlay it back for the
-    // requested time ranges. Chained so several boxes compose.
+    // Per box: the whole frame is split once per box; solid fills the region with
+    // `drawbox` (no copy of the frame), blur crops it, blurs and overlays it back.
     let mut chain = String::new();
     let mut current = "[0:v]".to_string();
-    for (i, b) in boxes.iter().enumerate() {
+    for (i, timed) in boxes.iter().enumerate() {
+        let b = timed.rect();
         let (x, y, bw, bh) = b.pixels(w, h);
-        let enable = if ranges.is_empty() {
-            String::new()
-        } else {
-            let expr = ranges
-                .iter()
-                .map(|(s, e)| format!("between(t,{s},{e})"))
-                .collect::<Vec<_>>()
-                .join("+");
-            format!(":enable='{expr}'")
+        let windows: Vec<(f64, f64)> = match (timed.start, timed.end) {
+            (Some(start), Some(end)) if start.is_finite() && end.is_finite() => {
+                if start < 0.0 || end <= start {
+                    return Err(JobError::new(
+                        ErrorCode::Unsupported,
+                        "each redaction range needs 0 <= start < end",
+                    ));
+                }
+                vec![(start, end)]
+            }
+            (None, None) => ranges.clone(),
+            _ => {
+                return Err(JobError::new(
+                    ErrorCode::Unsupported,
+                    "a redaction range needs both start and end",
+                ));
+            }
         };
-        chain.push_str(&format!(
-            "{current}split[base{i}][crop{i}];[crop{i}]crop={bw}:{bh}:{x}:{y},boxblur=luma_radius=24:luma_power=2[blur{i}];[base{i}][blur{i}]overlay={x}:{y}{enable}[v{i}];"
-        ));
+        let enable = enable_expr(&windows)
+            .map(|expr| format!(":enable='{expr}'"))
+            .unwrap_or_default();
+        if style == "solid" {
+            chain.push_str(&format!(
+                "{current}drawbox=x={x}:y={y}:w={bw}:h={bh}:color={color}:t=fill{enable}[v{i}];"
+            ));
+        } else {
+            chain.push_str(&format!(
+                "{current}split[base{i}][crop{i}];\
+                 [crop{i}]crop={bw}:{bh}:{x}:{y},boxblur=luma_radius=24:luma_power=2[blur{i}];\
+                 [base{i}][blur{i}]overlay={x}:{y}{enable}[v{i}];"
+            ));
+        }
         current = format!("[v{i}]");
     }
     let filter = chain.to_string().trim_end_matches(';').to_string();
@@ -462,5 +562,30 @@ mod tests {
             },
         );
         assert_eq!(run(&job, &cx).unwrap_err().code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn per_box_ranges_and_colours_build_the_filter() {
+        assert_eq!(
+            enable_expr(&[(1.0, 2.0), (3.5, 4.25)]).unwrap(),
+            "between(t,1.000,2.000)+between(t,3.500,4.250)"
+        );
+        assert_eq!(enable_expr(&[]), None);
+        assert_eq!(filter_color("#e4572e"), "0xe4572e");
+        assert_eq!(filter_color("black"), "black");
+        // A key the pixel encoder accepts and the filter parser does not.
+        assert_eq!(filter_color("#nothex"), "#nothex");
+    }
+
+    #[test]
+    fn a_timed_box_keeps_its_range() {
+        let boxed: TimedRect =
+            serde_json::from_str(r#"{"x":0.1,"y":0.2,"w":0.3,"h":0.4,"start":1.0,"end":2.0}"#)
+                .unwrap();
+        assert_eq!((boxed.start, boxed.end), (Some(1.0), Some(2.0)));
+        assert_eq!(boxed.rect().x, 0.1);
+        let plain: TimedRect =
+            serde_json::from_str(r#"{"x":0.1,"y":0.2,"w":0.3,"h":0.4}"#).unwrap();
+        assert!(plain.start.is_none() && plain.end.is_none());
     }
 }

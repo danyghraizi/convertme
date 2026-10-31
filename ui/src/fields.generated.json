@@ -5,23 +5,51 @@
   "audio": {
     "bleep": [
       {
-        "default": "",
+        "default": [],
+        "hidden": true,
         "key": "ranges",
         "kind": "text",
-        "label": "Ranges",
-        "unit": "start-end, comma separated"
+        "label": "Ranges"
       }
     ],
     "channels": [
       {
-        "default": "1",
+        "default": "2",
         "key": "channels",
-        "kind": "select",
-        "label": "Channels",
+        "kind": "segmented",
+        "label": "Output",
+        "option_labels": [
+          "Mono",
+          "Stereo"
+        ],
         "options": [
           "1",
           "2"
         ]
+      },
+      {
+        "default": 100.0,
+        "key": "left_volume",
+        "kind": "range",
+        "label": "Left volume",
+        "max": 200.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 100.0,
+        "key": "right_volume",
+        "kind": "range",
+        "label": "Right volume",
+        "max": 200.0,
+        "min": 0.0,
+        "show_if": {
+          "equals": "2",
+          "key": "channels"
+        },
+        "step": 1.0,
+        "unit": "%"
       }
     ],
     "compress": [
@@ -94,53 +122,103 @@
       {
         "default": -16.0,
         "key": "lufs",
-        "kind": "number",
+        "kind": "range",
         "label": "Target loudness",
         "max": -5.0,
         "min": -30.0,
         "step": 0.5,
         "unit": "LUFS"
+      },
+      {
+        "default": 11.0,
+        "key": "range",
+        "kind": "range",
+        "label": "Loudness range",
+        "max": 50.0,
+        "min": 1.0,
+        "step": 1.0,
+        "unit": "LU"
+      },
+      {
+        "default": -1.5,
+        "key": "true_peak",
+        "kind": "range",
+        "label": "True peak limit",
+        "max": 0.0,
+        "min": -9.0,
+        "step": 0.5,
+        "unit": "dBTP"
       }
     ],
     "trim": [
       {
         "default": 0.0,
+        "hidden": true,
         "key": "start",
         "kind": "number",
         "label": "Start",
         "max": 86400.0,
         "min": 0.0,
-        "step": 0.1,
+        "step": 0.01,
         "unit": "s"
       },
       {
         "default": 0.0,
+        "hidden": true,
         "key": "end",
         "kind": "number",
         "label": "End",
         "max": 86400.0,
         "min": 0.0,
-        "step": 0.1,
+        "step": 0.01,
         "unit": "s"
+      },
+      {
+        "default": false,
+        "help": "Removes a silent lead-in and tail; pauses inside the recording are kept.",
+        "key": "trim_silence",
+        "kind": "checkbox",
+        "label": "Trim silent ends automatically"
       }
     ],
     "visualize": [
       {
-        "default": "#0b0d10",
-        "key": "color",
-        "kind": "text",
-        "label": "Background"
+        "default": "waveform",
+        "key": "style",
+        "kind": "segmented",
+        "label": "Style",
+        "option_labels": [
+          "Waveform",
+          "Bars",
+          "Line"
+        ],
+        "options": [
+          "waveform",
+          "bars",
+          "line"
+        ]
       },
       {
-        "default": "1280x720",
-        "key": "size",
-        "kind": "select",
-        "label": "Size",
+        "default": "16:9",
+        "key": "shape",
+        "kind": "segmented",
+        "label": "Shape",
+        "option_labels": [
+          "Landscape · 16:9",
+          "Portrait · 9:16",
+          "Square · 1:1"
+        ],
         "options": [
-          "1280x720",
-          "1920x1080",
-          "1080x1080"
+          "16:9",
+          "9:16",
+          "1:1"
         ]
+      },
+      {
+        "default": "#101014",
+        "key": "color",
+        "kind": "color",
+        "label": "Background"
       }
     ]
   },
@@ -567,7 +645,6 @@
     "merge": [
       {
         "default": [],
-        "hidden": true,
         "key": "order",
         "kind": "files",
         "label": "Order"
@@ -656,10 +733,25 @@
     ],
     "crop": [
       {
+        "default": [],
+        "hidden": true,
+        "key": "boxes",
+        "kind": "boxes",
+        "label": "Area to keep"
+      },
+      {
         "default": "free",
         "key": "aspect",
-        "kind": "select",
+        "kind": "segmented",
         "label": "Aspect ratio",
+        "option_labels": [
+          "Free",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:2"
+        ],
         "options": [
           "free",
           "1:1",
@@ -673,7 +765,6 @@
     "join": [
       {
         "default": [],
-        "hidden": true,
         "key": "order",
         "kind": "files",
         "label": "Order"
@@ -689,39 +780,46 @@
         "label": "Areas to blur"
       },
       {
-        "default": "",
-        "key": "ranges",
-        "kind": "text",
-        "label": "Time ranges",
-        "unit": "start-end, comma separated"
+        "default": "solid",
+        "key": "style",
+        "kind": "segmented",
+        "label": "Style",
+        "option_labels": [
+          "Solid",
+          "Blur"
+        ],
+        "options": [
+          "solid",
+          "blur"
+        ]
+      },
+      {
+        "default": "#000000",
+        "key": "color",
+        "kind": "color",
+        "label": "Colour",
+        "show_if": {
+          "equals": "solid",
+          "key": "style"
+        }
       }
     ],
     "snapshot": [
       {
-        "default": "",
+        "default": [],
+        "hidden": true,
         "key": "times",
         "kind": "text",
-        "label": "Timestamps",
-        "unit": "seconds, comma separated"
-      },
-      {
-        "default": 0.0,
-        "key": "interval",
-        "kind": "number",
-        "label": "Or every",
-        "max": 3600.0,
-        "min": 0.0,
-        "step": 0.1,
-        "unit": "s"
+        "label": "Frames"
       }
     ],
     "speed": [
       {
-        "default": 2.0,
+        "default": 1.0,
         "key": "factor",
-        "kind": "number",
+        "kind": "range",
         "label": "Speed",
-        "max": 8.0,
+        "max": 4.0,
         "min": 0.25,
         "step": 0.05,
         "unit": "×"
@@ -729,32 +827,34 @@
     ],
     "split": [
       {
-        "default": "",
+        "default": [],
+        "hidden": true,
         "key": "sections",
         "kind": "text",
-        "label": "Sections",
-        "unit": "start-end, comma separated"
+        "label": "Sections"
       }
     ],
     "trim": [
       {
         "default": 0.0,
+        "hidden": true,
         "key": "start",
         "kind": "number",
         "label": "Start",
         "max": 86400.0,
         "min": 0.0,
-        "step": 0.1,
+        "step": 0.01,
         "unit": "s"
       },
       {
         "default": 0.0,
+        "hidden": true,
         "key": "end",
         "kind": "number",
         "label": "End",
         "max": 86400.0,
         "min": 0.0,
-        "step": 0.1,
+        "step": 0.01,
         "unit": "s"
       }
     ]
