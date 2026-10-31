@@ -194,6 +194,44 @@ export default function ToolModal(props: ToolModalProps) {
     sheet?.style.removeProperty('--sheet-dy');
   }
 
+  /**
+   * The corner, the right edge and the bottom edge all resize the sheet. The old
+   * transparent corner grip was the only affordance and its height stopped at
+   * 780 px, which read as "it will not resize vertically".
+   */
+  function beginResize(event: PointerEvent, axes: 'e' | 's' | 'se'): void {
+    const target = event.currentTarget as HTMLElement;
+    target.setPointerCapture(event.pointerId);
+    const rect = sheet?.getBoundingClientRect();
+    const start = {
+      x: event.clientX,
+      y: event.clientY,
+      w: rect?.width ?? 600,
+      h: rect?.height ?? 620,
+    };
+    const move = (e: PointerEvent): void => {
+      const maxWidth = Math.min(window.innerWidth * 0.96, 920);
+      const maxHeight = window.innerHeight * 0.94;
+      if (axes.includes('e')) {
+        const width = Math.min(maxWidth, Math.max(420, start.w + (e.clientX - start.x)));
+        sheet?.style.setProperty('--modal-w', `${Math.round(width)}px`);
+      }
+      if (axes.includes('s')) {
+        const height = Math.min(maxHeight, Math.max(260, start.h + (e.clientY - start.y)));
+        sheet?.style.setProperty('--modal-h', `${Math.round(height)}px`);
+      }
+    };
+    const up = (): void => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', up);
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up);
+    target.addEventListener('pointercancel', up);
+    event.preventDefault();
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -329,27 +367,30 @@ export default function ToolModal(props: ToolModalProps) {
         <span
           class="modal-grip"
           role="separator"
-          aria-label="Resize this window"
-          onPointerDown={(event) => {
-            const target = event.currentTarget;
-            target.setPointerCapture(event.pointerId);
-            const rect = sheet?.getBoundingClientRect();
-            const start = { x: event.clientX, y: event.clientY, w: rect?.width ?? 600, h: rect?.height ?? 620 };
-            const move = (e: PointerEvent): void => {
-              const width = Math.min(window.innerWidth * 0.94, Math.max(440, start.w + (e.clientX - start.x)));
-              const height = Math.min(window.innerHeight * 0.92, Math.max(320, start.h + (e.clientY - start.y)));
-              sheet?.style.setProperty('--modal-w', `${Math.round(width)}px`);
-              sheet?.style.setProperty('--modal-h', `${Math.round(height)}px`);
-            };
-            const up = (): void => {
-              target.removeEventListener('pointermove', move);
-              target.removeEventListener('pointerup', up);
-              target.removeEventListener('pointercancel', up);
-            };
-            target.addEventListener('pointermove', move);
-            target.addEventListener('pointerup', up);
-            target.addEventListener('pointercancel', up);
-          }}
+          aria-label="Resize this dialog from the corner"
+          onPointerDown={(event) => beginResize(event, 'se')}
+        >
+          <svg viewBox="0 0 22 22" aria-hidden="true">
+            <path
+              d="M20 2 L2 20 M20 9 L9 20 M20 16 L16 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+          </svg>
+        </span>
+        <span
+          class="modal-resize-e"
+          role="separator"
+          aria-label="Resize this dialog horizontally"
+          onPointerDown={(event) => beginResize(event, 'e')}
+        />
+        <span
+          class="modal-resize-s"
+          role="separator"
+          aria-label="Resize this dialog vertically"
+          onPointerDown={(event) => beginResize(event, 's')}
         />
         <header
           class="sheet-head"
@@ -416,7 +457,7 @@ export default function ToolModal(props: ToolModalProps) {
               </div>
             </Show>
             <Show when={props.tool.id === 'redact' && props.category === 'images'}>
-              <div class="field">
+              <div class="field is-block">
                 <span class="field-label">Areas to fill</span>
                 <BoxesEditor
                   value={Array.isArray(values.boxes) ? (values.boxes as FieldValue) : []}
@@ -469,48 +510,48 @@ export default function ToolModal(props: ToolModalProps) {
               />
             </Show>
             <Show when={props.tool.id === 'add-background' && values.mode !== 'image'}>
-              <div class="fill-preset-rows">
-                <div class="fill-presets" role="group" aria-label="Solid backgrounds">
-                  <For each={SOLID_PRESETS}>
-                    {(preset) => (
-                      <button
-                        type="button"
-                        class="fill-preset"
-                        style={{ background: preset.css }}
-                        title={preset.label}
-                        aria-label={preset.label}
-                        onClick={() => applyFill(preset)}
-                      />
-                    )}
-                  </For>
-                </div>
-                <div class="fill-presets" role="group" aria-label="Gradient backgrounds">
-                  <For each={GRADIENT_PRESETS}>
-                    {(preset) => (
-                      <button
-                        type="button"
-                        class="fill-preset"
-                        style={{ background: preset.css }}
-                        title={preset.label}
-                        aria-label={preset.label}
-                        onClick={() => applyFill(preset)}
-                      />
-                    )}
-                  </For>
-                  <button
-                    type="button"
-                    class="fill-preset fill-preset-image"
-                    title="Use another image"
-                    aria-label="Use another image"
-                    onClick={() => setValues('mode', 'image')}
-                  >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
-                      <circle cx="5.6" cy="6.4" r="1.3" />
-                      <path d="M2.6 12.2l3.6-3.7 2.6 2.4 2.2-2.1 2.4 3.4" />
-                    </svg>
-                  </button>
-                </div>
+              {/* One row: solids | gradients | another image. The separators are
+                  part of the grammar, not decoration on a wrapped pile of swatches. */}
+              <div class="fill-presets" role="group" aria-label="Ready-made backgrounds">
+                <For each={SOLID_PRESETS}>
+                  {(preset) => (
+                    <button
+                      type="button"
+                      class="fill-preset"
+                      style={{ background: preset.css }}
+                      title={preset.label}
+                      aria-label={preset.label}
+                      onClick={() => applyFill(preset)}
+                    />
+                  )}
+                </For>
+                <span class="fill-separator" aria-hidden="true" />
+                <For each={GRADIENT_PRESETS}>
+                  {(preset) => (
+                    <button
+                      type="button"
+                      class="fill-preset"
+                      style={{ background: preset.css }}
+                      title={preset.label}
+                      aria-label={preset.label}
+                      onClick={() => applyFill(preset)}
+                    />
+                  )}
+                </For>
+                <span class="fill-gap" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="fill-preset fill-preset-image"
+                  title="Use another image"
+                  aria-label="Use another image"
+                  onClick={() => setValues('mode', 'image')}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+                    <circle cx="5.6" cy="6.4" r="1.3" />
+                    <path d="M2.6 12.2l3.6-3.7 2.6 2.4 2.2-2.1 2.4 3.4" />
+                  </svg>
+                </button>
               </div>
             </Show>
 

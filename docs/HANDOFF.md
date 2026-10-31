@@ -12,10 +12,11 @@ then `AGENTS.md` (rules) and `docs/LESSONS.md` (the failures that produced the r
 
 | | |
 |---|---|
-| Branch | `master`, clean tree |
-| Last code commit | `a57b948` — "the dialog is one movable sheet, and the controls fit their rows" |
+| Branch | `master` |
+| Last code commit | `HEAD` — "restore the field grammar and make previews play" (Round 3) |
+| Previous code commit | `a57b948` — "the dialog is one movable sheet, and the controls fit their rows" |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
-| Proof | `artifacts/final5/app` (real window), `artifacts/final3/ui` (layout), `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
+| Proof | `artifacts/round3/ui` (layout), `artifacts/round3/app/*` (targeted real-window scenarios), `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
 
 Nothing is pushed; CI runs on push to `master` and PRs, and merge commits carry
 `[skip ci]`.
@@ -119,6 +120,36 @@ Cause → fix → measurement for each; lessons 57–63.
 | timecodes untypable in a redaction row | the row list was keyed by identity: every keystroke rebuilt the focused `<input>` | `<Index>` rows; number inputs commit on change | `tool-video-redact` types `0.5`, frames change inside 0.5–2.0 s |
 | box spacing | 4 px gaps around 18 px swatches | 6 px gaps around 20 px swatches | `images-collage.png` |
 
+## Round 3 — the design regression and the media path
+
+Cause → fix → measurement; lessons 64–70.
+
+| Report | Cause | Fix | Proof |
+|---|---|---|---|
+| "cannot resize vertically", "boxes small, some full width" | `.field { align-self: start }` in the flex-column field list: cross-axis alignment shrink-wrapped every row (a 199 px select, a 129 px number box, a 552 px slider) | field grammar restored to the product's stacked form: label above a full-width control; selects share the text-input frame; segmented controls are one equal-cell grid | `ui-shots.py`: 31 dialogs, no failures; the contract now asserts ≥ 90 % row fill and left alignment |
+| "dropdown is a pill and far from Image size", "aspect ratio is one big pill" | label-left 34 % column plus a pill `<select>` | stacked labels, rectangular select, equal-width aspect cells | crop is 7 × 76 px cells in a 552 px row; `images-add-background` screenshot |
+| background presets stacked on the left | the one-row preset markup had been split into two groups | one row: solids \| separator \| gradients \| gap \| image button | `images-add-background` |
+| dialog resized only a little vertically | invisible corner grip and a hard 780 px height ceiling | visible corner and bottom/right grips, `94vh` ceiling, app window minimum 720 × 480 | a drag grew the sheet from 622.5 to 740 px |
+| "video does not play", "speed does nothing" | Play moved a playhead over a static strip; the speed field never reached the preview | `video_frames` samples the clip (10 fps, 240-frame budget); Play advances the still by the speed factor; trim bounds and the readout divider are in the transport | 6 s clip: 60 frames in 0.55 s, cached; mock Play moved frame 1 → 2 at 0.40 s, 4× reached 1.6 s in 0.4 s |
+| "Trim start/end drag the playhead" | the handle setters called `seek` | handles only change the range; seeking/Play clamp into it; the cursor may sit outside until moved | trim start 2.0 left the cursor at 0; Play started at 2.0 |
+| crop video had two previews | a second `Step through` timeline under the crop canvas | removed; the crop canvas is the only surface | `previews: 1`, `timelines: 0` |
+| "audio opens another app", "app crashed playing Trim audio" | `<audio>` in `WaveformTimeline` and `preview.tsx`; `play_preview` called `xdg-open` | no media element anywhere; `play_preview` uses a headless sink; preview window plays video as stills and audio through the sink | `grep` clean; `tool-audio-trim` presses Play and the dialog stays open |
+| visualizer background did nothing | the preview never read `color` | frame background from `values.color`, wave ink chosen by luminance | light `#e6e6f2` → dark ink, dark `#101014` → white |
+| metadata fields empty | PDF `/Info` indirect; EXIF ASCII values quoted; PNG Description collapsed into Title; a fresh JPEG has no EXIF block | dereference/decode PDF Info; read EXIF bytes unquoted; separate Description; start a new EXIF block when none exists | new Rust tests round-trip all writable image tags and six PDF Info keys; `tool-image-metadata` shows the existing Title |
+| 2 PDFs, 1 card, black preview; "1 pages" | ImageMagick's PDF decode; `analyze` dropped failed thumbs; `PageOrganizer` loaded on mount only | PDF cover through `pdf_pages`; one card per readable file; path-keyed page load with a stale token; `pdf-pages` added to the CLI verb list | `tool-pdf-organize-multi`: both names, 5 page cards then 3 after Next file; CLI `pdf-pages` prints 5 |
+
+### Round 3 measurement
+
+| Layer | Result |
+|---|---|
+| `app-e2e.py` | **65 passed, 0 failed, 6 skipped** in 71 scenarios (`artifacts/round3/app/full`) |
+| `ui-shots.py` | **31 dialogs of 53 tools, no layout failures** (`artifacts/round3/ui`) |
+| `preflight.sh` | ok: gate, fmt, UI typecheck+tests+build, generated-field check, clippy `-D warnings`, workspace tests, clean build, deb 112 MiB |
+| Targeted | metadata prefill, PDF cover + page switch, all video/audio tools, `tool-audio-trim` Play, CLI `frames` (60 stills in 0.55 s) and `pdf-pages` (5) |
+
+The six skips are the five categories with no backend tools and the LibreOffice-dependent
+slides→PDF conversion, unchanged from the previous handoff.
+
 ## Numbers from the final run
 
 | Layer | Result |
@@ -199,6 +230,14 @@ Measured before this round; no hot path changed except the audio preview (now a
 6. **Perf was not re-measured this round.** The only touched hot path is the audio
    preview; re-run `perf-audit.py --baseline artifacts/perf/baseline.json` when a change
    touches previews, the queue or startup.
+7. **Video playback is a still sequence, not a decoded stream.** `video_frames` samples
+   at 10 fps for short clips and within a 240-frame budget for long ones (a clip over
+   4 minutes plays at 1 fps). The web view must not mount `<video>` (lesson 61/66);
+   a smoother player needs a proven out-of-process sink.
+8. **Audio playback is delegated to a headless system player.** It stays in the app's
+   lifetime (no desktop window), but there is no pause/seek: the command resolves when
+   the sound ends. `play_preview` probes `ffplay`, `mpv`, `paplay`, `pw-play`, `aplay`
+   and falls back to the desktop opener only when none exists.
 
 ## Traps specific to this codebase
 

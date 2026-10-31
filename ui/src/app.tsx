@@ -4,7 +4,7 @@ import HistoryList from './components/history-list';
 import SettingsPanel from './components/settings-panel';
 import ToolModal from './components/tool-modal';
 import { CATEGORIES, FALLBACK_TOOLS, categoryLabel } from './catalog';
-import { baseName } from './format';
+import { baseName, extensionOf } from './format';
 import { mergePaths } from './paths';
 import { keyLabel } from './keys';
 import type {
@@ -581,7 +581,16 @@ export default function App() {
                   <For each={result().thumbs}>
                     {(thumb) => (
                       <li class="thumb">
-                        <img src={ipc.assetUrl(thumb.thumb)} alt="" loading="lazy" />
+                        <Show
+                          when={thumb.thumb}
+                          fallback={
+                            <span class="thumb-blank">
+                              {extensionOf(thumb.path).toUpperCase() || 'FILE'}
+                            </span>
+                          }
+                        >
+                          <img src={ipc.assetUrl(thumb.thumb)} alt="" loading="lazy" />
+                        </Show>
                         <button
                           type="button"
                           class="thumb-remove"

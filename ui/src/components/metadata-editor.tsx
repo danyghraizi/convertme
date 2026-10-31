@@ -25,9 +25,14 @@ export default function MetadataEditor(props: MetadataEditorProps) {
   const [query, setQuery] = createSignal('');
   const [note, setNote] = createSignal('');
 
+  let loadToken = 0;
+
   // The dialog can switch files; the table follows the path instead of loading once.
+  // A response that lands after the path changed would show the previous file's tags,
+  // so each load carries a token and only the newest one is kept.
   createEffect(() => {
     const path = props.path;
+    const token = ++loadToken;
     setGroups([]);
     setNote('');
     if (!path) {
@@ -36,8 +41,13 @@ export default function MetadataEditor(props: MetadataEditorProps) {
     }
     void ipc
       .fileMetadata(path)
-      .then((loaded) => setGroups(loaded))
-      .catch((error) => setNote(error instanceof Error ? error.message : 'Metadata unavailable'));
+      .then((loaded) => {
+        if (token === loadToken) setGroups(loaded);
+      })
+      .catch((error) => {
+        if (token !== loadToken) return;
+        setNote(error instanceof Error ? error.message : 'Metadata unavailable');
+      });
   });
 
   const meta = (): MetaFields => asMeta(props.value);

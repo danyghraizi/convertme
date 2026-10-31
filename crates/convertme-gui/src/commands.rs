@@ -241,6 +241,39 @@ fn err_to_string(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// The cover of a PDF: its first rendered page.
+///
+/// ImageMagick reads a PDF by shelling out to Ghostscript and, without that policy,
+/// returns a black rectangle. The page cache already renders pages the way the
+/// organizer sees them, so it is the only correct source for a document's still.
+fn pdf_cover(
+    cache: &convertme_engines::preview::PreviewCache,
+    source: &Path,
+    ctx: &JobCtx,
+) -> Result<PathBuf, String> {
+    cache
+        .pdf_pages(source, ctx)
+        .map_err(err_to_string)?
+        .into_iter()
+        .next()
+        .and_then(|page| page.thumb)
+        .ok_or_else(|| "the document produced no page thumbnail".to_string())
+}
+
+/// A still for a strip card: a PDF's cover, otherwise the format's thumbnail. An
+/// error here becomes a placeholder card, not a missing file.
+fn still_for(
+    cache: &convertme_engines::preview::PreviewCache,
+    source: &Path,
+    size: u32,
+    ctx: &JobCtx,
+) -> Result<PathBuf, String> {
+    match Registry::detect(source).map(|format| format.category) {
+        Some(Category::Pdf) => pdf_cover(cache, source, ctx),
+        _ => cache.thumbnail(source, size, ctx).map_err(err_to_string),
+    }
+}
+
 #[tauri::command]
 pub fn boot(window: tauri::WebviewWindow, state: State<'_, AppState>) -> Boot {
     let settings = state.settings.lock().clone();
@@ -324,24 +357,35 @@ pub async fn analyze(state: State<'_, AppState>, paths: Vec<String>) -> Result<A
         }
     }
 
-    // Thumbnails run off the UI thread; the first eight are enough for the strip.
+    // Thumbnails run off the UI thread. Every file that exists keeps a card, in input
+    // order: a preview that fails (an empty or unsupported file) yields an empty path
+    // and the strip draws the extension instead. Dropping it would hide a file from
+    // the selection the user made; `skipped` still explains the ones that will fail.
+    let readable: Vec<(PathBuf, u64)> = files
+        .iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((path.clone(), meta.len()))
+        })
+        .collect();
     let cache_root = state.cache.root().to_path_buf();
     let cap = state.settings.lock().preview_cache_bytes;
     let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
-    let wanted: Vec<PathBuf> = files.iter().take(8).cloned().collect();
     let ctx = state.preview_guard.begin("strip");
     let thumbs_result = tauri::async_runtime::spawn_blocking(move || {
-        let mut out = Vec::new();
-        for path in wanted {
-            if let Ok(thumb) = cache.thumbnail(&path, 512, &ctx) {
-                out.push(Thumb {
-                    path: path.to_string_lossy().into_owned(),
-                    thumb: thumb.to_string_lossy().into_owned(),
-                    size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-                });
-            }
-        }
-        out
+        readable
+            .into_iter()
+            .map(|(path, size)| Thumb {
+                thumb: still_for(&cache, &path, 512, &ctx)
+                    .map(|thumb| thumb.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: path.to_string_lossy().into_owned(),
+                size,
+            })
+            .collect::<Vec<_>>()
     })
     .await
     .unwrap_or_default();
@@ -1357,16 +1401,18 @@ pub async fn preview_thumb(
         let source = Path::new(&path);
         // A video has no still frame for ImageMagick. Ask the filmstrip for one
         // directly: letting ImageMagick fail first can block the dialog on a decode
-        // attempt, and the redaction/trim preview stays "unavailable".
-        let is_video = Registry::detect(source)
-            .map(|format| format.category == Category::Video)
-            .unwrap_or(false);
+        // attempt, and the redaction/trim preview stays "unavailable". A PDF goes to
+        // its page renderer for the same reason, and because ImageMagick's PDF decode
+        // yields a black rectangle.
+        let category = Registry::detect(source).map(|format| format.category);
         let ctx = JobCtx::new();
-        let thumb = if is_video {
+        let thumb = if category == Some(Category::Video) {
             let mut frames = cache.filmstrip(source, 1, &ctx).map_err(err_to_string)?;
             frames
                 .pop()
                 .ok_or_else(|| "the video produced no preview frame".to_string())?
+        } else if category == Some(Category::Pdf) {
+            pdf_cover(&cache, source, &ctx)?
         } else {
             cache.thumbnail(source, size, &ctx).map_err(err_to_string)?
         };

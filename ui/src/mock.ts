@@ -456,6 +456,14 @@ export function mockFilmstrip(frames: number): string[] {
   );
 }
 
+/** A playback sequence for the timeline: enough stills to see Play move. */
+export function mockPlaybackFrames(max: number): string[] {
+  const count = Math.max(1, Math.min(36, max));
+  return Array.from({ length: count }, (_, index) =>
+    svgDataUrl(`${index + 1}`, 320, 180),
+  );
+}
+
 /** A waveform that looks like speech: loud in the middle, quiet at the ends. */
 export function mockWaveformData(path: string): WaveformData {
   const info = mockMediaInfo(path);

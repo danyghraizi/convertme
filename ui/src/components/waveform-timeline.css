@@ -1,7 +1,7 @@
 /* Audio timeline: peaks, the marked ranges, and the two ends of the clip. */
 .waveform-timeline {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -158,13 +158,13 @@
   color: var(--ink-3);
 }
 
+.waveform-play {
+  min-width: 84px;
+}
+
 .waveform-transport {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
-}
-
-.waveform-audio {
-  display: none;
 }

@@ -22,11 +22,20 @@ the failures that produced each rule, is `docs/LESSONS.md`.
   a second control for it.
 - A tool dialog is **one sheet**: head (drag handle, close at the top right), optional
   preview band, scrolling settings, footer. The preview is pinned *outside* the scroller;
-  a control row is as tall as its content (`align-self: start` in a flex column) — a
-  stretched row let tall controls paint over the next one.
+  a control row is as tall as its content.
+- **Field grammar:** the label sits **above** a full-width control. Do not use
+  `align-self: start` on `.field` inside the flex-column `.modal-fields` — the flex cross
+  axis is horizontal, so it shrink-wraps the row (a 199 px select beside a 552 px input).
+  `ui-shots.py` asserts every non-block control fills at least 90 % of its row.
+- The sheet resizes from a visible corner grip and its bottom/right edges; its height
+  ceiling is the window (`94vh`), not a hard 780 px.
+- The **web view never mounts `<audio>` or `<video>`** — not in a dialog, and not in
+  `preview.tsx`. Audio plays through `play_preview` (a headless `ffplay`/`mpv`/`paplay`/
+  `pw-play`/`aplay` sink); video walks the `video_frames` still sequence. Playback speed
+  scales the playhead rate.
 - The front end never decodes audio or video: WebKitGTK's media stack crashed the process.
-  The video transport walks the filmstrip; a produced audio preview is handed to the
-  desktop player (`play_preview`).
+  Video playback walks the `video_frames` sequence; a produced audio preview plays through
+  the system sink in `play_preview`, without opening a desktop app.
 - The dialog's copy (title, primary action, benefit lines) lives on `Tool` in
   `crates/convertme-core/src/formats.rs` and reaches the UI through the wheel payload,
   `ui/src/catalog.ts` (the empty-wheel fallback) and `convertme probe --tools`.
@@ -47,6 +56,15 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 
 - Every external command goes through `crates/convertme-engines/src/proc.rs`: argv arrays,
   cache limits, watchdog, bounded stderr.
+- A PDF still is a page render (`PreviewCache::pdf_pages`), never ImageMagick's black
+  rectangle. Every selected file keeps a card even when its thumbnail fails.
+- A page grid loads per path (`createEffect`), not on mount: the second file of a
+  multi-file dialog must show its own page count and cards. Ignore a stale response.
+- A metadata writer must be able to add an EXIF block to a file that has none
+  (`little_exif::Metadata::new()` when `new_from_path` says "No EXIF data found").
+  PDF `/Info` is usually indirect; dereference it and decode its strings.
+- A CLI verb is in `CLI_VERBS` *and* the `run` dispatch. A dispatch arm missing from the
+  list launches the window instead (the `pdf-pages` trap).
 - Crop with absolute offsets, never `-gravity center` with signed offsets (it clips).
 - Bound intermediates: crop the source, then scale to the canvas; never upscale to
   `zoom × canvas`. Compose at depth 8.

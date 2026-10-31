@@ -17,7 +17,8 @@ ConvertMe — offline file conversion
 Usage:
   convertme convert <file>... --to <FORMAT> [--overwrite never|ask|replace]
   convertme tool <file>... --tool <TOOL> [--params '<json>'] [--category <CATEGORY>]
-  convertme preview <file> --kind <thumb|filmstrip|waveform|pdf-pages|photo|compress>
+  convertme preview <file> --kind <thumb|filmstrip|frames|waveform|pdf-pages|photo|compress>
+  convertme pdf-pages <file>
   convertme probe [--tools|--fields]
   convertme history [--limit N]
   convertme sweep
@@ -33,6 +34,9 @@ tool:
   convertme tool <file>... --tool <TOOL> [--params '<json>']
                   [--category <CATEGORY>] [--overwrite never|ask|replace]
 
+pdf-pages:
+  convertme pdf-pages <file>
+
 history:
   convertme history [--limit N]
 ";
@@ -40,24 +44,26 @@ history:
 /// The verbs that make this a command-line run rather than a window launch.
 ///
 /// One list, used by `main` to decide which front end to start: a verb that exists
-/// here but not there silently opens the window instead of doing the work (the
+/// in `run` but not here silently opens the window instead of doing the work (the
 /// `preview` subcommand did exactly that and hung a headless harness).
+pub const CLI_VERBS: &[&str] = &[
+    "convert",
+    "tool",
+    "preview",
+    "pdf-pages",
+    "probe",
+    "history",
+    "sweep",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "version",
+];
+
 pub fn is_cli_command(verb: &str) -> bool {
-    matches!(
-        verb,
-        "convert"
-            | "tool"
-            | "preview"
-            | "probe"
-            | "history"
-            | "sweep"
-            | "help"
-            | "--help"
-            | "-h"
-            | "--version"
-            | "-V"
-            | "version"
-    )
+    CLI_VERBS.contains(&verb)
 }
 
 pub fn run(args: &[String]) -> i32 {
@@ -81,6 +87,7 @@ pub fn run(args: &[String]) -> i32 {
         "convert" => convert(&args[1..]),
         "tool" => tool(&args[1..]),
         "preview" => preview(&args[1..]),
+        "pdf-pages" => pdf_pages(&args[1..]),
         "probe" => probe(&args[1..]),
         "history" => history(&args[1..]),
         "sweep" => {
@@ -322,7 +329,9 @@ fn tool(args: &[String]) -> i32 {
 fn preview(args: &[String]) -> i32 {
     let parsed = match Args::parse(
         args,
-        &["--kind", "--size", "--frames", "--params", "--help"],
+        &[
+            "--kind", "--size", "--frames", "--fps", "--params", "--help",
+        ],
     ) {
         Ok(parsed) => parsed,
         Err(message) => return usage_error(&message),
@@ -368,6 +377,10 @@ fn preview(args: &[String]) -> i32 {
         .value("--frames")
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
+    let fps: u32 = parsed
+        .value("--fps")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
 
     let report = |paths: Vec<String>| {
         let bytes: u64 = paths
@@ -388,6 +401,15 @@ fn preview(args: &[String]) -> i32 {
             Err(e) => return engine_error(e),
         },
         "filmstrip" => match cache.filmstrip(&source, frames, &ctx) {
+            Ok(paths) => report(
+                paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(e) => return engine_error(e),
+        },
+        "frames" => match cache.preview_frames(&source, fps, frames, &ctx) {
             Ok(paths) => report(
                 paths
                     .iter()
@@ -604,6 +626,49 @@ fn execute(files: &[PathBuf], category: Category, intent: Intent, policy: Overwr
     if failures == 0 { 0 } else { 1 }
 }
 
+/// Print a PDF's page count and the pages it rendered.
+///
+/// The organizer's dialog calls the same `PreviewCache::pdf_pages`. This verb exists
+/// so the page count can be checked headlessly: as a top-level command it is in
+/// `is_cli_command`, so it never falls through to a window launch.
+fn pdf_pages(args: &[String]) -> i32 {
+    let parsed = match Args::parse(args, &["--help"]) {
+        Ok(parsed) => parsed,
+        Err(message) => return usage_error(&message),
+    };
+    if parsed.has("--help") {
+        print!("{USAGE}");
+        return 0;
+    }
+    let Some(source) = parsed.files.first().cloned() else {
+        return usage_error("pdf-pages needs a file");
+    };
+    let cap = convertme_core::settings::Settings::load(&paths::settings_json()).preview_cache_bytes;
+    let cache = convertme_engines::preview::PreviewCache::new(paths::previews_dir(), cap);
+    let ctx = convertme_core::job::JobCtx::new();
+    match cache.pdf_pages(&source, &ctx) {
+        Ok(pages) => {
+            let thumbs: Vec<String> = pages
+                .iter()
+                .filter_map(|page| page.thumb.as_ref())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "kind": "pdf-pages",
+                    "pages": pages.len(),
+                    "thumbs": thumbs.len(),
+                    "paths": thumbs,
+                    "bytes": 0,
+                })
+            );
+            0
+        }
+        Err(e) => engine_error(e),
+    }
+}
+
 fn probe(args: &[String]) -> i32 {
     // `--tools` prints the tool table as JSON. The harnesses assert the dialog's copy
     // against it, so they read the Rust table itself instead of keeping a fourth copy
@@ -712,6 +777,30 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn the_dispatch_verbs_are_all_cli_verbs() {
+        // Every verb `run` dispatches must be in the shared list: otherwise the binary
+        // launches the window instead of doing the work (LESSONS 42).
+        for verb in [
+            "convert",
+            "tool",
+            "preview",
+            "pdf-pages",
+            "probe",
+            "history",
+            "sweep",
+            "help",
+            "--help",
+            "-h",
+            "--version",
+            "-V",
+            "version",
+        ] {
+            assert!(is_cli_command(verb), "{verb} is not a CLI verb");
+        }
+        assert!(!is_cli_command("open"));
     }
 
     #[test]

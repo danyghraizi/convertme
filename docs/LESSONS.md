@@ -876,11 +876,9 @@ could kill the app. Replacing it with an off-DOM `new Audio(...).play()` was not
 initialising the backend alone wedged the web process, the dialog vanished from the
 accessibility tree, and the harness could no longer press Save.
 
-**Rule.** The window must not depend on the platform decoder to stay alive. The video
-transport walks the filmstrip playhead over a strip of frames (no decode), and an audio
-preview is written as a file and handed to the desktop's own player through one spawn
-helper. If in-app playback is ever wanted back, it needs a proven sink and a fallback
-that cannot take the process down — and a test that plays a file in the real window.
+**Rule.** The window must not depend on the platform decoder to stay alive. Video is a
+sequence of stills, and an audio preview is played through a headless system sink (see
+66); neither needs a media element. A test must press Play and keep the dialog alive.
 
 **Evidence.** `dialogs-video` keeps the process alive through Play/Step;
 `tool-audio-bleep` finds the MP3 in the cache, the tone at the drawn range, and the
@@ -916,3 +914,104 @@ command's string. An error is the one message the user needs; never replace it.
 
 **Evidence.** `tool-audio-bleep` (`the bleep preview file was written`) failed before the
 fix and passes after it: the cache gains the MP3 and the dialog plays it.
+
+## 64. In a flex column, `align-self` is horizontal
+
+**Trap.** The dialog's field list is `display: flex; flex-direction: column`. A rule
+added to stop tall controls painting over the next row used `.field { align-self: start }`.
+That is the *main* axis being vertical and the *cross* axis horizontal: every row
+shrink-wrapped to its content. The same sheet had a 199 px select beside a 552 px slider,
+a 129 px number box, and a segmented control that wrapped into a second ragged line. The
+design read as "some boxes small, some extend to the end".
+
+**Rule.** Height is controlled by `flex: 0 0 auto` on the children, never by changing
+cross-axis alignment. A form row is `width: 100%`. Measure the control's width against
+its row, not only its vertical centre.
+
+**Evidence.** `ui-shots.py` now asserts a non-block control fills ≥ 90 % of its row and
+starts at the label's left edge; the before-build reported 3 % for a checkbox and every
+row was 367 px inside a 552 px field.
+
+## 65. Restore the grammar, not the reference's geometry
+
+**Trap.** The alignment session moved labels to the left of a 34 % column to imitate the
+macOS reference. Short controls then sat a column away from their words, and a `<select>`
+was styled as a pill. The original stacked form — label above, full-width control — was
+the design the product already used.
+
+**Rule.** Take the *grammar* from a reference (one label per control, one primary action)
+but keep the product's own geometry when it is already coherent. A pill select is not a
+control style; a segmented row is one track of equal cells, not a wrapper that wraps.
+
+**Evidence.** `ui-shots.py` `31 dialogs of 53 tools, no layout failures`; the crop
+aspect list is 7 × 76 px cells in one 552 px row.
+
+## 66. `<audio>` is the same crash as `<video>`
+
+**Trap.** Lesson 61 removed `<video>` from the video transport but left an `<audio>`
+element mounted on Play in `WaveformTimeline`, and `ui/src/preview.tsx` still mounted
+both. Pressing Play in Trim audio re-initialised WebKitGTK's media stack and took the
+process down.
+
+**Rule.** A media element is forbidden everywhere in the web view, including a separate
+preview window. Audio goes through `play_preview` (headless `ffplay`/`mpv`/`paplay`/
+`pw-play`/`aplay`, or a desktop opener only as a last resort); video walks stills.
+
+**Evidence.** `grep -n "<audio\\|<video" ui/src` is clean. `tool-audio-trim` now presses
+Play and asserts the dialog is still there afterwards.
+
+## 67. A playhead over a static strip is not playback
+
+**Trap.** "Play" moved the playhead across a fixed filmstrip; the picture never changed,
+so the control looked broken. The speed slider changed a value that only affected the
+saved file, not the preview.
+
+**Rule.** Play must change the visible frame. Render an evenly sampled sequence at a
+stated rate (`video_frames`, 10 fps for a short clip, a 240-frame budget for longer
+ones), advance it by the speed factor, and bound both the frame and the playhead by the
+trim span. Trim handles move the selection only; seeking and Play clamp into it.
+
+**Evidence.** Mock trim: Play 0.45 s moved the still from frame 1 to 2 and the playhead
+to 0.40; 4× speed reached 1.6 s in 0.4 s. CLI: 60 frames from a 6 s clip in 0.55 s,
+cached on the second call.
+
+## 68. A metadata writer must create the block it edits
+
+**Trap.** `little_exif::Metadata::new_from_path` returns "No EXIF data found!" for a JPEG
+with no EXIF block. `exif_direct` propagated that as an engine failure, so adding a title
+to a plain JPEG was impossible. Separately, `display_value()` quotes ASCII fields
+(`"A title"`) and the form rendered the quotes; a PDF's `/Info` is usually an indirect
+reference, so the reader found no dictionary and the fields stayed empty.
+
+**Rule.** Treat "no block yet" as an empty metadata object, not a refusal. Read ASCII
+values from the value bytes, dereference `/Info`, decode its text strings, and map every
+tag the writer accepts. Test both a file with existing tags and one without.
+
+**Evidence.** `exif_reader_prefills_every_writable_image_tag` writes eight tags into a
+fresh JPEG and reads them back unquoted; `pdf_info_behind_an_indirect_reference_is_read_and_kept`
+round-trips six Info keys.
+
+## 69. A PDF cover is a rendered page, and a failed cover is still a file
+
+**Trap.** The selection strip asked ImageMagick for a PDF thumbnail. ImageMagick returned
+a black rectangle, and `analyze` silently dropped any file whose thumbnail failed — two
+selected PDFs, one black card.
+
+**Rule.** Render PDF covers through `PreviewCache::pdf_pages`, the same renderer the page
+grid uses. `analyze` emits one `Thumb` per readable input in order; an empty `thumb` is a
+placeholder card, not a missing file.
+
+**Evidence.** The new `tool-pdf-organize-multi` scenario sees both names and two cards
+with two PDFs.
+
+## 70. A page grid that loads on mount shows file 1 for every file
+
+**Trap.** `PageOrganizer` called `pdfPages` in `onMount`. The dialog switches files
+without remounting the editor, so file 2 of 2 kept file 1's count and cards — the
+reported "1 pages" in a five-page report.
+
+**Rule.** Key the load on `props.path` with a `createEffect`, reset the entries, and
+ignore a response whose token is stale. Publish the new `{order, rotate}` per file.
+
+**Evidence.** `tool-pdf-organize-multi` switches from a 5-page report to a 3-page scan
+and counts 5 then 3 page cards.

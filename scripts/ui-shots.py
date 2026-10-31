@@ -171,13 +171,21 @@ def design_failures(info: dict, key: str, tool: str, table: dict) -> list[str]:
         problems.append(f"{key}/{tool}: the sheet has no title")
     if not info.get("primary"):
         problems.append(f"{key}/{tool}: the footer has no primary action")
-    # A row whose label and control do not share a centre line is the grammar broken.
+    # The field grammar is a stacked row: the label starts at the same left edge as
+    # its control, and the control fills the row. A shrink-wrapped control (the old
+    # flex-column `align-self: start`) leaves a short pill beside a long input.
     for row in info.get("rows", []):
         if row.get("block"):
             continue
         if row.get("offset", 0) > 4:
             problems.append(
-                f"{key}/{tool}: {row['label']!r} and its control are {row['offset']}px apart"
+                f"{key}/{tool}: {row['label']!r} does not start above its control "
+                f"({row['offset']}px off)"
+            )
+        if row.get("fill", 1) < 0.9:
+            problems.append(
+                f"{key}/{tool}: {row['label']!r} control fills only "
+                f"{round(row['fill'] * 100)}% of its row"
             )
     meta = table.get((key, tool))
     if meta:
@@ -250,21 +258,29 @@ def measure_modal(m: Marionette):
     if (!modal) return { dialog: false };
     const sheetTitle = (document.querySelector('.sheet-title') || {}).innerText || '';
     const primary = document.querySelector('[data-testid="primary"]');
-    // A row is aligned when the label's and its control's vertical centres agree.
+    // The stacked grammar: the label's left edge and the control's left edge agree,
+    // and the control fills the row. Measure the control the user sees, not the
+    // first input inside it (the colour row hides a native <input type=color>).
     const rows = [...document.querySelectorAll('.modal .field')].map((row) => {
-      const label = row.querySelector('.field-label');
-      // Measure the control the user sees, not the first input inside it: the colour
-      // row hides a native <input type=color> whose own box is not the control.
+      // A checkbox is its own `<label class="field checkbox-row">`; its control is
+      // the box, not a form row with a label above it. Measuring it compared the
+      // 18 px box with the full row.
+      if (row.classList.contains('checkbox-row')) return null;
+      // Only a row that owns its label directly is a form row.
+      const label = row.querySelector(':scope > .field-label');
       const control = row.querySelector(
-        '.colour-control, .segmented, .range-row, .number-row, .checkbox-row, select, input, textarea'
+        '.colour-control, .gradient-editor, .file-row, .segmented, .range-row,'
+        + ' .number-row, .checkbox-row, select, input, textarea'
       );
       if (!label || !control) return null;
       const a = label.getBoundingClientRect();
       const b = control.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
       return {
         label: label.innerText.trim(),
         kind: control.tagName.toLowerCase() + (control.type ? ':' + control.type : ''),
-        offset: Math.round(Math.abs((a.top + a.height / 2) - (b.top + b.height / 2))),
+        offset: Math.round(Math.abs(a.left - b.left)),
+        fill: r.width > 0 ? b.width / r.width : 1,
         block: row.classList.contains('is-block'),
       };
     }).filter(Boolean);

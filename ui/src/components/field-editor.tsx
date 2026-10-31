@@ -435,16 +435,15 @@ export default function FieldEditor(props: FieldEditorProps) {
   const unit = (): string => props.field.unit ?? '';
   /**
    * Editors that are a surface rather than a control take the full width, with the
-   * label above them. So does a slider whose label is too long to sit beside its
-   * track — the reference puts those under their label with the value at the right.
+   * label above them. Every ordinary control is full width now (the label is above
+   * it), so this only names the surfaces that need their own block spacing.
    */
-  const isBlock = (): boolean => {
-    const kind = props.field.kind;
-    if (kind === 'boxes' || kind === 'pages' || kind === 'files' || kind === 'metadata' || kind === 'shapes') {
-      return true;
-    }
-    return kind === 'range' && props.field.label.length > 18;
-  };
+  const isBlock = (): boolean =>
+    props.field.kind === 'boxes' ||
+    props.field.kind === 'pages' ||
+    props.field.kind === 'files' ||
+    props.field.kind === 'metadata' ||
+    props.field.kind === 'shapes';
 
   return (
     <div class="field field-editor" classList={{ 'is-block': isBlock() }}>

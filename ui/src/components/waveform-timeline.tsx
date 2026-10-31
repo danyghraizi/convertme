@@ -46,18 +46,26 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
   const [drag, setDrag] = createSignal<{ anchor: number; current: number } | null>(null);
   const [playing, setPlaying] = createSignal(false);
   const [playhead, setPlayhead] = createSignal(0);
-  const [failedPlayback, setFailedPlayback] = createSignal(false);
-  /** Mounted on Play: a <audio> on open initialises GStreamer for nothing. */
-  const [playback, setPlayback] = createSignal(false);
+  /** The rejected play_preview message, shown verbatim. */
+  const [playFailure, setPlayFailure] = createSignal('');
   let surface: HTMLDivElement | undefined;
-  let audio: HTMLAudioElement | undefined;
+  /** Playback clock: real seconds from the playhead when Play was pressed. */
+  let timer: number | undefined;
+  let startedAt = 0;
+  let startPlayhead = 0;
+  /** Invalidates a pending play_preview when the file changes or Play runs again. */
+  let playToken = 0;
 
   // Keyed by path: a new file (or the mock's switch) reloads its own peaks.
   createEffect(() => {
     const path = props.path;
     if (!path) return;
     setData(null);
-    setPlayback(false);
+    playToken += 1;
+    clearTimer();
+    setPlaying(false);
+    setPlayhead(0);
+    setPlayFailure('');
     void ipc
       .waveformData(path)
       .then((waveform) => setData(waveform))
@@ -106,20 +114,59 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
     props.onRanges(props.ranges.filter((_, position) => position !== index));
   }
 
-  function togglePlay(): void {
-    if (failedPlayback()) return;
-    if (!playback()) {
-      setPlayback(true);
-      requestAnimationFrame(() => {
-        void audio?.play().catch(() => setFailedPlayback(true));
-      });
-      return;
+  function clearTimer(): void {
+    if (timer !== undefined) {
+      window.clearInterval(timer);
+      timer = undefined;
     }
-    if (!audio) return;
-    if (playing()) {
-      audio.pause();
-    } else {
-      void audio.play().catch(() => setFailedPlayback(true));
+  }
+
+  function stopPlayback(): void {
+    clearTimer();
+    setPlaying(false);
+  }
+
+  /**
+   * Play through the system sink. The web view never decodes audio: an audio or
+   * video element here crashes WebKitGTK's media stack. The playhead is advanced by our
+   * own clock from its current position; the command resolves when the sink finishes
+   * playing, so the button returns to Play at the end.
+   */
+  async function togglePlay(): Promise<void> {
+    const path = props.path;
+    if (!path || playing() || duration() <= 0) return;
+    const from = playhead();
+    startPlayhead = from >= duration() - 0.05 ? 0 : from;
+    setPlayhead(startPlayhead);
+    setPlayFailure('');
+    setPlaying(true);
+    startedAt = performance.now();
+    timer = window.setInterval(() => {
+      const next = startPlayhead + (performance.now() - startedAt) / 1000;
+      if (next >= duration()) {
+        setPlayhead(duration());
+        stopPlayback();
+        return;
+      }
+      setPlayhead(next);
+    }, 50);
+    const token = ++playToken;
+    try {
+      await ipc.playPreview(path);
+      if (playToken !== token) return;
+      // Resolved means the sink played to the end (immediately in the dev mock).
+      setPlayhead(duration());
+    } catch (cause) {
+      if (playToken !== token) return;
+      setPlayFailure(
+        typeof cause === 'string'
+          ? cause
+          : cause instanceof Error
+            ? cause.message
+            : 'The preview could not be played',
+      );
+    } finally {
+      if (playToken === token) stopPlayback();
     }
   }
 
@@ -134,7 +181,7 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
   }
 
   onCleanup(() => {
-    audio?.pause();
+    clearTimer();
   });
 
   /**
@@ -328,32 +375,19 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
         <div class="waveform-transport">
           <button
             type="button"
-            class="timeline-button"
-            aria-label={playing() ? 'Pause' : 'Play'}
-            disabled={failedPlayback()}
-            onClick={togglePlay}
+            class="timeline-button waveform-play"
+            aria-label={playing() ? 'Playing' : 'Play'}
+            disabled={playing()}
+            onClick={() => void togglePlay()}
           >
-            {playing() ? '❚❚' : '▶'}
+            {playing() ? 'Playing…' : '▶'}
           </button>
           <span class="waveform-timecode">
             {formatTimecode(playhead())}
             <span class="waveform-timecode-total"> / {formatTimecode(duration())}</span>
           </span>
-          <Show when={failedPlayback()}>
-            <span class="waveform-note">This format cannot be played here.</span>
-          </Show>
-          <Show when={playback()}>
-            <audio
-              ref={audio}
-              src={props.path ? ipc.assetUrl(props.path) : undefined}
-              preload="metadata"
-              class="waveform-audio"
-              onTimeUpdate={(event) => setPlayhead(event.currentTarget.currentTime)}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              onEnded={() => setPlaying(false)}
-              onError={() => setFailedPlayback(true)}
-            />
+          <Show when={playFailure()}>
+            <span class="waveform-note">{playFailure()}</span>
           </Show>
         </div>
       </Show>

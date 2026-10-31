@@ -1,11 +1,11 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
 import type { FieldValue, PagesValue, PdfPage } from '../types';
 import './page-organizer.css';
 
 interface PageOrganizerProps {
   path: string | null;
-  /** The current `{order, rotate}` — seeded from the document on mount. */
+  /** The current `{order, rotate}` — the organizer publishes defaults per file. */
   value: FieldValue;
   onChange: (value: PagesValue) => void;
 }
@@ -35,9 +35,17 @@ export default function PageOrganizer(props: PageOrganizerProps) {
   const [note, setNote] = createSignal('');
   const [dragging, setDragging] = createSignal<number | null>(null);
   let nextId = 1;
+  let loadToken = 0;
 
-  onMount(() => {
+  // Every file has its own pages. Loading only on mount left the second file of a
+  // multi-file dialog showing the first file's count and cards. Key the load on the
+  // path, and ignore a response that lands after the path changed.
+  createEffect(() => {
     const path = props.path;
+    const token = ++loadToken;
+    setEntries([]);
+    setSeed([]);
+    setNote('');
     if (!path) {
       setNote('Choose a PDF to organize its pages.');
       return;
@@ -45,6 +53,7 @@ export default function PageOrganizer(props: PageOrganizerProps) {
     void ipc
       .pdfPages(path)
       .then((pages: PdfPage[]) => {
+        if (token !== loadToken) return;
         const loaded: Entry[] = pages.map((page) => ({
           id: nextId++,
           page: page.page,
@@ -58,7 +67,10 @@ export default function PageOrganizer(props: PageOrganizerProps) {
         // Nothing is "done" until the sequence differs from the document as it is.
         props.onChange({ order: loaded.map((entry) => entry.page), rotate: loaded.map(() => 0) });
       })
-      .catch((error) => setNote(error instanceof Error ? error.message : 'Pages unavailable'));
+      .catch((error) => {
+        if (token !== loadToken) return;
+        setNote(error instanceof Error ? error.message : 'Pages unavailable');
+      });
   });
 
   function publish(next: Entry[]): void {

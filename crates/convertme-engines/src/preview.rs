@@ -348,6 +348,71 @@ impl PreviewCache {
         Ok(produced)
     }
 
+    /// A playback sequence: images sampled at a chosen rate, not a strip.
+    ///
+    /// The web view must not decode the file (lesson 61), so Play walks this
+    /// sequence. `fps` is what makes a 6 s clip play at 10 fps instead of the four
+    /// representative frame groups a thumbnail strip can produce; `max` bounds the
+    /// work and the cache for a long clip (the dialog derives both from the
+    /// duration).
+    pub fn preview_frames(
+        &self,
+        source: &Path,
+        fps: u32,
+        max: usize,
+        ctx: &JobCtx,
+    ) -> Result<Vec<PathBuf>, JobError> {
+        let fps = fps.clamp(1, 30);
+        let max = max.clamp(1, 300);
+        let _permit = Permit::acquire();
+        let dir = self
+            .key(source, "frames", &format!("{fps}-{max}"))
+            .ok_or_else(|| JobError::new(ErrorCode::Io, "cannot stat the video for playback"))?
+            .with_extension("");
+        let marker = dir.join("complete");
+        if marker.is_file()
+            && let Some(existing) = read_frames(&dir)
+            && !existing.is_empty()
+        {
+            return Ok(existing);
+        }
+        // A directory without its marker is an interrupted run; start clean so a
+        // stale tail cannot be played back after the shorter one.
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| JobError::io("creating the playback cache", &e))?;
+
+        let ffmpeg =
+            crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
+        let out_pattern = dir.join("frame%03d.jpg");
+        proc::run(
+            Cmd::new(ffmpeg)
+                .arg("-y")
+                .arg("-i")
+                .arg(source)
+                .arg("-vf")
+                .arg(format!("fps={fps},scale=480:-2"))
+                .arg("-frames:v")
+                .arg(max.to_string())
+                .arg(&out_pattern)
+                .budget(proc::Budget::Long),
+            ctx,
+        )?
+        .ok()?;
+
+        let produced = read_frames(&dir).ok_or_else(|| {
+            JobError::new(
+                ErrorCode::EngineFailed,
+                "the video produced no playback frames",
+            )
+        })?;
+        let _ = std::fs::write(&marker, b"1");
+        self.enforce_cap();
+        Ok(produced)
+    }
+
     /// Waveform peaks, 8 kHz mono, capped at 10 minutes.
     pub fn waveform(&self, source: &Path, ctx: &JobCtx) -> Result<Waveform, JobError> {
         self.waveform_filtered(source, "8k", None, ctx)
@@ -605,6 +670,10 @@ fn read_frames(dir: &Path) -> Option<Vec<PathBuf>> {
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
+            let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+            if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
+                return None;
+            }
             let suffix: String = path
                 .file_stem()?
                 .to_string_lossy()

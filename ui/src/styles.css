@@ -496,6 +496,22 @@ textarea {
   color: transparent;
 }
 
+/* A file whose thumbnail could not be made still gets a card: the selection is a
+   list of files, not a list of successful previews. */
+.thumb-blank {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: var(--shadow-sm);
+}
+
 .thumb-name {
   font-size: var(--t-2xs);
   color: var(--ink-2);
@@ -1089,23 +1105,18 @@ textarea {
 
 /* ------------------------------------------------------------------ fields */
 
-/* One control grammar for every dialog: the label on the left, the control on the
-   right, one row high. Rows carry no separator — a hairline between two ordinary
-   rows reads as a rendering artefact, and only a control boundary may draw one. */
+/* Rows carry no separator — a hairline between two ordinary rows reads as a
+   rendering artefact, and only a control boundary may draw one. */
+/* One control grammar for every dialog: the label sits above its control and the
+   control fills the row. The earlier label-left grid shrink-wrapped each row to its
+   own content in the flex column (a 199 px select beside a 500 px input), and the
+   label column pushed short controls far from their words. Stacking is the grammar
+   the rest of the app already uses and it makes every control the same width. */
 .field {
   display: grid;
-  grid-template-columns: minmax(132px, 34%) minmax(0, 1fr);
-  align-items: center;
-  column-gap: 12px;
-  row-gap: 4px;
-  min-height: var(--dialog-row-h);
-  padding: 2px 0;
+  gap: 6px;
+  width: 100%;
   min-width: 0;
-  /* A row must be as tall as what it holds. Stretched to the parent's track, a tall
-     control (a colour strip, the gradient editor, the crop readout) spilled out of a
-     40 px box and painted over the next row: the "overlapping controls" the dialog
-     showed. */
-  align-self: start;
 }
 
 .field > .field-label {
@@ -1115,8 +1126,7 @@ textarea {
 }
 
 /* Editors that are a surface rather than a control — previews, crop and redaction
-   boxes, timelines, page grids, metadata lists — take the full width, with the
-   label above them. */
+   boxes, timelines, page grids, metadata lists — keep the label above the surface. */
 .field.is-block {
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
@@ -1126,12 +1136,8 @@ textarea {
   margin-bottom: 2px;
 }
 
-/* The help text under a control belongs to it, not to a new row. */
+/* The help text under a control belongs to it, on its own line. */
 .field > .field-help {
-  grid-column: 2;
-}
-
-.field.is-block > .field-help {
   grid-column: 1;
 }
 
@@ -1176,13 +1182,14 @@ textarea {
   box-shadow: inset 0 1px 1px rgba(46, 39, 24, 0.03);
 }
 
-/* A select is a pill with one chevron of our own: the native arrow is drawn inside
-   the field and cannot be aligned with the rest of the row. */
+/* A select is a filled control with one chevron of our own: the native arrow is
+   drawn inside the field and cannot be aligned with the rest of the row. It uses
+   the same radius and height as a text input, not a pill. */
 select {
   appearance: none;
   height: 34px;
   min-height: 34px;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-2);
   padding: 0 32px 0 12px;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
     linear-gradient(135deg, currentColor 50%, transparent 50%);
@@ -1200,15 +1207,19 @@ select {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
 }
 
-/* A slider puts its value at the right of the track, in the same row. */
+/* A slider puts its value at the right of the track, in the same row. The track
+   takes every pixel the value and the reset arrow do not need. */
 .number-row,
 .range-row,
 .color-row {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: 10px;
+  width: 100%;
   min-width: 0;
 }
 
@@ -1223,7 +1234,7 @@ select {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
-  min-width: 52px;
+  min-width: 54px;
   text-align: right;
   white-space: nowrap;
 }
@@ -1445,10 +1456,12 @@ input[type='color'] {
      box moves its background and its children together on every engine. */
   left: var(--sheet-dx, 0px);
   top: var(--sheet-dy, 0px);
-  min-width: 440px;
-  min-height: 320px;
-  max-width: min(760px, 96vw);
-  max-height: min(780px, 90vh);
+  min-width: 420px;
+  min-height: 260px;
+  max-width: min(920px, 96vw);
+  /* The sheet may use almost the whole window: the old 780 px ceiling made a
+     vertical drag stop while the window was still much taller. */
+  max-height: 94vh;
   /* A column, not a fixed grid: the head, the file line, an optional preview band,
      the scrolling fields and the footer come and go per tool, and a fixed row count
      put the fields in the wrong row as soon as one of them was absent. */
@@ -2171,7 +2184,7 @@ body.wheel-body {
 .crop-readout {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
+  gap: 10px;
   font-size: 13px;
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
@@ -2191,17 +2204,15 @@ body.wheel-body {
 }
 
 .crop-pixel input {
-  width: 76px;
-  min-height: 30px;
+  width: 88px;
+  min-height: 34px;
+  padding: 0 10px;
   font-variant-numeric: tabular-nums;
 }
 
 .crop-origin {
   color: var(--ink-3);
-}
-
-.crop-readout .button {
-  margin-left: auto;
+  white-space: nowrap;
 }
 
 /* Grouped tool controls and the live photo preview. */
@@ -2454,27 +2465,34 @@ body.wheel-body {
   padding: 2px;
 }
 
+/* One track, equal cells: every option gets the same width, so an aspect list
+   cannot wrap into a second ragged row or leave the active cell floating. */
 .segmented {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  padding: 3px;
-  border-radius: var(--r-pill);
-  background: var(--surface-2);
-  box-shadow: inset 0 0 0 1px var(--rule);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
   min-width: 0;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--sunken);
+  box-shadow: inset 0 0 0 1px var(--rule);
 }
 
 .segmented button {
+  min-width: 0;
   border: 0;
   background: transparent;
-  border-radius: var(--r-pill);
-  padding: 5px 11px;
+  border-radius: 8px;
+  padding: 6px 4px;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .segmented button.is-active {
@@ -2709,20 +2727,51 @@ body.wheel-body {
   cursor: pointer;
 }
 
+/* The sheet resizes from its corner and from the bottom and right edges. The
+   corner is drawn: an invisible resize affordance is why "it does not resize". */
 .modal-grip {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 18px;
-  height: 18px;
+  right: 2px;
+  bottom: 2px;
+  width: 22px;
+  height: 22px;
+  z-index: 4;
   cursor: nwse-resize;
   touch-action: none;
-  /* No drawing: the corner still resizes, but nothing is added to the card. */
-  background: transparent;
+  color: var(--ink-3);
+}
+
+.modal-grip svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .modal-grip:hover {
-  opacity: 1;
+  color: var(--ink);
+}
+
+.modal-resize-e,
+.modal-resize-s {
+  position: absolute;
+  z-index: 3;
+  touch-action: none;
+}
+
+.modal-resize-e {
+  top: 12px;
+  right: 0;
+  bottom: 22px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.modal-resize-s {
+  left: 22px;
+  right: 22px;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
 }
 
 /* The file the tool acts on: a named, separated line rather than a run-on string. */
@@ -2762,10 +2811,8 @@ body.wheel-body {
   color: var(--ink-2);
 }
 
-/* The menu is a filled control, not an outlined one: the hairline read as a stray
-   outline around its corners. Focus keeps the accent ring. */
+/* The menu shares the text input's frame; focus keeps the accent ring. */
 select {
-  border: 0;
   box-shadow: none;
 }
 
@@ -2807,13 +2854,25 @@ select:focus {
   line-height: 1;
 }
 
-/* Presets: solids, gradients, then the picture picker with its own weight. */
+/* Presets: solids | gradients | the picture picker, one row with breathing room. */
 .fill-presets {
   align-items: center;
+  gap: 8px;
 }
 
 .fill-preset {
   border-radius: 8px;
+}
+
+.fill-separator {
+  width: 1px;
+  height: 18px;
+  background: var(--rule-2);
+  margin: 0 2px;
+}
+
+.fill-gap {
+  width: 8px;
 }
 
 .fill-preset-image {
@@ -2916,11 +2975,6 @@ select:focus {
   font-size: var(--t-2xs);
   color: var(--ink-2);
   cursor: pointer;
-}
-
-.fill-preset-rows {
-  display: grid;
-  gap: 6px;
 }
 
 /* The per-slider reset arrow: visible only when the value left its default. */

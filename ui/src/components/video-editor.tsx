@@ -222,21 +222,6 @@ export default function VideoEditor(props: VideoEditorProps) {
             onChange={(box) => props.setValue('boxes', [box] as FieldValue)}
           />
         </div>
-        <Show when={info()}>
-          {(media) => (
-            <div class="field is-block">
-              <span class="field-label">Step through</span>
-              <MediaTimeline
-                path={props.path}
-                duration={media().duration}
-                start={0}
-                end={media().duration}
-                range={false}
-                onRange={() => undefined}
-              />
-            </div>
-          )}
-        </Show>
       </Show>
 
       <Show when={props.tool === 'speed'}>
@@ -250,6 +235,7 @@ export default function VideoEditor(props: VideoEditorProps) {
                 start={0}
                 end={media().duration}
                 range={false}
+                rate={Number(props.values.factor ?? 1)}
                 onRange={() => undefined}
               />
             )}

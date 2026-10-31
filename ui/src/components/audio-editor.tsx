@@ -25,6 +25,22 @@ const PREVIEW_BUCKETS = 140;
 const round = (value: number): number => Math.round(value * 1000) / 1000;
 
 /**
+ * Relative luminance of a `#rgb`/`#rrggbb` colour (WCAG's formula), so the wave ink
+ * stays readable whatever Background the user picks. Unparseable values are treated
+ * as dark: a white wave is the safe drawing on a named dark colour.
+ */
+function relativeLuminance(color: string): number {
+  let hex = color.trim().replace(/^#/, '');
+  if (hex.length === 3) hex = hex.replace(/./g, (digit) => digit + digit);
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return 0;
+  const channel = (offset: number): number => {
+    const value = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+}
+
+/**
  * The audio dialog's surfaces: the waveform and its trim handles, the two channel
  * rows, the measured loudness of a normalize target, the bleep lane and the
  * visualizer's still. A preview only runs when its own button is pressed.
@@ -38,29 +54,40 @@ export default function AudioEditor(props: AudioEditorProps) {
   } | null>(null);
   const [peaks, setPeaks] = createSignal<[number, number][]>([]);
   const [measured, setMeasured] = createSignal<number | null>(null);
-  const [previewSrc, setPreviewSrc] = createSignal('');
+  const [previewReady, setPreviewReady] = createSignal('');
+  const [previewPlaying, setPreviewPlaying] = createSignal(false);
   const [previewLabel, setPreviewLabel] = createSignal('Output');
   const [previewBusy, setPreviewBusy] = createSignal(false);
   const [previewError, setPreviewError] = createSignal('');
+  /** The bridge rejects with a plain string; that sentence is the whole message. */
+  const rejection = (cause: unknown): string =>
+    typeof cause === 'string'
+      ? cause
+      : cause instanceof Error
+        ? cause.message
+        : 'The preview failed';
   // "Play Output" must play. The window never decodes audio itself: WebKitGTK's media
-  // stack crashed the process on Play, so the produced file is handed to the desktop's
-  // own player.
+  // stack crashed the process on Play, so the produced file is handed to the system's
+  // sound sink by the backend, which resolves when playback ends.
   async function play(path: string, label: string): Promise<void> {
-    setPreviewSrc(path);
     setPreviewLabel(label);
+    setPreviewReady('');
     setPreviewError('');
+    setPreviewPlaying(true);
     try {
       await ipc.playPreview(path);
+      // The sink finished: only now is the produced preview "ready".
+      setPreviewReady(label);
     } catch (cause) {
-      setPreviewError(
-        cause instanceof Error
-          ? cause.message
-          : typeof cause === 'string'
-            ? cause
-            : 'The preview could not be opened',
-      );
+      setPreviewError(rejection(cause));
+    } finally {
+      setPreviewPlaying(false);
     }
   }
+
+  /** A preview button's label: rendering while producing, playing while heard. */
+  const previewButtonText = (idle: string): string =>
+    previewPlaying() ? 'Playing…' : previewBusy() ? 'Rendering…' : idle;
 
   const duration = (): number => info()?.duration ?? 0;
   const start = (): number => asNumber(props.values.start ?? 0);
@@ -80,7 +107,8 @@ export default function AudioEditor(props: AudioEditorProps) {
     setChannels(null);
     setPeaks([]);
     setMeasured(null);
-    setPreviewSrc('');
+    setPreviewReady('');
+    setPreviewPlaying(false);
     setPreviewError('');
     void ipc
       .mediaInfo(path)
@@ -97,7 +125,8 @@ export default function AudioEditor(props: AudioEditorProps) {
   createEffect(() => {
     if (props.resetToken < 0) return;
     setRanges([]);
-    setPreviewSrc('');
+    setPreviewReady('');
+    setPreviewPlaying(false);
     setPreviewError('');
   });
 
@@ -160,6 +189,13 @@ export default function AudioEditor(props: AudioEditorProps) {
     return '16 / 9';
   });
 
+  // The frame carries the job's Background; the wave (currentColor in the SVG) needs
+  // the opposite ink to stay visible on that background.
+  const previewBackground = createMemo(() => String(props.values.color ?? '#101014'));
+  const previewInk = createMemo(() =>
+    relativeLuminance(previewBackground()) > 0.4 ? '#141416' : '#ffffff',
+  );
+
   /** Peaks reduced to the drawing width, keeping each bucket's larger side. */
   const previewBars = createMemo(() => {
     const all = peaks();
@@ -184,20 +220,14 @@ export default function AudioEditor(props: AudioEditorProps) {
     const path = props.path;
     if (!path || previewBusy()) return;
     setPreviewBusy(true);
+    setPreviewReady('');
     setPreviewError('');
     try {
       const produced = await ipc.audioPreview(path, tool, paramsFor());
       await play(produced, 'Output');
     } catch (cause) {
-      // The bridge rejects with a plain string; a generic "the preview failed" hides
-      // the one sentence that says what to change.
-      setPreviewError(
-        cause instanceof Error
-          ? cause.message
-          : typeof cause === 'string'
-            ? cause.replace(/^unsupported: /, '')
-            : 'The preview failed',
-      );
+      // The bridge rejects with a plain string; that sentence is the whole message.
+      setPreviewError(rejection(cause));
     } finally {
       setPreviewBusy(false);
     }
@@ -207,18 +237,13 @@ export default function AudioEditor(props: AudioEditorProps) {
     const path = props.path;
     if (!path || previewBusy()) return;
     setPreviewBusy(true);
+    setPreviewReady('');
     setPreviewError('');
     try {
       const produced = await ipc.bleepPreview(path, paramsFor());
       await play(produced, 'With Bleeps');
     } catch (cause) {
-      setPreviewError(
-        cause instanceof Error
-          ? cause.message
-          : typeof cause === 'string'
-            ? cause.replace(/^unsupported: /, '')
-            : 'The preview failed',
-      );
+      setPreviewError(rejection(cause));
     } finally {
       setPreviewBusy(false);
     }
@@ -262,7 +287,7 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy()}
               onClick={() => void playOutput('normalize')}
             >
-              {previewBusy() ? 'Rendering…' : 'Play Output'}
+              {previewButtonText('Play Output')}
             </button>
             <span class="audio-measured">
               {measured() === null
@@ -270,7 +295,7 @@ export default function AudioEditor(props: AudioEditorProps) {
                 : `Input: ${measured()!.toFixed(1)} LUFS`}
             </span>
           </div>
-          <Show when={previewSrc()}>
+          <Show when={previewReady()}>
             <p class="field-help" role="status">
               Preview ready.
             </p>
@@ -304,9 +329,9 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy()}
               onClick={() => void playOutput('channels')}
             >
-              {previewBusy() ? 'Rendering…' : 'Play Output'}
+              {previewButtonText('Play Output')}
             </button>
-            <Show when={previewSrc()}>
+            <Show when={previewReady()}>
               <p class="field-help" role="status">
                 Preview ready.
               </p>
@@ -329,7 +354,11 @@ export default function AudioEditor(props: AudioEditorProps) {
               'is-portrait': String(props.values.shape ?? '16:9') === '9:16',
               'is-square': String(props.values.shape ?? '16:9') === '1:1',
             }}
-            style={{ 'aspect-ratio': shapeRatio() }}
+            style={{
+              'aspect-ratio': shapeRatio(),
+              background: previewBackground(),
+              color: previewInk(),
+            }}
           >
             <Show
               when={previewBars().length > 0}
@@ -391,6 +420,7 @@ export default function AudioEditor(props: AudioEditorProps) {
             <button
               type="button"
               class="button button-quiet"
+              disabled={previewPlaying()}
               onClick={() => {
                 if (props.path) void play(props.path, 'Original');
               }}
@@ -403,13 +433,13 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy() || ranges().length === 0}
               onClick={() => void playBleeps()}
             >
-              {previewBusy() ? 'Rendering…' : 'With Bleeps'}
+              {previewButtonText('With Bleeps')}
             </button>
             <span class="audio-measured">{previewLabel()}</span>
           </div>
-          <Show when={previewSrc()}>
+          <Show when={previewReady()}>
             <p class="field-help" role="status">
-              {previewLabel()} ready.
+              {previewReady()} ready.
             </p>
           </Show>
           <Show when={previewError()}>

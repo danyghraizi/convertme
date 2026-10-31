@@ -462,6 +462,17 @@ export async function filmstrip(path: string, frames: number): Promise<string[]>
   return strings(raw);
 }
 
+/** The images Play walks: sampled at `fps`, at most `max` stills. */
+export async function videoFrames(
+  path: string,
+  fps: number,
+  max: number,
+): Promise<string[]> {
+  if (isMock()) return mock.mockPlaybackFrames(max);
+  const raw = await invoke('video_frames', { path, fps, max });
+  return strings(raw);
+}
+
 export async function waveformData(path: string): Promise<WaveformData> {
   if (isMock()) return mock.mockWaveformData(path);
   return readWaveformData(await invoke('waveform_data', { path }));

@@ -187,8 +187,137 @@ fn friendly_exif(name: &str) -> Option<&'static str> {
     }
 }
 
-/// PNG text chunks (`tEXt`/`iTXt`): ImageMagick stores Title/Description as
-/// `Comment`, and Artist/Copyright under their own keyword.
+/// Read a camera's EXIF block and translate it to the form's tag names.
+fn read_exif_tags(path: &Path, tags: &mut BTreeMap<String, String>) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    let mut buf = std::io::BufReader::new(file);
+    if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
+        insert_exif(&exif, tags);
+    }
+}
+
+/// The form's rows are the friendly names `editable_tags` advertises; a raw
+/// `ImageDescription` row cannot be edited and leaves the "Title" row looking empty
+/// on a file that has one. `Title` and `Description` are backed by the same EXIF
+/// field (`ImageDescription`), so both rows show the stored value.
+fn insert_exif(exif: &exif::Exif, tags: &mut BTreeMap<String, String>) {
+    for field in exif.fields() {
+        let name = field.tag.to_string();
+        // Orientation's display value is prose ("row 0 at top…"); the form's input is
+        // editable and the writer parses 1..8, so show the number it accepts.
+        // `display_value()` quotes an ASCII field ("A title"); the form wants the
+        // text itself, not the debug rendering.
+        let value = if name == "Orientation" {
+            field.value.get_uint(0).map(|n| n.to_string())
+        } else if let exif::Value::Ascii(values) = &field.value {
+            values
+                .first()
+                .map(|bytes| {
+                    String::from_utf8_lossy(bytes)
+                        .trim_end_matches('\0')
+                        .to_string()
+                })
+                .filter(|text| !text.is_empty())
+        } else {
+            Some(field.display_value().with_unit(exif).to_string())
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        if name == "ImageDescription" {
+            tags.entry("Title".to_string())
+                .or_insert_with(|| value.clone());
+            tags.entry("Description".to_string()).or_insert(value);
+        } else if let Some(key) = friendly_exif(&name) {
+            tags.entry(key.to_string()).or_insert(value);
+        }
+    }
+}
+
+/// WEBP metadata lives in RIFF chunks. ImageMagick writes the writable tags into
+/// XMP (`dc:title`, `dc:description`, `dc:creator`, `dc:rights`); an EXIF block,
+/// when present, is scanned separately so a chunk past the first few kilobytes is
+/// still read.
+fn webp_tags(path: &Path, tags: &mut BTreeMap<String, String>) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    if !bytes.starts_with(b"RIFF") || bytes.get(8..12) != Some(&b"WEBP"[..]) {
+        return;
+    }
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let kind = &bytes[at..at + 4];
+        let len = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let start = at + 8;
+        let end = start.saturating_add(len).min(bytes.len());
+        let data = &bytes[start..end];
+        match kind {
+            b"EXIF" => {
+                let raw = data.strip_prefix(b"Exif\0\0").unwrap_or(data);
+                if let Ok(exif) = exif::Reader::new().read_raw(raw.to_vec()) {
+                    insert_exif(&exif, tags);
+                }
+            }
+            b"XMP " => xmp_tags(data, tags),
+            _ => {}
+        }
+        // Chunks are padded to an even length.
+        at = end.saturating_add(len & 1);
+    }
+}
+
+fn xmp_tags(data: &[u8], tags: &mut BTreeMap<String, String>) {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    for (element, key) in [
+        ("dc:title", "Title"),
+        ("dc:description", "Description"),
+        ("dc:creator", "Artist"),
+        ("dc:rights", "Copyright"),
+    ] {
+        if let Some(value) = xmp_element(text, element) {
+            tags.entry(key.to_string()).or_insert(value);
+        }
+    }
+}
+
+/// The text of one XMP element. XMP wraps repeated/translated values in
+/// `<rdf:Alt><rdf:li>…</rdf:li></rdf:Alt>`, so take the first `rdf:li`.
+fn xmp_element(text: &str, name: &str) -> Option<String> {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let open = text.find(open.as_str())?;
+    let rest = &text[open..];
+    let body_start = rest.find('>')? + 1;
+    let body_end = rest.find(close.as_str())?;
+    let body = &rest[body_start..body_end];
+    let value = match body.find("<rdf:li") {
+        Some(li) => {
+            let after = &body[li..];
+            let start = after.find('>')? + 1;
+            let end = after.find("</rdf:li>")?;
+            &after[start..end]
+        }
+        None => body,
+    };
+    let value = value.trim();
+    (!value.is_empty()).then(|| {
+        value
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&")
+    })
+}
+
+/// PNG text chunks (`tEXt`/`iTXt`): ImageMagick writes Title as `Comment`, and the
+/// other writable tags under their own keyword (`Description`, `Artist`, `Copyright`).
 fn png_text_tags(path: &Path, tags: &mut BTreeMap<String, String>) {
     const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     let Ok(bytes) = std::fs::read(path) else {
@@ -250,14 +379,24 @@ fn insert_text(tags: &mut BTreeMap<String, String>, key: &str, value: String) {
         return;
     }
     // The keyword's case is the writer's business: ImageMagick writes `comment`.
+    // A real `Description` keyword is its own writable tag; `comment` is what this
+    // writer uses for Title.
     let friendly = match lower.as_str() {
-        "comment" | "description" | "imagedescription" | "title" => "Title",
+        "comment" | "imagedescription" | "title" => "Title",
+        "description" => "Description",
         "artist" => "Artist",
         "copyright" => "Copyright",
         other => other,
     };
-    tags.entry(friendly.to_string())
-        .or_insert_with(|| value.to_string());
+    // This writer's Title is a `comment` chunk. A file edited by it can still carry
+    // an older `Title` keyword from another tool, and that chunk may come first, so
+    // `comment` replaces rather than yields.
+    if lower == "comment" {
+        tags.insert(friendly.to_string(), value.to_string());
+    } else {
+        tags.entry(friendly.to_string())
+            .or_insert_with(|| value.to_string());
+    }
 }
 
 /// Read the tags the UI shows in the edit form.
@@ -267,37 +406,16 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
     };
     let mut tags = BTreeMap::new();
     match format.0 {
-        "JPG" | "HEIC" | "TIFF" => {
-            if let Ok(file) = std::fs::File::open(path) {
-                let mut buf = std::io::BufReader::new(file);
-                if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
-                    for f in exif.fields() {
-                        // The form's rows are the friendly names `editable_tags`
-                        // advertises; a raw `ImageDescription` row cannot be edited and
-                        // leaves the "Title" row looking empty on a file that has one.
-                        if let Some(key) = friendly_exif(&f.tag.to_string()) {
-                            tags.entry(key.to_string())
-                                .or_insert_with(|| f.display_value().with_unit(&exif).to_string());
-                        }
-                    }
-                }
-            }
-        }
+        "JPG" | "HEIC" | "TIFF" => read_exif_tags(path, &mut tags),
         // ImageMagick writes the four writable image tags as PNG text chunks (Title
-        // and Description both as `Comment`), so the reader has to look there.
+        // as `comment`), so the reader has to look there.
         "PNG" => png_text_tags(path, &mut tags),
         "WEBP" => {
-            if let Ok(file) = std::fs::File::open(path) {
-                let mut buf = std::io::BufReader::new(file);
-                if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
-                    for f in exif.fields() {
-                        if let Some(key) = friendly_exif(&f.tag.to_string()) {
-                            tags.entry(key.to_string())
-                                .or_insert_with(|| f.display_value().with_unit(&exif).to_string());
-                        }
-                    }
-                }
-            }
+            // A WEBP carries EXIF and XMP inside RIFF chunks. The container reader
+            // only looks at the first few kilobytes, and ImageMagick stores these
+            // tags in XMP, so scan the chunks themselves.
+            webp_tags(path, &mut tags);
+            read_exif_tags(path, &mut tags);
         }
         "MP3" | "M4A" | "FLAC" | "OGG" | "OPUS" | "WAV" | "AIFF" | "WMA" => {
             if let Ok(tagged) = lofty::read_from_path(path) {
@@ -308,6 +426,13 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
                         ("Title", tag.title().map(|c| c.to_string())),
                         ("Artist", tag.artist().map(|c| c.to_string())),
                         ("Album", tag.album().map(|c| c.to_string())),
+                        (
+                            "AlbumArtist",
+                            tag.get_string(lofty::tag::ItemKey::AlbumArtist)
+                                .map(str::to_string),
+                        ),
+                        ("TrackNumber", tag.track().map(|n| n.to_string())),
+                        ("DiscNumber", tag.disk().map(|n| n.to_string())),
                         ("Comment", tag.comment().map(|c| c.to_string())),
                         (
                             "Year",
@@ -315,6 +440,11 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
                                 .map(str::to_string),
                         ),
                         ("Genre", tag.genre().map(|c| c.to_string())),
+                        (
+                            "Composer",
+                            tag.get_string(lofty::tag::ItemKey::Composer)
+                                .map(str::to_string),
+                        ),
                     ] {
                         if let Some(v) = value {
                             tags.insert(name.to_string(), v);
@@ -329,7 +459,9 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
                     ("Title", mp4.title().map(str::to_string)),
                     ("Artist", mp4.artist().map(str::to_string)),
                     ("Album", mp4.album().map(str::to_string)),
+                    ("Year", mp4.year().map(str::to_string)),
                     ("Comment", mp4.comment().map(str::to_string)),
+                    ("Genre", mp4.genre().map(str::to_string)),
                 ] {
                     if let Some(v) = value {
                         tags.insert(name.to_string(), v);
@@ -339,14 +471,11 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
         }
         "PDF" => {
             if let Ok(doc) = lopdf::Document::load(path)
-                && let Ok(info) = doc.trailer.get(b"Info").and_then(|o| o.as_dict())
+                && let Some(info) = pdf_info_dict(&doc)
             {
                 for (k, v) in info.iter() {
-                    if let Ok(s) = v.as_str() {
-                        tags.insert(
-                            String::from_utf8_lossy(k).into_owned(),
-                            String::from_utf8_lossy(s).into_owned(),
-                        );
+                    if let Some(value) = pdf_string(&doc, v) {
+                        tags.insert(String::from_utf8_lossy(k).into_owned(), value);
                     }
                 }
             }
@@ -354,6 +483,22 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
         _ => {}
     }
     tags
+}
+
+/// The document information dictionary. Producers store `/Info` as an indirect
+/// reference, and `Object::as_dict` does not follow references, so a plain
+/// `trailer.get("Info")` returned nothing on every real-world PDF.
+fn pdf_info_dict(doc: &lopdf::Document) -> Option<&lopdf::Dictionary> {
+    let info = doc.trailer.get(b"Info").ok()?;
+    let (_, resolved) = doc.dereference(info).ok()?;
+    resolved.as_dict().ok()
+}
+
+/// One information value as text. PDF strings are PDFDocEncoding or UTF-16BE with a
+/// BOM; decoding them as UTF-8 turned every non-ASCII title into mojibake.
+fn pdf_string(doc: &lopdf::Document, object: &lopdf::Object) -> Option<String> {
+    let (_, resolved) = doc.dereference(object).ok()?;
+    lopdf::decode_text_string(resolved).ok()
 }
 
 fn apply(
@@ -393,8 +538,10 @@ fn exif_direct(
     let mut metadata = if strip {
         Metadata::new()
     } else {
-        Metadata::new_from_path(path)
-            .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading EXIF: {e}")))?
+        // A JPEG straight out of a camera-less pipeline has no EXIF block at all;
+        // `new_from_path` treats that as an error, but "no tags yet" is exactly the
+        // file this writer must be able to add a title to.
+        Metadata::new_from_path(path).unwrap_or_else(|_| Metadata::new())
     };
 
     if strip {
@@ -475,8 +622,14 @@ fn exif_via_magick(
     }
     for (key, value) in set {
         match key.as_str() {
-            "Title" | "Description" => {
+            // ImageMagick's PNG writer stores `comment` as a tEXt chunk; that is the
+            // chunk the reader calls Title. Description gets its own keyword, so a
+            // value set on that row comes back on that row.
+            "Title" => {
                 cmd = cmd.arg("-set").arg("comment").arg(value);
+            }
+            "Description" => {
+                cmd = cmd.arg("-set").arg("Description").arg(value);
             }
             "Artist" => {
                 cmd = cmd.arg("-set").arg("Artist").arg(value);
@@ -657,7 +810,7 @@ fn pdf_info(
     remove: &[String],
     strip: bool,
 ) -> Result<(), JobError> {
-    use lopdf::{Dictionary, Document, Object};
+    use lopdf::{Dictionary, Document};
 
     let mut doc = Document::load(path)
         .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}")))?;
@@ -667,8 +820,9 @@ fn pdf_info(
         // not model: the dictionary is replaced wholesale.
     } else {
         // Keep what the file already says, then edit that dictionary: replacing it
-        // outright dropped Producer and CreationDate on every single edit.
-        if let Ok(existing) = doc.trailer.get(b"Info").and_then(|o| o.as_dict()) {
+        // outright dropped Producer and CreationDate on every single edit. `/Info` is
+        // normally an indirect reference, which `as_dict` does not follow.
+        if let Some(existing) = pdf_info_dict(&doc) {
             info = existing.clone();
         }
         for key in remove {
@@ -686,7 +840,7 @@ fn pdf_info(
                     format!("{key} is not a PDF information key"),
                 ));
             }
-            info.set(key.as_str(), Object::string_literal(value.as_str()));
+            info.set(key.as_str(), lopdf::text_string(value));
         }
     }
     doc.trailer.set("Info", info);
@@ -714,11 +868,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pdf_info_roundtrips_through_lopdf() {
-        let dir = tempfile::tempdir().unwrap();
-        let pdf = dir.path().join("doc.pdf");
-        // Smallest valid PDF with one empty page.
+    /// The smallest valid one-page PDF, for the information-dictionary tests.
+    fn one_page_doc() -> lopdf::Document {
         let mut doc = lopdf::Document::with_version("1.5");
         let pages_id = doc.new_object_id();
         let mut page = lopdf::Dictionary::new();
@@ -738,7 +889,14 @@ mod tests {
         catalog.set("Type", "Catalog");
         catalog.set("Pages", pages_id);
         doc.trailer.set("Root", catalog);
-        doc.save(&pdf).unwrap();
+        doc
+    }
+
+    #[test]
+    fn pdf_info_roundtrips_through_lopdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("doc.pdf");
+        one_page_doc().save(&pdf).unwrap();
 
         let mut set = BTreeMap::new();
         set.insert("Title".to_string(), "Hello".to_string());
@@ -759,6 +917,49 @@ mod tests {
     }
 
     #[test]
+    fn pdf_info_behind_an_indirect_reference_is_read_and_kept() {
+        // Ghostscript and most producers store `/Info` as an indirect object. Reading
+        // the trailer entry as a dictionary returned nothing, so every PDF opened with
+        // empty rows even though it carried all six keys.
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("indirect.pdf");
+        let mut doc = one_page_doc();
+        let mut info = lopdf::Dictionary::new();
+        info.set("Title", lopdf::text_string("Tïtle"));
+        info.set("Author", lopdf::text_string("Ada"));
+        info.set("Subject", lopdf::text_string("Subj"));
+        info.set("Keywords", lopdf::text_string("k1, k2"));
+        info.set("Creator", lopdf::text_string("Creator"));
+        info.set("Producer", lopdf::text_string("Producer"));
+        let info_id = doc.add_object(lopdf::Object::Dictionary(info));
+        doc.trailer.set("Info", lopdf::Object::Reference(info_id));
+        doc.save(&pdf).unwrap();
+
+        // The file must keep `/Info` indirect, or the test would not exercise the bug.
+        let saved = lopdf::Document::load(&pdf).unwrap();
+        assert!(matches!(
+            saved.trailer.get(b"Info").unwrap(),
+            lopdf::Object::Reference(_)
+        ));
+
+        let tags = read(&pdf);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("Tïtle"));
+        assert_eq!(tags.get("Author").map(String::as_str), Some("Ada"));
+        assert_eq!(tags.get("Subject").map(String::as_str), Some("Subj"));
+        assert_eq!(tags.get("Keywords").map(String::as_str), Some("k1, k2"));
+        assert_eq!(tags.get("Creator").map(String::as_str), Some("Creator"));
+        assert_eq!(tags.get("Producer").map(String::as_str), Some("Producer"));
+
+        // An edit keeps the keys it was not asked to change.
+        let mut set = BTreeMap::new();
+        set.insert("Subject".to_string(), "New subject".to_string());
+        pdf_info(&pdf, &set, &[], false).unwrap();
+        let tags = read(&pdf);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("Tïtle"));
+        assert_eq!(tags.get("Subject").map(String::as_str), Some("New subject"));
+    }
+
+    #[test]
     fn png_text_chunks_are_read_as_the_forms_own_keys() {
         // A PNG whose only tag is the `Comment` chunk ImageMagick writes for Title:
         // the form must show it under "Title", not as a raw "Comment" row.
@@ -775,17 +976,83 @@ mod tests {
         };
         // ImageMagick writes the keyword in lower case and adds bookkeeping chunks.
         bytes.extend(chunk(b"tEXt", b"comment\0Hello"));
+        bytes.extend(chunk(b"tEXt", b"Description\0A description"));
         bytes.extend(chunk(b"tEXt", b"Artist\0Ada"));
+        bytes.extend(chunk(b"tEXt", "Copyright\0© 2026 Ada".as_bytes()));
         bytes.extend(chunk(b"tEXt", b"date:create\x002026-10-31T16:20:16+00:00"));
         bytes.extend(chunk(b"IEND", b""));
         std::fs::write(&png, &bytes).unwrap();
 
-        let mut tags = BTreeMap::new();
-        png_text_tags(&png, &mut tags);
+        let tags = read(&png);
         assert_eq!(tags.get("Title").map(String::as_str), Some("Hello"));
+        assert_eq!(
+            tags.get("Description").map(String::as_str),
+            Some("A description")
+        );
         assert_eq!(tags.get("Artist").map(String::as_str), Some("Ada"));
+        assert_eq!(
+            tags.get("Copyright").map(String::as_str),
+            Some("© 2026 Ada")
+        );
         assert!(!tags.contains_key("Comment"));
         assert!(!tags.keys().any(|key| key.contains(':')));
+
+        // A literal `Title` keyword (ImageMagick writes one for `-set Title`) also
+        // lands on the Title row.
+        let mut tags = BTreeMap::new();
+        let titled = dir.path().join("titled.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend(chunk(b"tEXt", b"Title\0Direct title"));
+        bytes.extend(chunk(b"IEND", b""));
+        std::fs::write(&titled, &bytes).unwrap();
+        png_text_tags(&titled, &mut tags);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("Direct title"));
+
+        // This writer sets Title as `comment`. An older `Title` keyword from another
+        // tool can sit before that chunk in the file; the comment is the value the
+        // app wrote, so it must win.
+        let mut tags = BTreeMap::new();
+        let rewritten = dir.path().join("rewritten.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend(chunk(b"tEXt", b"Title\0Old title"));
+        bytes.extend(chunk(b"tEXt", b"comment\0New title"));
+        bytes.extend(chunk(b"IEND", b""));
+        std::fs::write(&rewritten, &bytes).unwrap();
+        png_text_tags(&rewritten, &mut tags);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("New title"));
+    }
+
+    #[test]
+    fn exif_reader_prefills_every_writable_image_tag() {
+        // A real JPEG with the EXIF block the writer produces. The form must show the
+        // stored value under both names ImageDescription backs, and Orientation as the
+        // number the writer can parse again.
+        let dir = tempfile::tempdir().unwrap();
+        let jpg = dir.path().join("tagged.jpg");
+        image::RgbImage::new(8, 8).save(&jpg).unwrap();
+
+        let mut set = BTreeMap::new();
+        set.insert("Title".to_string(), "A title".to_string());
+        set.insert("Artist".to_string(), "Ada".to_string());
+        set.insert("Copyright".to_string(), "Copyright 2026 Ada".to_string());
+        set.insert("Make".to_string(), "Acme".to_string());
+        set.insert("Model".to_string(), "X1".to_string());
+        set.insert("LensModel".to_string(), "Lens 50mm".to_string());
+        set.insert("Orientation".to_string(), "6".to_string());
+        exif_direct(&jpg, &set, &[], false).unwrap();
+
+        let tags = read(&jpg);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("A title"));
+        assert_eq!(tags.get("Description").map(String::as_str), Some("A title"));
+        assert_eq!(tags.get("Artist").map(String::as_str), Some("Ada"));
+        assert_eq!(
+            tags.get("Copyright").map(String::as_str),
+            Some("Copyright 2026 Ada")
+        );
+        assert_eq!(tags.get("Make").map(String::as_str), Some("Acme"));
+        assert_eq!(tags.get("Model").map(String::as_str), Some("X1"));
+        assert_eq!(tags.get("LensModel").map(String::as_str), Some("Lens 50mm"));
+        assert_eq!(tags.get("Orientation").map(String::as_str), Some("6"));
     }
 
     #[test]

@@ -108,6 +108,7 @@ pub fn run() -> i32 {
             commands::tool_fields,
             dialog::media_info,
             dialog::filmstrip,
+            dialog::video_frames,
             dialog::waveform_data,
             dialog::channel_waveforms,
             dialog::pdf_pages,

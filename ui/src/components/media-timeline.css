@@ -13,32 +13,27 @@
   background: var(--sunken);
 }
 
-.timeline-video {
-  display: block;
+/* One large still for the playhead: the only preview surface in the dialog. */
+.timeline-preview {
+  display: grid;
+  place-items: center;
   width: 100%;
-  max-height: 260px;
   background: #000;
 }
 
-.timeline-strip {
-  display: flex;
-  height: 108px;
-  overflow: hidden;
-}
-
-.timeline-frame {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 100%;
-  object-fit: cover;
-  border-right: 1px solid var(--surface);
+.timeline-preview-frame {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: #000;
 }
 
 .timeline-blank {
   display: grid;
   place-items: center;
   width: 100%;
-  height: 100%;
+  height: 180px;
   font-size: 12px;
   color: var(--ink-3);
 }
@@ -150,8 +145,56 @@
   cursor: default;
 }
 
+/* Steps are quiet squares; Play is the one filled accent circle. */
+.timeline-button.is-step,
+.timeline-button.is-play {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.timeline-button.is-step {
+  width: 30px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.timeline-button.is-step:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.timeline-button.is-play {
+  width: 36px;
+  height: 36px;
+  border-color: transparent;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.timeline-button.is-play:hover {
+  background: var(--accent);
+}
+
+.timeline-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.timeline-button.is-play .timeline-icon {
+  width: 16px;
+  height: 16px;
+}
+
 .timeline-readout {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -162,8 +205,25 @@
   color: var(--ink-3);
 }
 
+.timeline-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--rule-2);
+}
+
 .timeline-range {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-2);
+}
+
+.timeline-range-label {
+  font-family: var(--ui);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
 }

@@ -1,7 +1,8 @@
 /* The metadata browser: a search field, then one collapsible group per family. */
 .metadata-editor {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  width: 100%;
   min-width: 0;
 }
 
@@ -12,11 +13,11 @@
 }
 
 .metadata-remove-all {
-  height: 30px;
+  height: 34px;
   padding: 0 12px;
   border: 1px solid var(--rule);
-  border-radius: var(--r-pill);
-  background: var(--surface);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
   color: var(--ink-2);
   font-size: 12px;
   cursor: pointer;
@@ -31,8 +32,8 @@
 .metadata-search {
   flex: 1;
   min-width: 0;
-  height: 30px;
-  border-radius: var(--r-pill);
+  height: 34px;
+  border-radius: var(--r-2);
   padding: 0 12px;
   /* A search field is a filled control, not a native widget: WebKit's own search
      decoration drew a white ring that read as a stray outline. */
@@ -85,24 +86,26 @@
 }
 
 .metadata-rows {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 2px;
+  gap: 8px;
 }
 
 .metadata-row {
   display: grid;
-  /* The trailing column only exists when the row can be removed. */
-  grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+  /* A compact fixed label column keeps the inputs aligned from row to row; the
+     control takes every remaining pixel. The trailing column only exists when the
+     row can be removed. */
+  grid-template-columns: 140px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
-  min-height: 30px;
+  gap: 10px;
+  min-height: 34px;
 }
 
 .metadata-row.has-remove {
-  grid-template-columns: minmax(96px, 34%) minmax(0, 1fr) 26px;
+  grid-template-columns: 140px minmax(0, 1fr) 26px;
 }
 
 .metadata-label {
@@ -122,7 +125,7 @@
 }
 
 .metadata-input {
-  height: 30px;
+  height: 34px;
   font-size: 13px;
 }
 

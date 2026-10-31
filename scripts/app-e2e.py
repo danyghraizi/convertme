@@ -3725,6 +3725,18 @@ def scenario_tool_audio_normalize(h, rec, checks):
 
 def scenario_tool_audio_trim(h, rec, checks):
     def apply(s):
+        # This is the control that used to mount <audio> and take the web process
+        # down. Press it and prove the dialog is still there afterwards.
+        play = s.button("Play", within=s.dialog())
+        if play is not None:
+            s.press_in_dialog("Play")
+            time.sleep(1.0)
+            checks.add(
+                "playing trim audio keeps the dialog alive",
+                s.dialog() is not None,
+                True,
+                s.dialog() is not None,
+            )
         s.set_slider_auto("Trim end", 5.0)
         s.set_slider_auto("Trim start", 2.0)
 
@@ -4440,6 +4452,47 @@ def scenario_tool_pdf_organize(h, rec, checks):
         checks.add("page 1 is rotated by 90°", rotated == 90, 90, rotated)
 
 
+def scenario_tool_pdf_organize_multi(h, rec, checks):
+    """Two PDFs: both cards exist, and switching files reloads that document's pages.
+
+    This is the reported failure: the selection said two files, one card was drawn,
+    and the organizer kept the first file's page count after the arrow switched.
+    """
+    five = h.fixture("pdf/report-5-pages.pdf")
+    three = h.fixture("pdf/scanned-3-pages.pdf")
+    with h.launch("tool-pdf-organize-multi", [five, three]) as session:
+        rec["workdir"] = session.workdir
+        session.wait_text("2 files ready", timeout=30)
+        workspace = "\n".join(value for _role, value in session.all_texts())
+        checks.add(
+            "both selected PDFs have a card",
+            "report-5-pages.pdf" in workspace and "scanned-3-pages.pdf" in workspace,
+            "both names",
+            workspace[:500],
+        )
+        dialog = session.open_tool("Organize pages")
+        if dialog is None:
+            raise ScenarioFailure("Organize pages opened no dialog")
+        first = session.subtree_text(session.dialog())
+        first_cards = len(re.findall(r"Page\s+\d+", first))
+        checks.add("first file shows 5 pages", first_cards == 5, 5, first_cards)
+        session.press_button("Next file", within=session.dialog())
+        deadline = time.time() + 8
+        second = ""
+        second_cards = 0
+        while time.time() < deadline:
+            second = session.subtree_text(session.dialog())
+            second_cards = len(re.findall(r"Page\s+\d+", second))
+            if "2 of 2" in second and second_cards == 3:
+                break
+            time.sleep(0.25)
+        checks.add("the arrow reaches the second file", "2 of 2" in second, "2 of 2", second[:300])
+        checks.add("the second file reloads its own 3 pages", second_cards == 3, 3, second_cards)
+        rec["measurements"]["second_file"] = second[-300:]
+        rec["screenshots"].append(session.shot("second-pdf-file"))
+        session.press_button("Close", within=session.dialog())
+
+
 def page_one_text_source(path: str, page: int) -> str:
     result = run(["pdftotext", "-f", str(page), "-l", str(page), path, "-"], timeout=60)
     return " ".join(result.stdout.split())
@@ -4891,6 +4944,7 @@ SCENARIOS = [
     ("tool-audio-bleep", scenario_tool_audio_bleep),
     ("tool-audio-metadata", scenario_tool_audio_metadata),
     ("tool-pdf-organize", scenario_tool_pdf_organize),
+    ("tool-pdf-organize-multi", scenario_tool_pdf_organize_multi),
     ("tool-pdf-merge", scenario_tool_pdf_merge),
     ("tool-video-join", scenario_tool_video_join),
     ("tool-pdf-metadata", scenario_tool_pdf_metadata),

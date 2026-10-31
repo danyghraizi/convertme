@@ -90,6 +90,34 @@ pub async fn filmstrip(
     .map_err(|e| e.to_string())
 }
 
+/// The frames Play walks: images sampled at `fps`, bounded by `max`.
+#[tauri::command]
+pub async fn video_frames(
+    state: State<'_, AppState>,
+    path: String,
+    fps: u32,
+    max: usize,
+) -> Result<Vec<String>, String> {
+    let cache = state.cache.clone();
+    let ctx = state
+        .preview_guard
+        .begin(&format!("video-frames:{path}:{fps}:{max}"));
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = PathBuf::from(path);
+        cache
+            .preview_frames(&file, fps, max, &ctx)
+            .map(|frames| {
+                frames
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize)]
 pub struct WaveformOut {
     pub duration_ms: u64,
@@ -368,12 +396,14 @@ pub async fn audio_preview(
     .map_err(|e| e.to_string())?
 }
 
-/// Hand a produced audio preview to the desktop's own player.
+/// Play an audio preview through the machine's audio sink.
 ///
 /// The window never decodes audio itself: WebKitGTK's media stack is what killed the
 /// process on Play, and a machine without an audio sink wedged the web process even
-/// when the element was created off-DOM. The system player is also where the user
-/// expects a "Play" to end up.
+/// when the element was created off-DOM. A headless player (`ffplay -nodisp`, `mpv
+/// --no-video`, `paplay`, `pw-play` or `aplay`) keeps the sound in this app's
+/// lifetime without opening a second application. The desktop opener is only a last
+/// resort on a platform with none of them.
 #[tauri::command]
 pub async fn play_preview(path: String) -> Result<(), String> {
     let source = PathBuf::from(path);
@@ -381,19 +411,40 @@ pub async fn play_preview(path: String) -> Result<(), String> {
         return Err("the preview file is gone".to_string());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(target_os = "macos")]
-        let opener = "open";
-        #[cfg(target_os = "windows")]
-        let opener = "explorer";
-        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-        let opener = "xdg-open";
-        let cmd = convertme_engines::proc::Cmd::new(opener)
-            .arg(&source)
-            .budget(convertme_engines::proc::Budget::Short);
+        use convertme_engines::proc::{Budget, Cmd};
+        let player = ["ffplay", "mpv", "paplay", "pw-play", "aplay"]
+            .iter()
+            .find_map(|name| convertme_engines::probe::which(name).map(|path| (*name, path)));
         let ctx = JobCtx::new();
+        let Some((name, program)) = player else {
+            #[cfg(unix)]
+            {
+                let cmd = Cmd::new("xdg-open").arg(&source).budget(Budget::Short);
+                return convertme_engines::proc::run(cmd, &ctx)
+                    .map(|_| ())
+                    .map_err(|e| format!("could not open the preview: {}", e.message));
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(
+                    "no audio player is installed (ffplay, mpv, paplay, pw-play or aplay)"
+                        .to_string(),
+                );
+            }
+        };
+        let cmd = match name {
+            "ffplay" => Cmd::new(program)
+                .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                .arg(&source),
+            "mpv" => Cmd::new(program)
+                .args(["--no-video", "--really-quiet", "--no-terminal"])
+                .arg(&source),
+            _ => Cmd::new(program).arg(&source),
+        }
+        .budget(Budget::Long);
         convertme_engines::proc::run(cmd, &ctx)
             .map(|_| ())
-            .map_err(|e| format!("could not open the preview: {}", e.message))
+            .map_err(|e| format!("could not play the preview: {}", e.message))
     })
     .await
     .map_err(|e| e.to_string())?
