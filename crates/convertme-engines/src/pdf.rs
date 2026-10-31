@@ -493,6 +493,13 @@ fn organize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         ));
     }
 
+    let same_width = match params.and_then(|params| params.get("same_width")) {
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| bad_param("same_width", "true or false"))?,
+        None => false,
+    };
+
     let page_spec = pages
         .iter()
         .map(|page| page.to_string())
@@ -502,7 +509,7 @@ fn organize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     cx.ctx.set_stage("Organizing the pages");
     cx.ctx.checkpoint()?;
     let staged = cx.scratch("organized.pdf");
-    proc::run(
+    let rebuilt = proc::run(
         Cmd::new(&qpdf)
             .arg("--empty")
             .arg("--pages")
@@ -512,8 +519,12 @@ fn organize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             .arg(&staged)
             .budget(Budget::Short),
         cx.ctx,
-    )?
-    .ok()?;
+    )?;
+    // A spec that repeats a page is one qpdf may refuse; cloning the page objects
+    // produces the same document without depending on that.
+    if !rebuilt.success {
+        clone_pages(&job.source, &pages, &staged)?;
+    }
     ensure_file(&staged, "qpdf")?;
 
     let rotation = rotation_param(params)?;
@@ -560,9 +571,226 @@ fn organize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         proc::run(cmd.arg(&staged).arg(&out).budget(Budget::Short), cx.ctx)?.ok()?;
     }
 
+    if same_width {
+        cx.ctx.checkpoint()?;
+        cx.ctx.set_stage("Matching the page widths");
+        match_pages_to_narrowest(&out)?;
+    }
+
     check_pdf_header(&out)?;
     ensure_file(&out, "qpdf")?;
     Ok(vec![out])
+}
+
+/// Build a document out of the requested page order, duplicating where asked.
+///
+/// Used when qpdf will not take the page spec (repeated pages). Pages are cloned
+/// individually, so the result is the same sequence of page objects in a new file.
+fn clone_pages(source: &Path, pages: &[usize], out: &Path) -> Result<(), JobError> {
+    use lopdf::{Dictionary, Document, Object};
+
+    let doc = Document::load(source)
+        .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}")))?;
+    let numbered: Vec<(u32, lopdf::ObjectId)> = doc.get_pages().into_iter().collect();
+    let mut target = Document::with_version("1.7");
+    let pages_id = target.new_object_id();
+    let mut kids = Vec::with_capacity(pages.len());
+    for page in pages {
+        let Some((_, id)) = numbered.get(page.saturating_sub(1)) else {
+            continue;
+        };
+        let mut clone = doc
+            .get_object(*id)
+            .and_then(|object| object.as_dict())
+            .map_err(|e| {
+                JobError::new(ErrorCode::EngineFailed, format!("reading a PDF page: {e}"))
+            })?
+            .clone();
+        // The parent moves to the new tree; copying it would point at the old one.
+        clone.remove(b"Parent");
+        clone.set("Parent", pages_id);
+        let cloned = target.add_object(Object::Dictionary(clone));
+        kids.push(cloned.into());
+    }
+    if kids.is_empty() {
+        return Err(JobError::new(
+            ErrorCode::EngineFailed,
+            "no pages would remain after the requested order",
+        ));
+    }
+    let mut pages_dict = Dictionary::new();
+    pages_dict.set("Type", "Pages");
+    pages_dict.set("Kids", kids);
+    pages_dict.set("Count", pages.len() as i64);
+    target
+        .objects
+        .insert(pages_id, Object::Dictionary(pages_dict));
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = target.add_object(Object::Dictionary(catalog));
+    target.trailer.set("Root", catalog_id);
+    target
+        .save(out)
+        .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("writing the PDF: {e}")))?;
+    Ok(())
+}
+
+/// Scale every page to the narrowest page's width.
+///
+/// The page is not redrawn: the existing content is wrapped in a `cm` scale and the
+/// MediaBox is resized, which keeps text, images and rotation exactly as they were
+/// and stays cheap on a long document. Heights follow the same factor, so a page that
+/// was taller keeps its proportion (the reference says so in the dialog's own help).
+fn match_pages_to_narrowest(path: &Path) -> Result<(), JobError> {
+    use lopdf::{Dictionary, Document, Object, Stream};
+
+    let mut doc = Document::load(path)
+        .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}")))?;
+    let page_ids: Vec<lopdf::ObjectId> = doc.get_pages().into_values().collect();
+    if page_ids.len() < 2 {
+        return Ok(());
+    }
+
+    fn resolved<'a>(doc: &'a Document, object: &'a Object) -> &'a Object {
+        let mut current = object;
+        for _ in 0..8 {
+            match current {
+                Object::Reference(id) => match doc.get_object(*id) {
+                    Ok(next) => current = next,
+                    Err(_) => break,
+                },
+                _ => break,
+            }
+        }
+        current
+    }
+    let number = |object: &Object| -> Option<f32> {
+        match object {
+            Object::Integer(i) => Some(*i as f32),
+            Object::Real(f) => Some(*f),
+            _ => None,
+        }
+    };
+    let media_box = |doc: &Document, object: &Dictionary| -> Option<[f32; 4]> {
+        let array = object.get(b"MediaBox").ok().map(|o| resolved(doc, o))?;
+        let values: Vec<f32> = array.as_array().ok()?.iter().filter_map(number).collect();
+        if values.len() == 4 {
+            Some([values[0], values[1], values[2], values[3]])
+        } else {
+            None
+        }
+    };
+
+    let mut targets = Vec::with_capacity(page_ids.len());
+    let mut narrowest = f32::MAX;
+    for id in &page_ids {
+        let page = doc
+            .get_object(*id)
+            .and_then(|o| o.as_dict())
+            .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading a page: {e}")))?;
+        let Some(box_) = media_box(&doc, page) else {
+            continue;
+        };
+        let width = (box_[2] - box_[0]).abs();
+        if width > 0.0 {
+            narrowest = narrowest.min(width);
+        }
+        targets.push((*id, box_));
+    }
+    if !narrowest.is_finite() || narrowest <= 0.0 {
+        return Ok(());
+    }
+
+    let mut prepended: Vec<lopdf::ObjectId> = Vec::new();
+    let mut appended: Vec<lopdf::ObjectId> = Vec::new();
+    for (id, box_) in targets {
+        let width = (box_[2] - box_[0]).abs();
+        if width <= 0.0 || (width - narrowest).abs() < 0.01 {
+            continue;
+        }
+        let scale = narrowest / width;
+        let height = (box_[3] - box_[1]).abs() * scale;
+        let open = Stream::new(Dictionary::new(), format!("q {scale:.6} 0 0 {scale:.6} 0 0 cm\n").into_bytes());
+        let close = Stream::new(Dictionary::new(), b"Q\n".to_vec());
+        let open_id = doc.add_object(Object::Stream(open));
+        let close_id = doc.add_object(Object::Stream(close));
+        prepended.push(open_id);
+        appended.push(close_id);
+
+        // The scale runs before the page's own content and the matching Q after it,
+        // so nothing in the original streams is rewritten.
+        let page = doc
+            .get_object_mut(id)
+            .and_then(|o| o.as_dict_mut())
+            .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("editing a page: {e}")))?;
+        let existing: Vec<Object> = match page.get(b"Contents") {
+            Ok(Object::Array(items)) => items.clone(),
+            Ok(Object::Reference(reference)) => vec![Object::Reference(*reference)],
+            _ => Vec::new(),
+        };
+        let mut contents = vec![Object::Reference(open_id)];
+        contents.extend(existing);
+        contents.push(Object::Reference(close_id));
+        page.set("Contents", contents);
+        page.set(
+            "MediaBox",
+            vec![
+                0.into(),
+                0.into(),
+                Object::Real(narrowest),
+                Object::Real(height),
+            ],
+        );
+        if page.get(b"CropBox").is_ok() {
+            page.set(
+                "CropBox",
+                vec![
+                    0.into(),
+                    0.into(),
+                    Object::Real(narrowest),
+                    Object::Real(height),
+                ],
+            );
+        }
+    }
+
+    let tmp = path.with_extension("same-width.pdf");
+    doc.save(&tmp)
+        .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("writing the PDF: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| JobError::io("replacing the organized PDF", &e))?;
+    Ok(())
+}
+
+/// The job's inputs in the user's chosen order.
+///
+/// `order` holds indices into `inputs`; anything else (absent, short, out of range)
+/// means "the selection order", which is what the engine did before the dialog could
+/// reorder anything. A partial order is completed with the inputs it left out, so a
+/// dropped entry never loses a document.
+fn ordered_inputs(job: &Job) -> Result<Vec<PathBuf>, JobError> {
+    let params = job.intent.params();
+    let Some(order) = int_list_param(params, "order")? else {
+        return Ok(job.inputs.clone());
+    };
+    if order.is_empty() {
+        return Ok(job.inputs.clone());
+    }
+    let mut seen: Vec<usize> = Vec::with_capacity(order.len());
+    let mut files: Vec<PathBuf> = Vec::with_capacity(job.inputs.len());
+    for index in order {
+        if index >= job.inputs.len() || seen.contains(&index) {
+            return Err(bad_param("order", "each input exactly once, as indices"));
+        }
+        seen.push(index);
+        files.push(job.inputs[index].clone());
+    }
+    for (index, input) in job.inputs.iter().enumerate() {
+        if !seen.contains(&index) {
+            files.push(input.clone());
+        }
+    }
+    Ok(files)
 }
 
 fn rotation_param(params: Option<&ToolParams>) -> Result<Vec<(usize, i64)>, JobError> {
@@ -601,12 +829,15 @@ fn merge(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     if job.inputs.is_empty() {
         return Err(JobError::new(ErrorCode::Io, "no documents to merge"));
     }
+    // The dialog can reorder the documents; `order` is a permutation of the inputs as
+    // indices into them, so the file whose card was dragged second is merged second.
+    let order = ordered_inputs(job)?;
 
     cx.ctx.set_stage("Merging the documents");
     cx.ctx.checkpoint()?;
     let out = cx.out("merged.pdf");
     let mut cmd = Cmd::new(&qpdf).arg("--empty").arg("--pages");
-    for input in &job.inputs {
+    for input in &order {
         cmd = cmd.arg(input);
     }
     proc::run(cmd.arg("--").arg(&out).budget(Budget::Short), cx.ctx)?.ok()?;
@@ -1021,6 +1252,112 @@ mod tests {
         assert_eq!(artifacts.len(), 1);
         assert!(fs::read(&artifacts[0]).unwrap().starts_with(b"%PDF-"));
         assert_eq!(page_count(&qpdf, &artifacts[0]), 2);
+    }
+
+    /// A page can appear twice: the organizer's duplicate is a repeated entry in
+    /// `order`, and qpdf may refuse the spec, so the clone path has to produce the
+    /// same document.
+    #[test]
+    fn organize_duplicates_a_page() {
+        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Qpdf]) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let Some(pdf) = make_pdf(&tools, dir.path(), "dupe", 3) else {
+            return;
+        };
+        let qpdf = tools.path(ToolKey::Qpdf).unwrap();
+
+        let mut params = ToolParams::new();
+        params.insert("order".into(), serde_json::json!([1, 2, 2, 3]));
+        let job = Job::new(
+            pdf,
+            Intent::Tool {
+                tool: ToolId::Organize,
+                params,
+            },
+        );
+        let artifacts = run_in(&tools, dir.path(), &job).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            page_count(&qpdf, &artifacts[0]),
+            4,
+            "the duplicated page is written twice"
+        );
+    }
+
+    /// Pages of different widths become one width, proportionally, and the page count
+    /// does not change.
+    #[test]
+    fn organize_matches_every_page_width() {
+        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Qpdf]) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // Two pages of different widths in one document.
+        let magick = tools.path(ToolKey::Magick).unwrap();
+        let wide = dir.path().join("wide.png");
+        let narrow = dir.path().join("narrow.png");
+        for (path, size) in [(&wide, "300x300"), (&narrow, "150x300")] {
+            assert!(
+                Command::new(&magick)
+                    .args(["-size", size, "xc:white"])
+                    .arg(path)
+                    .status()
+                    .expect("magick")
+                    .success()
+            );
+        }
+        let source = dir.path().join("mixed.pdf");
+        assert!(
+            Command::new(&magick)
+                .args([&wide, &narrow])
+                .arg(&source)
+                .status()
+                .expect("magick")
+                .success()
+        );
+
+        let mut params = ToolParams::new();
+        params.insert("same_width".into(), serde_json::json!(true));
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Organize,
+                params,
+            },
+        );
+        let artifacts = run_in(&tools, dir.path(), &job).unwrap();
+        let doc = lopdf::Document::load(&artifacts[0]).expect("parse the result");
+        let mut widths: Vec<f32> = Vec::new();
+        let mut heights: Vec<f32> = Vec::new();
+        for (_, id) in doc.get_pages() {
+            let page = doc.get_object(id).and_then(|o| o.as_dict()).expect("page");
+            let box_ = page.get(b"MediaBox").and_then(|o| o.as_array()).expect("MediaBox");
+            let values: Vec<f32> = box_
+                .iter()
+                .map(|item| match item {
+                    lopdf::Object::Integer(i) => *i as f32,
+                    lopdf::Object::Real(f) => *f,
+                    _ => 0.0,
+                })
+                .collect();
+            widths.push(values[2] - values[0]);
+            heights.push(values[3] - values[1]);
+        }
+        assert_eq!(widths.len(), 2, "the page count is unchanged");
+        assert!(
+            (widths[0] - widths[1]).abs() < 1.0,
+            "pages differ in width: {widths:?}"
+        );
+        assert!(
+            (heights[0] - heights[1]).abs() > 1.0,
+            "the narrower page must keep its taller shape: {heights:?}"
+        );
+        assert!(
+            widths[0] < 300.0,
+            "the wide page is scaled down, not the narrow one up: {widths:?}"
+        );
     }
 
     #[test]

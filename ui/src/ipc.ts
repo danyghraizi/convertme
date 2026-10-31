@@ -4,9 +4,9 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as mock from './mock';
-import { readFields } from './field-parse';
+import { readFields, readSegmentPayload, readSegments } from './field-parse';
 
-export { readFields };
+export { readFields, readSegmentPayload, readSegments };
 import type {
   AnalyzeResult,
   BootInfo,
@@ -17,9 +17,14 @@ import type {
   HistoryRow,
   Intent,
   JobEvent,
+  Loudness,
+  MediaInfo,
+  MetaGroup,
+  PdfPage,
   RunResult,
-  Segment,
   Settings,
+  WaveformData,
+  ChannelWaveforms,
   WheelContents,
 } from './types';
 
@@ -136,18 +141,6 @@ function readSettings(raw: unknown): Settings {
   };
 }
 
-function readSegment(raw: unknown): Segment {
-  const o = record(raw, 'segment');
-  const segment: Segment = { id: str(o.id), label: str(o.label) };
-  if (typeof o.blurb === 'string') segment.blurb = o.blurb;
-  if (typeof o.disabled === 'boolean') segment.disabled = o.disabled;
-  if (typeof o.hint === 'string') segment.hint = o.hint;
-  return segment;
-}
-
-function readSegments(value: unknown): Segment[] {
-  return records(value).map(readSegment);
-}
 
 function readThumbs(value: unknown): AnalyzeResult['thumbs'] {
   return records(value).map((o) => ({
@@ -428,6 +421,124 @@ export async function previewThumb(path: string, size: number): Promise<string> 
   if (isMock()) return mock.mockPreviewThumb(path, size);
   const raw = await invoke('preview_thumb', { path, size });
   return str(raw);
+}
+
+// --------------------------------------------------------------- dialog data
+
+export async function mediaInfo(path: string): Promise<MediaInfo> {
+  if (isMock()) return mock.mockMediaInfo(path);
+  return readMediaInfo(await invoke('media_info', { path }));
+}
+
+export async function filmstrip(path: string, frames: number): Promise<string[]> {
+  if (isMock()) return mock.mockFilmstrip(frames);
+  const raw = await invoke('filmstrip', { path, frames });
+  return strings(raw);
+}
+
+export async function waveformData(path: string): Promise<WaveformData> {
+  if (isMock()) return mock.mockWaveformData(path);
+  return readWaveformData(await invoke('waveform_data', { path }));
+}
+
+export async function channelWaveforms(path: string): Promise<ChannelWaveforms> {
+  if (isMock()) return mock.mockChannelWaveforms(path);
+  const raw = record(await invoke('channel_waveforms', { path }), 'channels');
+  return {
+    left: readWaveformData(raw.left),
+    right: readWaveformData(raw.right),
+  };
+}
+
+export async function pdfPages(path: string): Promise<PdfPage[]> {
+  if (isMock()) return mock.mockPdfPages(path);
+  return records(await invoke('pdf_pages', { path })).map((o) => ({
+    page: typeof o.page === 'number' ? o.page : 0,
+    width: typeof o.width === 'number' ? o.width : 0,
+    height: typeof o.height === 'number' ? o.height : 0,
+    thumb: typeof o.thumb === 'string' ? o.thumb : null,
+  }));
+}
+
+export async function measureLoudness(path: string): Promise<Loudness> {
+  if (isMock()) return mock.mockLoudness(path);
+  const o = record(await invoke('measure_loudness', { path }), 'loudness');
+  return {
+    input_i: typeof o.input_i === 'number' ? o.input_i : 0,
+    input_tp: typeof o.input_tp === 'number' ? o.input_tp : 0,
+    input_lra: typeof o.input_lra === 'number' ? o.input_lra : 0,
+  };
+}
+
+/** A tool's result, rendered by the engine and transcoded for playback. */
+export async function audioPreview(
+  path: string,
+  tool: string,
+  params: Record<string, unknown>,
+): Promise<string> {
+  if (isMock()) return mock.mockAudioPreview(path, tool, params);
+  return str(await invoke('audio_preview', { path, tool, params }));
+}
+
+export async function bleepPreview(
+  path: string,
+  params: Record<string, unknown>,
+): Promise<string> {
+  if (isMock()) return mock.mockAudioPreview(path, 'bleep', params);
+  return str(await invoke('bleep_preview', { path, params }));
+}
+
+export async function photoPreview(
+  path: string,
+  params: Record<string, unknown>,
+): Promise<string> {
+  if (isMock()) return mock.mockPhotoPreview(path, params);
+  return str(await invoke('photo_preview', { path, params }));
+}
+
+export async function collagePreview(
+  paths: string[],
+  params: Record<string, unknown>,
+): Promise<string> {
+  if (isMock()) return mock.mockCollagePreview(paths, params);
+  return str(await invoke('collage_preview', { paths, params }));
+}
+
+export async function fileMetadata(path: string): Promise<MetaGroup[]> {
+  if (isMock()) return mock.mockFileMetadata(path);
+  return records(await invoke('file_metadata', { path })).map((group) => ({
+    name: str(group.name),
+    fields: records(group.fields).map((field) => ({
+      key: str(field.key),
+      label: str(field.label),
+      value: str(field.value),
+      editable: field.editable === true,
+    })),
+  }));
+}
+
+function readWaveformData(value: unknown): WaveformData {
+  const o = record(value, 'waveform');
+  return {
+    duration_ms: typeof o.duration_ms === 'number' ? o.duration_ms : 0,
+    truncated: o.truncated === true,
+    peaks: records(o.peaks).map((pair) => {
+      const values = Array.isArray(pair) ? pair : [];
+      return [Number(values[0]) || 0, Number(values[1]) || 0] as [number, number];
+    }),
+  };
+}
+
+function readMediaInfo(value: unknown): MediaInfo {
+  const o = record(value, 'media info');
+  return {
+    duration: typeof o.duration === 'number' ? o.duration : 0,
+    width: typeof o.width === 'number' ? o.width : 0,
+    height: typeof o.height === 'number' ? o.height : 0,
+    has_audio: o.has_audio === true,
+    has_video: o.has_video === true,
+    format: str(o.format),
+  };
 }
 
 export async function detectBoxes(path: string, faces: boolean): Promise<DetectedBox[]> {

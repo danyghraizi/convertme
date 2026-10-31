@@ -11,7 +11,7 @@ use crate::{Context, ensure_file};
 use convertme_core::capability::ToolKey;
 use convertme_core::error::{ErrorCode, JobError};
 use convertme_core::formats::{Category, Format, FormatId, Registry, ToolId};
-use convertme_core::job::{Intent, Job, ToolParams};
+use convertme_core::job::{Intent, Job, JobCtx, ToolParams};
 use printpdf::{
     DictItem, ExternalStream, ExternalXObject, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
     Px, RawImage, RawImageData, RawImageFormat, XObjectId, XObjectTransform,
@@ -1362,8 +1362,11 @@ fn gradient_value(params: &ToolParams) -> Result<Option<String>, JobError> {
 
 // ------------------------------------------------------------------ edit photo
 
-fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<PathBuf>, JobError> {
-    let magick = magick_path(cx)?;
+/// The photo adjustments as ImageMagick arguments, in one place.
+///
+/// The full-resolution job and the dialog's preview both call this: two copies of
+/// the same chain drift within a week, and then the preview stops being a preview.
+fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
     let brightness = number(params, "brightness")?.unwrap_or(0.0) as f32;
     let contrast = number(params, "contrast")?.unwrap_or(0.0) as f32;
     let saturation = number(params, "saturation")?.unwrap_or(0.0) as f32;
@@ -1372,8 +1375,7 @@ fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Pa
     let temperature = number(params, "temperature")?.unwrap_or(0.0) as f32;
     let gamma = number(params, "gamma")?;
 
-    let out = tool_out(job, cx, ToolId::EditPhoto);
-    let mut args = vec![os(&job.source)];
+    let mut args: Vec<OsString> = Vec::new();
     if exposure != 0.0 {
         // Stops of light, applied as a linear multiply before anything tonal.
         let factor = 2f32.powf(exposure).clamp(0.05, 20.0);
@@ -1413,6 +1415,14 @@ fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Pa
         args.push(os("-gamma"));
         args.push(os(format!("{gamma:.3}")));
     }
+    Ok(args)
+}
+
+fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<PathBuf>, JobError> {
+    let magick = magick_path(cx)?;
+    let out = tool_out(job, cx, ToolId::EditPhoto);
+    let mut args = vec![os(&job.source)];
+    args.extend(photo_filter_args(params)?);
     args.push(os(&out));
 
     cx.ctx.set_stage("adjusting the photo");
@@ -1421,6 +1431,40 @@ fn edit_photo(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Pa
     ensure_file(&out, "the image encoder")?;
     cx.ctx.set_progress(1.0);
     Ok(vec![out])
+}
+
+/// The photo with its adjustments applied, at `size` on the long edge.
+///
+/// The source is never decoded at full resolution for a preview: a 63 MP photo
+/// costs ~250 MB as a bitmap and the dialog only ever shows 1024 px.
+pub fn photo_preview(
+    tools: &crate::Toolset,
+    cache: &crate::preview::PreviewCache,
+    source: &Path,
+    params: &ToolParams,
+    out: &Path,
+    size: u32,
+) -> Result<(), JobError> {
+    let magick = tools.path(ToolKey::Magick)?;
+    let ctx = JobCtx::new();
+    let mut args: Vec<OsString> = vec![
+        os(source),
+        os("-auto-orient"),
+        os("-thumbnail"),
+        os(format!("{size}x{size}>")),
+    ];
+    args.extend(photo_filter_args(params)?);
+    args.push(os("-quality"));
+    args.push(os("86"));
+    args.push(os(out));
+    let _permit = cache.preview_permit();
+    let output = proc::run(
+        Cmd::new(magick).args(args).budget(Budget::Short),
+        &ctx,
+    )?;
+    output.ok()?;
+    ensure_file(out, "the photo preview")?;
+    Ok(())
 }
 
 // ------------------------------------------------------------------ image → PDF

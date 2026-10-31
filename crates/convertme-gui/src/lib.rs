@@ -15,6 +15,7 @@ pub mod app;
 pub mod autostart;
 pub mod cli;
 pub mod commands;
+pub mod dialog;
 pub mod instance;
 pub mod overlay;
 pub mod state;

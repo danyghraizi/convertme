@@ -94,6 +94,20 @@
 
   --sidebar: 232px;
   --activity: 46px;
+
+  /* The two-pane tool dialog: a settings sheet and the explanatory rail that
+     describes what the tool does. These are the reference's numbers, measured from
+     its dialog captures (600 + 52 gap + 336 = 988 px content width). */
+  --dialog-sheet-w: 600px;
+  --dialog-rail-w: 336px;
+  --dialog-gap: 52px;
+  --dialog-radius: 28px;
+  --dialog-head-h: 56px;
+  --dialog-row-h: 40px;
+  --rail-eyebrow-size: 12px;
+  --rail-title-size: 40px;
+  --rail-copy-size: 16px;
+  --rail-benefit-size: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1081,10 +1095,45 @@ textarea {
 
 /* ------------------------------------------------------------------ fields */
 
+/* One control grammar for every dialog: the label on the left, the control on the
+   right, one row high. Rows carry no separator — a hairline between two ordinary
+   rows reads as a rendering artefact, and only a control boundary may draw one. */
 .field {
   display: grid;
-  gap: 6px;
+  grid-template-columns: minmax(132px, 34%) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 4px;
+  min-height: var(--dialog-row-h);
+  padding: 2px 0;
   min-width: 0;
+}
+
+.field > .field-label {
+  font-size: 13px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+/* Editors that are a surface rather than a control — previews, crop and redaction
+   boxes, timelines, page grids, metadata lists — take the full width, with the
+   label above them. */
+.field.is-block {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.field.is-block > .field-label {
+  margin-bottom: 2px;
+}
+
+/* The help text under a control belongs to it, not to a new row. */
+.field > .field-help {
+  grid-column: 2;
+}
+
+.field.is-block > .field-help {
+  grid-column: 1;
 }
 
 .field-label {
@@ -1128,6 +1177,71 @@ textarea {
   box-shadow: inset 0 1px 1px rgba(46, 39, 24, 0.03);
 }
 
+/* A select is a pill with one chevron of our own: the native arrow is drawn inside
+   the field and cannot be aligned with the rest of the row. */
+select {
+  appearance: none;
+  height: 34px;
+  min-height: 34px;
+  border-radius: var(--r-pill);
+  padding: 0 32px 0 12px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    right 17px top 15px,
+    right 12px top 15px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.field-checkbox,
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* A slider puts its value at the right of the track, in the same row. */
+.number-row,
+.range-row,
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.range-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.range-row output {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  min-width: 52px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.number-row input[type='number'] {
+  height: 34px;
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.checkbox-row input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 input[type='text']:focus,
 input[type='number']:focus,
 select:focus,
@@ -1169,23 +1283,18 @@ input[type='color'] {
   background: none;
 }
 
-.field-checkbox,
-.checkbox-row,
-.number-row,
-.range-row,
-.color-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
 .field-checkbox input {
   accent-color: var(--accent);
 }
 
 .field-editor {
   display: grid;
-  gap: var(--s-3);
+}
+
+/* The checkbox is its own label: a second label above it would say it twice. */
+.field > .checkbox-row {
+  grid-column: 1 / -1;
+  min-height: 26px;
 }
 
 /* Boxes editor ------------------------------------------------------- */
@@ -1279,48 +1388,102 @@ input[type='color'] {
 
 /* ------------------------------------------------------------------ modal */
 
+/* The dialog is two panes: the sheet that holds the controls, and a rail that
+   says what the tool does. The rail is not decoration — it is where the tool's
+   own copy lives, so a tool with no copy reads as an unfinished product. */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(32, 28, 20, 0.3);
-  backdrop-filter: blur(3px);
-  display: grid;
-  place-items: center;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: var(--s-5);
   z-index: 20;
 }
 
-@media (prefers-color-scheme: dark) {
-  .modal-backdrop {
-    background: rgba(0, 0, 0, 0.55);
-  }
+.dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dialog-gap);
+  max-width: calc(var(--dialog-sheet-w) + var(--dialog-rail-w) + var(--dialog-gap));
+  width: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
 
-.modal {
+/* Keeps `.modal`/`.modal-form` as aliases: the sheet *is* the modal, and the
+   fields, colour pickers and previews inside it are styled against those names. */
+.dialog-sheet.modal {
   position: relative;
-  width: var(--modal-w, min(640px, 100%));
+  /* A resize grip overrides the width; the default is the reference's sheet. */
+  width: var(--modal-w, var(--dialog-sheet-w));
   height: var(--modal-h, auto);
-  max-width: 94vw;
-  max-height: 92vh;
-  min-width: 420px;
+  min-width: 440px;
   min-height: 320px;
-  /* The head and the footer stay put; the fields scroll. A tall tool — the photo
-     sliders, the crop surface — must never push Run off the screen. */
+  max-width: 100%;
+  max-height: min(760px, 92vh);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: var(--dialog-head-h) auto minmax(0, 1fr) auto;
   overflow: hidden;
   background: var(--surface);
-  border-radius: var(--r-4);
+  border-radius: var(--dialog-radius);
   box-shadow: var(--shadow-lg), var(--shadow-inset);
 }
 
+.dialog-sheet.modal-form,
 .modal-form {
   display: grid;
-  /* file line, scrolling fields, footer: the file line was an implicit third row, which
-     let the fields slide under the header. */
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 0 var(--s-5);
+  min-height: var(--dialog-head-h);
+}
+
+.sheet-head h2,
+.sheet-title {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+.sheet-close {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet-close:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.modal-form {
+  /* file line, scrolling fields, footer */
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: var(--s-3);
-  padding: 0 var(--s-5) var(--s-5);
+  padding: 0 20px 0;
   min-height: 0;
 }
 
@@ -1347,15 +1510,16 @@ input[type='color'] {
 
 .modal-fields {
   display: grid;
-  gap: var(--s-3);
+  gap: var(--s-2);
   overflow-y: auto;
   overscroll-behavior: contain;
   /* The scrollbar gets its own lane instead of floating over the controls. */
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--rule-2) transparent;
-  padding: 0 18px var(--s-3) 2px;
+  padding: 0 8px var(--s-3) 0;
   min-height: 0;
+  align-content: start;
 }
 
 .modal-fields::-webkit-scrollbar {
@@ -1373,12 +1537,120 @@ input[type='color'] {
   background-clip: padding-box;
 }
 
+.sheet-foot {
+  display: grid;
+  gap: var(--s-2);
+  padding-bottom: var(--s-3);
+}
+
+.sheet-foot .field-error {
+  margin: 0;
+}
+
+.sheet-footer,
 .modal-footer {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding-top: var(--s-3);
+  height: 60px;
+  padding: 0 20px;
   border-top: 1px solid var(--rule);
+}
+
+.sheet-footer .button-primary,
+.modal-footer .button-primary {
+  min-width: 108px;
+  height: 34px;
+}
+
+.sheet-footer .button,
+.modal-footer .button {
+  height: 34px;
+}
+
+/* ------------------------------------------------------------------- rail */
+
+.dialog-rail {
+  width: var(--dialog-rail-w);
+  align-self: center;
+  max-height: min(680px, 88vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 0;
+  color: var(--ink);
+}
+
+.dialog-rail::-webkit-scrollbar {
+  width: 0;
+}
+
+.rail-eyebrow {
+  margin: 0 0 10px;
+  font-size: var(--rail-eyebrow-size);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.rail-title {
+  margin: 0;
+  font-size: var(--rail-title-size);
+  line-height: 1.08;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.rail-copy {
+  margin: 14px 0 0;
+  font-size: var(--rail-copy-size);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.rail-rule {
+  margin: 22px 0 18px;
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.rail-benefits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.rail-benefits li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  font-size: var(--rail-benefit-size);
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.rail-benefits .rail-check {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+/* Below this width the two panes do not fit side by side; the sheet keeps the
+   controls and the rail's copy moves out of the way. */
+@media (max-width: 980px) {
+  .dialog-rail {
+    display: none;
+  }
+
+  .dialog {
+    gap: 0;
+  }
 }
 
 /* ------------------------------------------------------------------ status */
@@ -1934,12 +2206,20 @@ body.wheel-body {
 
 /* Grouped tool controls and the live photo preview. */
 .modal-group {
-  margin: var(--s-4) 0 calc(var(--s-2) * -0.5);
+  margin: var(--s-3) 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-3);
+}
+
+.modal-fields > .modal-group:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .photo-preview {
@@ -2184,22 +2464,24 @@ body.wheel-body {
 .segmented {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 3px;
   padding: 3px;
   border-radius: var(--r-pill);
   background: var(--surface-2);
   box-shadow: inset 0 0 0 1px var(--rule);
+  min-width: 0;
 }
 
 .segmented button {
   border: 0;
   background: transparent;
   border-radius: var(--r-pill);
-  padding: 5px 12px;
+  padding: 5px 11px;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .segmented button.is-active {

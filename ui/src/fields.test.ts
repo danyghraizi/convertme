@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { FALLBACK_TOOLS } from './catalog.ts';
 import { collectParams } from './fields.ts';
 import type { Field } from './types.ts';
 
@@ -116,4 +117,33 @@ test('reduce colours only travels when it is switched on', () => {
   ];
   assert.deepEqual(collectParams(compress, { reduce: false, colours: '256' }), {});
   assert.deepEqual(collectParams(compress, { reduce: true, colours: '64' }), { colours: 64 });
+});
+
+/**
+ * The mock and the empty-wheel fallback both read this table, so it is the one place
+ * where a category can end up with cards that open a dialog with no copy. Every
+ * entry needs a title and an action; the reference tools also carry rail benefits.
+ */
+test('every fallback tool carries the dialog copy', () => {
+  for (const [category, tools] of Object.entries(FALLBACK_TOOLS)) {
+    const ids = tools.map((tool) => tool.id);
+    assert.deepEqual(ids, [...new Set(ids)], `${category} lists a tool twice`);
+    for (const tool of tools) {
+      assert.ok(tool.title, `${category}/${tool.id} has no title`);
+      assert.ok(tool.action, `${category}/${tool.id} has no action`);
+      assert.ok(tool.blurb, `${category}/${tool.id} has no blurb`);
+    }
+  }
+  // The reference dialogs, with the copy the Rust table spells out.
+  const images = FALLBACK_TOOLS.images;
+  const by = (id: string) => images.find((tool) => tool.id === id)!;
+  assert.equal(by('collage').title, 'Create a collage');
+  assert.equal(by('collage').action, 'Create Collage');
+  assert.deepEqual(by('crop').benefits, [
+    'Enter exact pixel dimensions',
+    'Use preset or custom aspect ratios',
+  ]);
+  assert.equal(by('compress').eyebrow, 'Any file');
+  assert.equal(by('metadata').title, 'Edit metadata');
+  assert.equal(by('metadata').action, 'Save');
 });

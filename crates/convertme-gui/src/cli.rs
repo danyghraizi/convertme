@@ -17,7 +17,8 @@ ConvertMe — offline file conversion
 Usage:
   convertme convert <file>... --to <FORMAT> [--overwrite never|ask|replace]
   convertme tool <file>... --tool <TOOL> [--params '<json>'] [--category <CATEGORY>]
-  convertme probe
+  convertme preview <file> --kind <thumb|filmstrip|waveform|pdf-pages|photo|compress>
+  convertme probe [--tools|--fields]
   convertme history [--limit N]
   convertme sweep
   convertme --version
@@ -35,6 +36,29 @@ tool:
 history:
   convertme history [--limit N]
 ";
+
+/// The verbs that make this a command-line run rather than a window launch.
+///
+/// One list, used by `main` to decide which front end to start: a verb that exists
+/// here but not there silently opens the window instead of doing the work (the
+/// `preview` subcommand did exactly that and hung a headless harness).
+pub fn is_cli_command(verb: &str) -> bool {
+    matches!(
+        verb,
+        "convert"
+            | "tool"
+            | "preview"
+            | "probe"
+            | "history"
+            | "sweep"
+            | "help"
+            | "--help"
+            | "-h"
+            | "--version"
+            | "-V"
+            | "version"
+    )
+}
 
 pub fn run(args: &[String]) -> i32 {
     let Some(command) = args.first().map(String::as_str) else {
@@ -56,7 +80,8 @@ pub fn run(args: &[String]) -> i32 {
         }
         "convert" => convert(&args[1..]),
         "tool" => tool(&args[1..]),
-        "probe" => probe(),
+        "preview" => preview(&args[1..]),
+        "probe" => probe(&args[1..]),
         "history" => history(&args[1..]),
         "sweep" => {
             let dirs = convertme_core::queue::sweep_temp_dirs();
@@ -289,6 +314,177 @@ fn tool(args: &[String]) -> i32 {
     )
 }
 
+/// Render one of the previews a dialog asks for and print what it produced.
+///
+/// This exists so the performance harness can measure the exact code the dialogs
+/// call (`PreviewCache`, the shared filter chain, the two-slot probe pool); the
+/// wheel itself never shells out to this. It writes only into the preview cache.
+fn preview(args: &[String]) -> i32 {
+    let parsed = match Args::parse(
+        args,
+        &["--kind", "--size", "--frames", "--params", "--help"],
+    ) {
+        Ok(parsed) => parsed,
+        Err(message) => return usage_error(&message),
+    };
+    if parsed.has("--help") {
+        print!("{USAGE}");
+        return 0;
+    }
+    let Some(kind) = parsed.value("--kind") else {
+        return usage_error("preview needs --kind");
+    };
+    let Some(source) = parsed.files.first().cloned() else {
+        return usage_error("preview needs a file");
+    };
+    let settings = paths::settings_json();
+    let cap = convertme_core::settings::Settings::load(&settings).preview_cache_bytes;
+    let cache = convertme_engines::preview::PreviewCache::new(paths::previews_dir(), cap);
+    let params: convertme_core::job::ToolParams = match parsed.value("--params") {
+        Some(json) => match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(serde_json::Value::Object(map)) => map.into_iter().collect(),
+            _ => {
+                eprintln!("--params must be a JSON object");
+                return 2;
+            }
+        },
+        None => Default::default(),
+    };
+    let size: u32 = parsed.value("--size").and_then(|v| v.parse().ok()).unwrap_or(512);
+    let frames: usize = parsed
+        .value("--frames")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+
+    let report = |paths: Vec<String>| {
+        let bytes: u64 = paths
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        println!(
+            "{}",
+            serde_json::json!({ "kind": kind, "paths": paths, "bytes": bytes })
+        );
+    };
+
+    match kind {
+        "thumb" => match cache.thumbnail(&source, size) {
+            Ok(path) => report(vec![path.to_string_lossy().into_owned()]),
+            Err(e) => return engine_error(e),
+        },
+        "filmstrip" => match cache.filmstrip(&source, frames) {
+            Ok(paths) => report(
+                paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(e) => return engine_error(e),
+        },
+        "waveform" => match cache.waveform(&source) {
+            Ok(w) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "kind": kind,
+                        "duration_ms": w.duration_ms,
+                        "peaks": w.peaks.len(),
+                        "bytes": 0,
+                    })
+                );
+            }
+            Err(e) => return engine_error(e),
+        },
+        "channels" => match cache.waveform_channels(&source) {
+            Ok((left, right)) => println!(
+                "{}",
+                serde_json::json!({
+                    "kind": kind,
+                    "left": left.peaks.len(),
+                    "right": right.peaks.len(),
+                    "bytes": 0,
+                })
+            ),
+            Err(e) => return engine_error(e),
+        },
+        "pdf-pages" => match cache.pdf_pages(&source) {
+            Ok(pages) => {
+                let paths: Vec<String> = pages
+                    .iter()
+                    .filter_map(|p| p.thumb.as_ref())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "kind": kind,
+                        "pages": pages.len(),
+                        "thumbs": paths.len(),
+                        "paths": paths,
+                        "bytes": 0,
+                    })
+                );
+            }
+            Err(e) => return engine_error(e),
+        },
+        "photo" => {
+            let tools = convertme_engines::Toolset::probe_now();
+            let key = match cache.artifact_key(&source, "photo", "cli", "jpg") {
+                Some(key) => key,
+                None => {
+                    eprintln!("cannot stat {}", source.display());
+                    return 2;
+                }
+            };
+            match convertme_engines::image::photo_preview(
+                &tools, &cache, &source, &params, &key, size,
+            ) {
+                Ok(()) => {
+                    cache.enforce_cap();
+                    report(vec![key.to_string_lossy().into_owned()]);
+                }
+                Err(e) => return engine_error(e),
+            }
+        }
+        "compress" => {
+            // The dialog's own function: normalize → encode → cache → numbers.
+            let tools = convertme_engines::Toolset::probe_now();
+            let params = serde_json::Value::Object(params);
+            match crate::commands::preview_compress_blocking(
+                &tools,
+                cache.root().to_path_buf(),
+                cap,
+                &source,
+                params,
+            ) {
+                Ok(preview) => println!(
+                    "{}",
+                    serde_json::json!({
+                        "kind": kind,
+                        "paths": [preview.path],
+                        "bytes": preview.bytes,
+                    })
+                ),
+                Err(message) => {
+                    eprintln!("{message}");
+                    return 1;
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown preview kind {other:?}");
+            return 2;
+        }
+    }
+    0
+}
+
+fn engine_error(error: convertme_core::error::JobError) -> i32 {
+    eprintln!("{error}");
+    1
+}
+
 fn execute(files: &[PathBuf], category: Category, intent: Intent, policy: Overwrite) -> i32 {
     let tools = convertme_engines::Toolset::probe_now();
     let caps = tools.capabilities();
@@ -396,7 +592,32 @@ fn execute(files: &[PathBuf], category: Category, intent: Intent, policy: Overwr
     if failures == 0 { 0 } else { 1 }
 }
 
-fn probe() -> i32 {
+fn probe(args: &[String]) -> i32 {
+    // `--tools` prints the tool table as JSON. The harnesses assert the dialog's copy
+    // against it, so they read the Rust table itself instead of keeping a fourth copy
+    // of the same strings.
+    if args.iter().any(|arg| arg == "--fields") {
+        println!("{}", crate::commands::all_tool_fields());
+        return 0;
+    }
+    if args.iter().any(|arg| arg == "--tools") {
+        let tools: Vec<serde_json::Value> = convertme_core::formats::TOOLS
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "id": tool.id.as_str(),
+                    "category": tool.category.key(),
+                    "label": tool.label,
+                    "title": tool.title,
+                    "action": tool.action,
+                    "benefits": tool.benefits,
+                    "eyebrow": tool.eyebrow,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "tools": tools }));
+        return 0;
+    }
     let opts = convertme_engines::probe::ProbeOptions::from_env();
     let caps = convertme_engines::probe::probe_all(&opts);
     let cache = paths::capabilities_json();

@@ -5,6 +5,7 @@ import CompressPreview from './compress-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor, { BoxesEditor } from './field-editor';
+import ToolInfo from './tool-info';
 import { collectParams, initialValue, visibleIn } from '../fields';
 import { formatBytes, isLosslessSelection, isPngSelection } from '../format';
 import type { Box, Field, FieldValue, Segment } from '../types';
@@ -69,6 +70,18 @@ interface ToolModalProps {
   onSubmit: (entries: { path: string; params: Record<string, unknown> }[]) => Promise<void>;
 }
 
+/**
+ * The primary button's text. The tool table writes `Save {n} Frame(s)`; a count of
+ * one reads "Frame", everything else "Frames", so the button never says "1 Frames".
+ */
+export function actionLabel(action: string | undefined, count: number): string {
+  const text = action ?? 'Run';
+  if (!text.includes('{n}')) return text;
+  return text
+    .replace('{n}', String(count))
+    .replace('Frame(s)', count === 1 ? 'Frame' : 'Frames');
+}
+
 export default function ToolModal(props: ToolModalProps) {
   const seed: Record<string, FieldValue> = {};
   for (const field of props.fields) seed[field.key] = initialValue(field);
@@ -81,6 +94,9 @@ export default function ToolModal(props: ToolModalProps) {
   const perFile = new Map<number, Record<string, FieldValue>>();
 
   const fileList = (): { path: string; label: string }[] => props.files ?? [];
+  /** The file the dialog is currently showing: the one its editors read. */
+  const shownPath = (): string | null =>
+    fileList()[shown()]?.path ?? props.previewPath;
 
   function seedDefaults(): void {
     for (const field of props.fields) setValues(field.key, initialValue(field));
@@ -108,7 +124,10 @@ export default function ToolModal(props: ToolModalProps) {
     setShown(next);
   }
   const [error, setError] = createSignal('');
+  /** How many items a counted action names ("Save 2 Frames"). */
+  const [actionCount, setActionCount] = createSignal(0);
   let dialog: HTMLDivElement | undefined;
+  let sheet: HTMLFormElement | undefined;
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
@@ -140,10 +159,16 @@ export default function ToolModal(props: ToolModalProps) {
   function reset(): void {
     for (const field of props.fields) setValues(field.key, initialValue(field));
     setError('');
+    setActionCount(0);
   }
 
+  /**
+   * A hidden field is owned by a dedicated editor (the crop surface, the page grid,
+   * a timeline): its value is still collected, but the generic control would be a
+   * second, unused input for the same number.
+   */
   const visibleFields = (): Field[] =>
-    activeFields().filter((field) => isVisible(field) && field.key !== 'boxes');
+    activeFields().filter((field) => isVisible(field) && !field.hidden);
 
   /**
    * Lossless encoders ignore `quality` (and the target-size search ignores it too),
@@ -217,19 +242,18 @@ export default function ToolModal(props: ToolModalProps) {
       }}
     >
       <div
-        class="modal"
+        class="dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="tool-modal-title"
+        aria-labelledby="rail-title"
         tabindex="-1"
         ref={dialog}
       >
-        <header class="modal-head">
-          <div>
-            <h2 id="tool-modal-title">{props.tool.label}</h2>
-            <p class="modal-blurb">{props.tool.blurb ?? ''}</p>
-          </div>
-        </header>
+        <form
+          class="dialog-sheet modal modal-form"
+          ref={sheet}
+          onSubmit={(event) => void submit(event)}
+        >
         <span
           class="modal-grip"
           role="separator"
@@ -237,13 +261,13 @@ export default function ToolModal(props: ToolModalProps) {
           onPointerDown={(event) => {
             const target = event.currentTarget;
             target.setPointerCapture(event.pointerId);
-            const rect = dialog?.getBoundingClientRect();
-            const start = { x: event.clientX, y: event.clientY, w: rect?.width ?? 640, h: rect?.height ?? 600 };
+            const rect = sheet?.getBoundingClientRect();
+            const start = { x: event.clientX, y: event.clientY, w: rect?.width ?? 600, h: rect?.height ?? 620 };
             const move = (e: PointerEvent): void => {
-              const width = Math.min(window.innerWidth * 0.94, Math.max(420, start.w + (e.clientX - start.x)));
+              const width = Math.min(window.innerWidth * 0.94, Math.max(440, start.w + (e.clientX - start.x)));
               const height = Math.min(window.innerHeight * 0.92, Math.max(320, start.h + (e.clientY - start.y)));
-              dialog?.style.setProperty('--modal-w', `${Math.round(width)}px`);
-              dialog?.style.setProperty('--modal-h', `${Math.round(height)}px`);
+              sheet?.style.setProperty('--modal-w', `${Math.round(width)}px`);
+              sheet?.style.setProperty('--modal-h', `${Math.round(height)}px`);
             };
             const up = (): void => {
               target.removeEventListener('pointermove', move);
@@ -255,13 +279,20 @@ export default function ToolModal(props: ToolModalProps) {
             target.addEventListener('pointercancel', up);
           }}
         />
-        <form class="modal-form" onSubmit={(event) => void submit(event)}>
-          <Show when={props.fileLabel}>
-            <p class="modal-file">
-              <span class="modal-file-name" title={props.fileLabel ?? ''}>
-                {props.fileLabel}
-              </span>
-              <Show when={fileList().length > 1}>
+        <header class="sheet-head">
+          <button type="button" class="sheet-close" aria-label="Close" onClick={() => props.onClose()}>
+            ×
+          </button>
+          <h2 id="sheet-title" class="sheet-title">
+            {props.tool.title ?? props.tool.label}
+          </h2>
+        </header>
+        <Show when={props.fileLabel}>
+          <p class="modal-file">
+            <span class="modal-file-name" title={props.fileLabel ?? ''}>
+              {props.fileLabel}
+            </span>
+            <Show when={fileList().length > 1}>
               <div class="modal-files" role="group" aria-label="Which file">
                 <button type="button" class="modal-file-step" aria-label="Previous file" onClick={() => go(-1)}>
                   ‹
@@ -408,29 +439,39 @@ export default function ToolModal(props: ToolModalProps) {
                   <FieldEditor
                     field={field}
                     value={values[field.key] ?? initialValue(field)}
-                    previewPath={props.previewPath}
+                    previewPath={shownPath()}
+                    files={fileList()}
                     onChange={(value) => setValues(field.key, value)}
                   />
                 </>
               )}
             </For>
           </div>
-          <p class="field-error" role="alert">
-            {error()}
-          </p>
-          <footer class="modal-footer">
-            <button type="button" class="button button-quiet" onClick={reset}>
-              Reset
-            </button>
-            <span class="modal-footer-gap" />
-            <button type="button" class="button button-quiet" onClick={() => props.onClose()}>
-              Cancel
-            </button>
-            <button type="submit" class="button button-primary" disabled={submitting()}>
-              {submitting() ? 'Starting…' : 'Run'}
-            </button>
-          </footer>
+          <div class="sheet-foot">
+            <Show when={error()}>
+              <p class="field-error" role="alert">
+                {error()}
+              </p>
+            </Show>
+            <footer class="sheet-footer modal-footer">
+              <button type="button" class="button button-quiet" onClick={reset}>
+                Reset
+              </button>
+              <span class="modal-footer-gap" />
+              {/* The primary button is named by the tool table, so the dialog says
+                  "Save Organized PDF" rather than a generic "Run". */}
+              <button
+                type="submit"
+                class="button button-primary"
+                data-testid="primary"
+                disabled={submitting()}
+              >
+                {submitting() ? 'Starting…' : actionLabel(props.tool.action, actionCount())}
+              </button>
+            </footer>
+          </div>
         </form>
+        <ToolInfo tool={props.tool} category={props.category} />
       </div>
     </div>
   );

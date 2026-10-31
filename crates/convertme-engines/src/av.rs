@@ -1063,14 +1063,19 @@ fn normalize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     Ok(vec![output])
 }
 
-/// Pull the loudnorm measurement block out of the first pass's stderr.
-fn measured_from_json(tail: &str) -> Option<String> {
+/// The JSON block a filter prints at the end of its stderr.
+fn json_block(tail: &str) -> Option<Value> {
     let start = tail.find('{')?;
     let end = tail.rfind('}')?;
     if end <= start {
         return None;
     }
-    let value: Value = serde_json::from_str(&tail[start..=end]).ok()?;
+    serde_json::from_str(&tail[start..=end]).ok()
+}
+
+/// Pull the loudnorm measurement block out of the first pass's stderr.
+pub(crate) fn measured_from_json(tail: &str) -> Option<String> {
+    let value = json_block(tail)?;
     let field = |key: &str| {
         value.get(key).and_then(|v| match v {
             Value::String(s) => Some(s.clone()),
@@ -1459,6 +1464,111 @@ fn atempo_chain(factor: f64) -> String {
 
 // ------------------------------------------------------------------ ffprobe
 
+/// What a dialog needs to know about a media file before it draws anything: the
+/// duration on the timeline, the frame size on the crop surface, whether there is an
+/// audio track to preview, and what container it is in.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MediaFacts {
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+    pub has_audio: bool,
+    pub has_video: bool,
+    pub format: String,
+}
+
+/// The same probe the engines use, callable without a job.
+///
+/// An image has no duration and its size comes from its own headers, so it never
+/// needs an FFprobe run; everything else is one shared argv (see `probe`) so a
+/// dialog and a job can never disagree about a clip's length.
+pub fn media_info(
+    tools: &crate::Toolset,
+    path: &Path,
+) -> Result<MediaFacts, JobError> {
+    if let Some(facts) = image_facts(path) {
+        return Ok(facts);
+    }
+    let ffprobe = tools.path(ToolKey::Ffprobe)?;
+    let ctx = JobCtx::new();
+    let output = proc::run(probe_argv(&ffprobe, path), &ctx)?;
+    let output = output.ok()?;
+    let info = parse_probe_json(&output.stdout)?;
+    let format = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    Ok(MediaFacts {
+        duration: info.duration,
+        width: info.width,
+        height: info.height,
+        has_audio: info.has_audio,
+        has_video: info.has_video,
+        format,
+    })
+}
+
+/// Loudness of a file as measured, in the units the Normalize dialog shows.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Loudness {
+    pub input_i: f64,
+    pub input_tp: f64,
+    pub input_lra: f64,
+}
+
+/// Measure a file the way the normalizer's first pass does.
+///
+/// The dialog shows these numbers before the job runs, so they must come from the
+/// same filter string: `loudnorm`'s own measurement, parsed from the JSON block.
+pub fn measure_loudness(tools: &crate::Toolset, path: &Path) -> Result<Loudness, JobError> {
+    let ffmpeg = tools.path(ToolKey::Ffmpeg)?;
+    let ctx = JobCtx::new();
+    let mut cmd = ffmpeg_cmd(&ffmpeg);
+    cmd = cmd
+        .arg("-i")
+        .arg(path)
+        .arg("-af")
+        .arg("loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json")
+        .args(["-f", "null"])
+        .arg(null_sink());
+    let output = proc::run(cmd.budget(Budget::Short).stdout_piped(), &ctx)?;
+    let output = output.ok()?;
+    let block = json_block(&output.stderr_tail)
+        .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "ffmpeg printed no loudness measurement"))?;
+    let number = |key: &str| match block.get(key) {
+        Some(Value::String(s)) => s.parse::<f64>().ok(),
+        Some(Value::Number(n)) => n.as_f64(),
+        _ => None,
+    };
+    Ok(Loudness {
+        input_i: number("input_i").unwrap_or(0.0),
+        input_tp: number("input_tp").unwrap_or(0.0),
+        input_lra: number("input_lra").unwrap_or(0.0),
+    })
+}
+
+/// Dimensions of a still image, from its own headers.
+fn image_facts(path: &Path) -> Option<MediaFacts> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let still = matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "avif" | "heic" | "tif" | "tiff" | "bmp" | "gif"
+    );
+    if !still {
+        return None;
+    }
+    let (width, height) = crate::image_dimensions(path)?;
+    Some(MediaFacts {
+        duration: 0.0,
+        width,
+        height,
+        has_audio: false,
+        has_video: false,
+        format: ext,
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct MediaInfo {
     duration: f64,
@@ -1471,7 +1581,15 @@ struct MediaInfo {
 
 fn probe(cx: &Context<'_>, path: &Path) -> Result<MediaInfo, JobError> {
     let ffprobe = cx.tools.path(ToolKey::Ffprobe)?;
-    let cmd = Cmd::new(ffprobe)
+    let output = proc::run(probe_argv(&ffprobe, path), cx.ctx)?;
+    let output = output.ok()?;
+    parse_probe_json(&output.stdout)
+}
+
+/// The one ffprobe invocation shape: duration and size of the container, plus the
+/// streams and the frame size.
+fn probe_argv(ffprobe: &Path, path: &Path) -> Cmd {
+    Cmd::new(ffprobe)
         .args([
             "-v",
             "error",
@@ -1482,10 +1600,11 @@ fn probe(cx: &Context<'_>, path: &Path) -> Result<MediaInfo, JobError> {
         ])
         .arg(path)
         .stdout_piped()
-        .budget(Budget::Short);
-    let output = proc::run(cmd, cx.ctx)?;
-    let output = output.ok()?;
-    let value: Value = serde_json::from_str(&output.stdout).map_err(|e| {
+        .budget(Budget::Short)
+}
+
+fn parse_probe_json(stdout: &str) -> Result<MediaInfo, JobError> {
+    let value: Value = serde_json::from_str(stdout).map_err(|e| {
         JobError::new(
             ErrorCode::EngineFailed,
             format!("ffprobe returned unreadable JSON: {e}"),
@@ -1519,6 +1638,58 @@ fn probe(cx: &Context<'_>, path: &Path) -> Result<MediaInfo, JobError> {
         }
     }
     Ok(info)
+}
+
+/// Re-encode an artifact as MP3 for playback in the dialog.
+///
+/// WebKit's `<audio>` does not play every container the engine writes (FLAC in a
+/// WAV wrapper, Ogg Opus), so a preview is normalised to one codec. `max_bytes` is
+/// checked on the encoded file: a cap that is never enforced is a promise.
+pub fn transcode_preview(
+    tools: &crate::Toolset,
+    from: &Path,
+    to: &Path,
+    max_bytes: u64,
+) -> Result<(), JobError> {
+    let ffmpeg = tools.path(ToolKey::Ffmpeg)?;
+    let ctx = JobCtx::new();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staged = to.with_extension(format!("preview-{stamp}.mp3"));
+    let cmd = ffmpeg_cmd(&ffmpeg)
+        .arg("-i")
+        .arg(from)
+        .arg("-vn")
+        .args(["-c:a", "libmp3lame", "-b:a", "96k"])
+        .arg(&staged)
+        .budget(Budget::Long);
+    let result = proc::run(cmd, &ctx)?;
+    if let Err(e) = result.ok() {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    let size = std::fs::metadata(&staged).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        let _ = std::fs::remove_file(&staged);
+        return Err(JobError::new(
+            ErrorCode::EngineFailed,
+            "the audio preview produced an empty file",
+        ));
+    }
+    if size > max_bytes {
+        let _ = std::fs::remove_file(&staged);
+        return Err(JobError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "the preview would be {} MB; shorten the selection",
+                size.div_ceil(1024 * 1024)
+            ),
+        ));
+    }
+    std::fs::rename(&staged, to).map_err(|e| JobError::io("storing the audio preview", &e))?;
+    Ok(())
 }
 
 // ------------------------------------------------------------------ ffmpeg

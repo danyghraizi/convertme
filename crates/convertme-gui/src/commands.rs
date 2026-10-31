@@ -18,9 +18,38 @@ pub struct Segment {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blurb: Option<String>,
+    /// Dialog copy from the tool table: the sheet/rail heading, the primary button,
+    /// the rail's check lines, and an eyebrow that replaces the category label.
+    /// Convert and action segments carry none of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub benefits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eyebrow: Option<String>,
     pub disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+}
+
+impl Segment {
+    /// A segment with no dialog copy: a convert target, a file action, or a tool
+    /// whose dialog keeps the plain label and the default button.
+    fn plain(id: &str, label: &str, blurb: Option<&str>) -> Segment {
+        Segment {
+            id: id.to_string(),
+            label: label.to_string(),
+            blurb: blurb.map(str::to_string),
+            title: None,
+            action: None,
+            benefits: Vec::new(),
+            eyebrow: None,
+            disabled: false,
+            hint: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -139,9 +168,16 @@ pub struct Field {
     /// Section heading, when a tool's controls fall into groups.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// One line of help under the control, when the value needs explaining.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
     /// A control that drives the form (a mode switch) rather than a job parameter.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub control: bool,
+    /// Owned by a dedicated editor (the crop surface, the page grid, a timeline):
+    /// its value is still submitted, but no generic control is drawn for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl Field {
@@ -163,6 +199,18 @@ impl Field {
     /// Put this control under a section heading.
     fn group(mut self, name: &str) -> Self {
         self.group = Some(name.into());
+        self
+    }
+
+    /// One line of help under the control.
+    fn help(mut self, text: &str) -> Self {
+        self.help = Some(text.into());
+        self
+    }
+
+    /// The value is submitted, but a dedicated editor draws it.
+    fn hidden(mut self) -> Self {
+        self.hidden = true;
         self
     }
 
@@ -318,8 +366,21 @@ pub fn wheels(state: State<'_, AppState>, category: String, format: Option<Strin
     };
     let caps = state.caps.read().clone();
     let source = format.as_deref().and_then(Registry::by_id).map(|f| f.id);
+    WheelSet {
+        convert: convert_segments(category, source, &caps),
+        tools: tool_segments(category, &caps),
+        actions: action_segments(),
+    }
+}
 
-    let convert = Registry::wheel_targets(category, source)
+/// The convert wheel: one segment per writable target, disabled (with the reason)
+/// when its engine is missing.
+fn convert_segments(
+    category: Category,
+    source: Option<convertme_core::formats::FormatId>,
+    caps: &convertme_core::capability::Capabilities,
+) -> Vec<Segment> {
+    Registry::wheel_targets(category, source)
         .into_iter()
         .map(|f| {
             let engine = source.and_then(|from| Registry::engine_for(from, f.id));
@@ -330,82 +391,68 @@ pub fn wheels(state: State<'_, AppState>, category: String, format: Option<Strin
                 _ => (false, None),
             };
             Segment {
-                id: f.id.0.to_string(),
-                label: f.label.to_string(),
-                blurb: Some(format!("Convert to {}", f.label)),
                 disabled,
                 hint,
+                ..Segment::plain(&f.id.0, f.label, Some(&format!("Convert to {}", f.label)))
             }
         })
-        .collect();
+        .collect()
+}
 
-    let tools = Registry::tools_for_available(category, &caps)
+/// The tool wheel. The dialog's copy travels with the segment, so a category whose
+/// wheel came from this payload never renders a rail with no words in it.
+fn tool_segments(
+    category: Category,
+    caps: &convertme_core::capability::Capabilities,
+) -> Vec<Segment> {
+    Registry::tools_for_available(category, caps)
         .into_iter()
         .map(|t| Segment {
-            id: t.id.as_str().to_string(),
-            label: t.label.to_string(),
-            blurb: Some(t.blurb.to_string()),
-            disabled: false,
-            hint: None,
+            title: Some(t.title.to_string()),
+            action: Some(t.action.to_string()),
+            benefits: t.benefits.iter().map(|b| (*b).to_string()).collect(),
+            eyebrow: t.eyebrow.map(str::to_string),
+            ..Segment::plain(t.id.as_str(), t.label, Some(t.blurb))
         })
-        .collect();
-
-    WheelSet {
-        convert,
-        tools,
-        actions: action_segments(),
-    }
+        .collect()
 }
 
 fn action_segments() -> Vec<Segment> {
     let mut actions = vec![];
     if cfg!(windows) {
-        actions.push(Segment {
-            id: "share".into(),
-            label: "Share".into(),
-            blurb: Some("Hand the file to a nearby app through the system share sheet.".into()),
-            disabled: false,
-            hint: None,
-        });
+        actions.push(Segment::plain(
+            "share",
+            "Share",
+            Some("Hand the file to a nearby app through the system share sheet."),
+        ));
     }
-    actions.push(Segment {
-        id: "preview".into(),
-        label: "Float".into(),
-        blurb: Some("Open an always-on-top preview window.".into()),
-        disabled: false,
-        hint: None,
-    });
-    actions.push(Segment {
-        id: "copy".into(),
-        label: "Copy".into(),
-        blurb: Some("Copy the selection to another folder.".into()),
-        disabled: false,
-        hint: None,
-    });
-    actions.push(Segment {
-        id: "move".into(),
-        label: "Move".into(),
-        blurb: Some(
-            "Move the selection to another folder. This is the only action that relocates a file."
-                .into(),
+    actions.push(Segment::plain(
+        "preview",
+        "Float",
+        Some("Open an always-on-top preview window."),
+    ));
+    actions.push(Segment::plain(
+        "copy",
+        "Copy",
+        Some("Copy the selection to another folder."),
+    ));
+    actions.push(Segment::plain(
+        "move",
+        "Move",
+        Some(
+            "Move the selection to another folder. This is the only action that relocates a file.",
         ),
-        disabled: false,
-        hint: None,
-    });
-    actions.push(Segment {
-        id: "copy-path".into(),
-        label: "Copy path".into(),
-        blurb: Some("Put the full path on the clipboard.".into()),
-        disabled: false,
-        hint: None,
-    });
-    actions.push(Segment {
-        id: "terminal".into(),
-        label: "Terminal".into(),
-        blurb: Some("Open a terminal in the file's folder.".into()),
-        disabled: false,
-        hint: None,
-    });
+    ));
+    actions.push(Segment::plain(
+        "copy-path",
+        "Copy path",
+        Some("Put the full path on the clipboard."),
+    ));
+    actions.push(Segment::plain(
+        "terminal",
+        "Terminal",
+        Some("Open a terminal in the file's folder."),
+    ));
     actions
 }
 
@@ -497,7 +544,7 @@ pub async fn compress_preview(
 
 /// The body of [`compress_preview`], without Tauri, so the whole path (normalize →
 /// encode → cache → reported numbers) can be exercised with a real file.
-fn preview_compress_blocking(
+pub(crate) fn preview_compress_blocking(
     tools: &convertme_engines::Toolset,
     cache_root: PathBuf,
     cap: u64,
@@ -627,6 +674,19 @@ fn checkbox(key: &str, label: &str, default: bool) -> Field {
     }
 }
 
+/// The metadata browser: one structured field over the writer's `set`/`remove`/`strip`
+/// keys. The per-tag text fields it replaces offered tags the writer could not set and
+/// had no way to delete one, which is what the reference's browser exists for.
+fn metadata_field() -> Field {
+    Field {
+        key: "meta".into(),
+        label: "Metadata".into(),
+        kind: "metadata".into(),
+        default: serde_json::json!({ "set": {}, "remove": [], "strip": false }),
+        ..Default::default()
+    }
+}
+
 fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
     match (category, tool) {
         (Category::Images, ToolId::Compress) => vec![
@@ -678,7 +738,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 kind: "boxes".into(),
                 default: serde_json::json!([]),
                 ..Default::default()
-            },
+            }
+            .hidden(),
             select(
                 "aspect",
                 "Aspect ratio",
@@ -801,17 +862,9 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             range("saturation", "Saturation", -100.0, 100.0, 1.0, "").group("Colour"),
             range("hue", "Hue", -180.0, 180.0, 1.0, "°").group("Colour"),
         ],
-        (Category::Images, ToolId::Metadata) => {
-            // The common subset every writable image container accepts: PNG/WEBP/
-            // TIFF go through ImageMagick, JPG/HEIC through the EXIF writer.
-            let tags = ["Title", "Description", "Artist", "Copyright"];
-            let mut fields: Vec<Field> = tags
-                .iter()
-                .map(|tag| text(&format!("set.{tag}"), tag, "", None))
-                .collect();
-            fields.push(checkbox("strip", "Remove all tags", false));
-            fields
-        }
+        // The tags differ per container (EXIF for JPG/TIFF, ImageMagick for PNG/WEBP);
+        // the browser asks the writer which ones it can change.
+        (Category::Images, ToolId::Metadata) => vec![metadata_field()],
         (Category::Images, ToolId::Redact) => {
             let fields = vec![
                 Field {
@@ -820,7 +873,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                     kind: "boxes".into(),
                     default: serde_json::json!([]),
                     ..Default::default()
-                },
+                }
+                .hidden(),
                 text("color", "Fill colour", "#000000", None),
             ];
             // Region detection lives in the boxes editor's Detect faces/text
@@ -900,7 +954,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 kind: "boxes".into(),
                 default: serde_json::json!([]),
                 ..Default::default()
-            },
+            }
+            .hidden(),
             text(
                 "ranges",
                 "Time ranges",
@@ -908,7 +963,16 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 Some("start-end, comma separated"),
             ),
         ],
-        (Category::Video, ToolId::Join) | (Category::Pdf, ToolId::Merge) => vec![],
+        // A multi-input tool orders its inputs in the dialog; the editor owns the
+        // list and the value travels as indices into the selection.
+        (Category::Video, ToolId::Join) | (Category::Pdf, ToolId::Merge) => vec![Field {
+            key: "order".into(),
+            label: "Order".into(),
+            kind: "files".into(),
+            default: serde_json::json!([]),
+            ..Default::default()
+        }
+        .hidden()],
         (Category::Video, ToolId::Split) => {
             vec![text(
                 "sections",
@@ -948,17 +1012,7 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 Some("start-end, comma separated"),
             )]
         }
-        (Category::Audio, ToolId::Metadata) => {
-            let tags = convertme_engines::metadata::editable_tags(
-                convertme_core::formats::FormatId("MP3"),
-            );
-            let mut fields: Vec<Field> = tags
-                .iter()
-                .map(|t| text(&format!("set.{t}"), t, "", None))
-                .collect();
-            fields.push(checkbox("strip", "Remove all tags", false));
-            fields
-        }
+        (Category::Audio, ToolId::Metadata) => vec![metadata_field()],
         (Category::Pdf, ToolId::Compress) => vec![
             select(
                 "preset",
@@ -976,21 +1030,21 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 "bytes",
             ),
         ],
+        // The organizer is a surface, not a field: it owns `order` and `rotate`, and
+        // the one control beside it is the width match.
         (Category::Pdf, ToolId::Organize) => vec![
-            text("order", "Page order", "", Some("1,3,2")),
-            text("rotate", "Rotate", "", Some("1:90,2:180")),
+            Field {
+                key: "pages".into(),
+                label: "Pages".into(),
+                kind: "pages".into(),
+                default: serde_json::json!({ "order": [], "rotate": [] }),
+                ..Default::default()
+            },
+            checkbox("same_width", "Make all pages the same width", false).help(
+                "Pages are scaled proportionally to match the narrowest page; their heights may still differ.",
+            ),
         ],
-        (Category::Pdf, ToolId::Metadata) => {
-            let tags = convertme_engines::metadata::editable_tags(
-                convertme_core::formats::FormatId("PDF"),
-            );
-            let mut fields: Vec<Field> = tags
-                .iter()
-                .map(|t| text(&format!("set.{t}"), t, "", None))
-                .collect();
-            fields.push(checkbox("strip", "Remove all information", false));
-            fields
-        }
+        (Category::Pdf, ToolId::Metadata) => vec![metadata_field()],
         (Category::Pdf, ToolId::SavePages) => {
             vec![select("format", "Image format", "jpg", &["jpg", "png"])]
         }
@@ -1297,21 +1351,22 @@ mod field_payload {
         );
     }
 
-    /// Images Metadata once had no field table, so the card ran a job with `{}` and
-    /// failed "nothing to change". These are the tags both image writers accept.
+    /// Metadata is one browser over three backend keys, in every category that has a
+    /// writer. The per-tag text fields it replaced offered tags the writer rejected.
     #[test]
-    fn image_metadata_exposes_writable_tags() {
-        let fields = super::tool_fields("images".into(), "metadata".into());
-        for tag in ["Title", "Description", "Artist", "Copyright"] {
-            let field = fields
-                .iter()
-                .find(|f| f.key == format!("set.{tag}"))
-                .unwrap_or_else(|| panic!("missing set.{tag}"));
-            assert_eq!(field.kind, "text");
+    fn every_metadata_tool_shows_the_browser() {
+        for category in ["images", "audio", "pdf"] {
+            let fields = super::tool_fields(category.into(), "metadata".into());
+            assert_eq!(fields.len(), 1, "{category} metadata has extra fields");
+            let field = &fields[0];
+            assert_eq!(field.key, "meta");
+            assert_eq!(field.kind, "metadata");
+            assert_eq!(
+                field.default,
+                serde_json::json!({ "set": {}, "remove": [], "strip": false }),
+                "{category}: the browser starts with nothing to change"
+            );
         }
-        let strip = fields.iter().find(|f| f.key == "strip").unwrap();
-        assert_eq!(strip.kind, "checkbox");
-        assert_eq!(strip.default, serde_json::json!(false));
     }
 
     /// A switch that drives `show_if` must be a control or it travels as a parameter;
@@ -1505,5 +1560,184 @@ mod field_payload {
             unchanged.bytes, unchanged.source_bytes,
             "the preview promised a larger file"
         );
+    }
+}
+
+/// Every (category, tool) field table, as one JSON object.
+///
+/// This is what `ui/src/fields.generated.json` holds, and what the mock renders from:
+/// the dialog's fields come from the backend table in both modes, so a mock cannot
+/// show a control the app does not have (it used to: a hand-written mock table had
+/// `boxes` visible for the crop dialog and the surface appeared twice).
+pub fn all_tool_fields() -> serde_json::Value {
+    let mut categories = serde_json::Map::new();
+    for category in Category::ALL {
+        let mut tools = serde_json::Map::new();
+        for tool in Registry::tools_for(category) {
+            tools.insert(
+                tool.id.as_str().to_string(),
+                serde_json::to_value(fields_for(category, tool.id)).unwrap_or_default(),
+            );
+        }
+        categories.insert(category.key().to_string(), serde_json::Value::Object(tools));
+    }
+    serde_json::Value::Object(categories)
+}
+
+/// The table as the generated file holds it: keys sorted, so the file is diffable.
+pub fn sorted_json(value: &serde_json::Value) -> String {
+    fn sorted(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut out = serde_json::Map::new();
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for key in keys {
+                    out.insert(key.clone(), sorted(&map[key]));
+                }
+                serde_json::Value::Object(out)
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(sorted).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string_pretty(&sorted(value)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod generated_fields {
+    /// The mock's copy of the field tables must be the backend's copy.
+    ///
+    /// `scripts/gen-ui-fields.py` writes the file; this test is what makes forgetting
+    /// to run it a failure instead of a mock that quietly renders a stale dialog.
+    #[test]
+    fn the_ui_field_table_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/src/fields.generated.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{} is missing ({e}); run `./scripts/gen-ui-fields.py`",
+                path.display()
+            )
+        });
+        let current = super::all_tool_fields();
+        // Escape hatch for the writer: the file is data the mock imports, so the test
+        // is the only thing that can regenerate it from the code that is compiling.
+        if std::env::var_os("UPDATE_FIELDS").is_some() {
+            std::fs::write(&path, super::sorted_json(&current) + "\n")
+                .expect("writing the field table");
+            return;
+        }
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&text).expect("parse the generated file");
+        assert_eq!(
+            on_disk,
+            current,
+            "the mock's field tables are stale: run `UPDATE_FIELDS=1 cargo test -p convertme-gui \
+             generated_fields`, then `npm --prefix ui run build`"
+        );
+    }
+}
+
+#[cfg(test)]
+mod wheels_payload {
+    use super::*;
+    use convertme_core::capability::Capabilities;
+
+    /// The dialog draws its title, its primary button and the rail from these four
+    /// keys. A wheel that omits them renders an empty sheet head and a rail with no
+    /// copy, which is exactly what the mock-only harness cannot see.
+    #[test]
+    fn tool_segments_carry_the_dialog_copy() {
+        let caps = Capabilities::assume_all();
+        for category in Category::ALL {
+            for segment in super::tool_segments(category, &caps) {
+                let tool = Registry::tool(category, ToolId::parse(&segment.id).unwrap()).unwrap();
+                assert_eq!(
+                    segment.title.as_deref(),
+                    Some(tool.title),
+                    "{category}/{} title",
+                    segment.id
+                );
+                assert_eq!(
+                    segment.action.as_deref(),
+                    Some(tool.action),
+                    "{category}/{} action",
+                    segment.id
+                );
+                assert_eq!(segment.benefits.len(), tool.benefits.len());
+                assert_eq!(segment.eyebrow.as_deref(), tool.eyebrow);
+                // The blurb is the rail's body copy.
+                assert_eq!(segment.blurb.as_deref(), Some(tool.blurb));
+            }
+        }
+    }
+
+    /// Compress and Metadata exist per category but read the same in each; the
+    /// reference calls that "Any file" instead of the category word.
+    #[test]
+    fn cross_format_editors_say_any_file() {
+        let caps = Capabilities::assume_all();
+        for category in [Category::Images, Category::Video, Category::Audio, Category::Pdf] {
+            let segments = super::tool_segments(category, &caps);
+            let compress = segments.iter().find(|s| s.id == "compress").unwrap();
+            assert_eq!(compress.title.as_deref(), Some("Compress"));
+            assert_eq!(compress.action.as_deref(), Some("Compress"));
+            assert_eq!(compress.eyebrow.as_deref(), Some("Any file"));
+            assert!(!compress.benefits.is_empty());
+        }
+        // An ordinary tool falls back to the category label: no eyebrow.
+        let images = super::tool_segments(Category::Images, &caps);
+        let crop = images.iter().find(|s| s.id == "crop").unwrap();
+        assert_eq!(crop.eyebrow, None);
+        assert_eq!(crop.action.as_deref(), Some("Apply"));
+    }
+
+    /// Every tool card is a promise that a dialog opens. A card whose field table is
+    /// empty runs the job straight from the wheel, which is only right for tools that
+    /// genuinely have nothing to ask (Mute, Split pages, Extract text, Extract).
+    #[test]
+    fn only_fieldless_tools_run_without_a_dialog() {
+        let caps = Capabilities::assume_all();
+        let fieldless = [
+            (Category::Video, ToolId::Mute),
+            (Category::Pdf, ToolId::Split),
+            (Category::Pdf, ToolId::ExtractText),
+            (Category::Archives, ToolId::Extract),
+        ];
+        for category in Category::ALL {
+            for segment in super::tool_segments(category, &caps) {
+                let tool = ToolId::parse(&segment.id).unwrap();
+                let has_fields = !super::fields_for(category, tool).is_empty();
+                if fieldless.contains(&(category, tool)) {
+                    assert!(!has_fields, "{category}/{tool} should ask nothing");
+                } else {
+                    assert!(
+                        has_fields,
+                        "{category}/{tool} runs silently from the wheel: its dialog has no fields"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Convert targets and file actions are not tools: a stale title on them would
+    /// make the dialog claim they have a settings sheet.
+    #[test]
+    fn convert_and_action_segments_carry_no_dialog_copy() {
+        let caps = Capabilities::assume_all();
+        for segment in super::convert_segments(Category::Images, None, &caps) {
+            assert!(segment.title.is_none());
+            assert!(segment.action.is_none());
+            assert!(segment.benefits.is_empty());
+            assert!(segment.eyebrow.is_none());
+        }
+        for segment in super::action_segments() {
+            assert!(segment.title.is_none());
+            assert!(segment.action.is_none());
+            assert!(segment.benefits.is_empty());
+        }
     }
 }

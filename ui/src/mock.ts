@@ -1,4 +1,6 @@
 import { ACTIONS, FALLBACK_TARGETS, FALLBACK_TOOLS } from './catalog';
+import generatedFields from './fields.generated.json';
+import { readFields } from './field-parse';
 import { baseName, extensionOf, isLosslessImage } from './format';
 import type {
   AnalyzeResult,
@@ -8,9 +10,15 @@ import type {
   Field,
   HistoryRow,
   JobEvent,
+  Loudness,
+  MediaInfo,
+  MetaGroup,
+  PdfPage,
   RunResult,
   Segment,
   Settings,
+  WaveformData,
+  ChannelWaveforms,
   WheelContents,
 } from './types';
 
@@ -198,364 +206,19 @@ export function mockWheels(category: string, format: string | null): WheelConten
   return { convert, tools, actions };
 }
 
-const TOOL_FIELDS: Record<string, Field[]> = {
-  compress: [
-    {
-      key: 'quality',
-      label: 'Quality',
-      kind: 'range',
-      default: 80,
-      min: 1,
-      max: 100,
-      step: 1,
-    },
-    {
-      key: 'scale',
-      label: 'Image size',
-      kind: 'select',
-      default: '100',
-      options: ['100', '75', '50', '25'],
-      option_labels: [
-        'Keep original dimensions',
-        '75 % of the dimensions',
-        '50 % of the dimensions',
-        '25 % of the dimensions',
-      ],
-    },
-    {
-      key: 'reduce',
-      label: 'Reduce colours (lossy)',
-      kind: 'checkbox',
-      default: false,
-      control: true,
-    },
-    {
-      key: 'colours',
-      label: 'Colours',
-      kind: 'select',
-      default: '256',
-      options: ['256', '128', '64', '32', '16'],
-      option_labels: ['256 colours', '128 colours', '64 colours', '32 colours', '16 colours'],
-      show_if: { key: 'reduce', equals: 'true' },
-    },
-    {
-      key: 'target',
-      label: 'Compress to a target file size',
-      kind: 'checkbox',
-      default: false,
-      control: true,
-    },
-    {
-      key: 'target_bytes',
-      label: 'Target size',
-      kind: 'number',
-      default: 500000,
-      min: 1000,
-      max: 2000000000,
-      step: 1000,
-      unit: 'bytes',
-      show_if: { key: 'target', equals: 'true' },
-    },
-  ],
-  crop: [
-    { key: 'boxes', label: 'Area to keep', kind: 'boxes', default: [] },
-    {
-      key: 'aspect',
-      label: 'Aspect ratio',
-      kind: 'segmented',
-      default: 'free',
-      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4'],
-      option_labels: ['Free', '1:1', '16:9', '4:3', '9:16', '3:4'],
-    },
-  ],
-  'edit-photo': [
-    { key: 'exposure', label: 'Exposure', kind: 'range', default: 0, min: -3, max: 3, step: 0.1, unit: 'EV', group: 'Light' },
-    { key: 'brightness', label: 'Brightness', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Light' },
-    { key: 'contrast', label: 'Contrast', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Light' },
-    { key: 'gamma', label: 'Gamma', kind: 'range', default: 1, min: 0.2, max: 3, step: 0.01, group: 'Light' },
-    { key: 'temperature', label: 'Temperature', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Colour' },
-    { key: 'saturation', label: 'Saturation', kind: 'range', default: 0, min: -100, max: 100, step: 1, group: 'Colour' },
-    { key: 'hue', label: 'Hue', kind: 'range', default: 0, min: -180, max: 180, step: 1, unit: '°', group: 'Colour' },
-  ],
-  'add-background': [
-    {
-      key: 'mode',
-      label: 'Background',
-      kind: 'select',
-      default: 'colour',
-      options: ['colour', 'gradient', 'image'],
-      option_labels: ['A colour', 'A gradient', 'Another image'],
-      control: true,
-    },
-    {
-      key: 'color',
-      label: 'Colour',
-      kind: 'color',
-      default: '#101418',
-      show_if: { key: 'mode', equals: 'colour' },
-    },
-    {
-      key: 'gradient',
-      label: 'Gradient',
-      kind: 'gradient',
-      default: 'linear|0|#f6c26b@0,#e4572e@100',
-      show_if: { key: 'mode', equals: 'gradient' },
-    },
-    {
-      key: 'image',
-      label: 'Background image',
-      kind: 'file',
-      default: '',
-      unit: 'path',
-      show_if: { key: 'mode', equals: 'image' },
-    },
-    {
-      key: 'bg_zoom',
-      label: 'Image zoom',
-      kind: 'range',
-      default: 1,
-      min: 1,
-      max: 3,
-      step: 0.1,
-      unit: '×',
-      show_if: { key: 'mode', equals: 'image' },
-    },
-    {
-      key: 'bg_x',
-      label: 'Image across',
-      kind: 'range',
-      default: 0,
-      min: -100,
-      max: 100,
-      step: 1,
-      unit: '%',
-      show_if: { key: 'mode', equals: 'image' },
-    },
-    {
-      key: 'bg_y',
-      label: 'Image up/down',
-      kind: 'range',
-      default: 0,
-      min: -100,
-      max: 100,
-      step: 1,
-      unit: '%',
-      show_if: { key: 'mode', equals: 'image' },
-    },
-    {
-      key: 'padding_pct',
-      label: 'Padding',
-      kind: 'range',
-      default: 4,
-      min: 0,
-      max: 100,
-      step: 0.5,
-      unit: '%',
-    },
-    {
-      key: 'shadow_pct',
-      label: 'Shadow',
-      kind: 'range',
-      default: 2,
-      min: 0,
-      max: 100,
-      step: 1,
-      unit: '%',
-    },
-    {
-      key: 'shadow_angle',
-      label: 'Shadow angle',
-      kind: 'range',
-      default: 180,
-      min: 0,
-      max: 360,
-      step: 5,
-      unit: '°',
-    },
-    {
-      key: 'radius_pct',
-      label: 'Corner radius',
-      kind: 'range',
-      default: 4,
-      min: 0,
-      max: 100,
-      step: 1,
-      unit: '%',
-    },
-    {
-      key: 'aspect',
-      label: 'Canvas ratio',
-      kind: 'segmented',
-      default: 'free',
-      options: ['free', '1:1', '16:9', '4:3', '9:16', '3:4', '4:5'],
-      option_labels: ['Auto', '1:1', '16:9', '4:3', '9:16', '3:4', '4:5'],
-    },
-  ],
-  trim: [
-    {
-      key: 'start',
-      label: 'Start',
-      kind: 'number',
-      default: 0,
-      min: 0,
-      step: 0.1,
-      unit: 's',
-    },
-    {
-      key: 'end',
-      label: 'End',
-      kind: 'number',
-      default: 30,
-      min: 0,
-      step: 0.1,
-      unit: 's',
-    },
-  ],
-  redact: [
-    {
-      key: 'mode',
-      label: 'What to cover',
-      kind: 'select',
-      default: 'faces',
-      options: ['faces', 'text', 'faces and text', 'manual'],
-    },
-    { key: 'fill', label: 'Fill colour', kind: 'color', default: '#111111' },
-    { key: 'regions', label: 'Regions', kind: 'boxes', default: [] },
-  ],
-  organize: [
-    { key: 'pages', label: 'Page order', kind: 'order', default: [1, 2, 3, 4] },
-    {
-      key: 'rotate',
-      label: 'Rotate all',
-      kind: 'number',
-      default: 0,
-      min: -270,
-      max: 270,
-      step: 90,
-      unit: '\u00b0',
-    },
-  ],
-  metadata: [
-    { key: 'title', label: 'Title', kind: 'text', default: '' },
-    { key: 'author', label: 'Author', kind: 'text', default: '' },
-    {
-      key: 'strip_other',
-      label: 'Remove all other tags',
-      kind: 'checkbox',
-      default: false,
-    },
-  ],
-  speed: [
-    {
-      key: 'rate',
-      label: 'Speed',
-      kind: 'range',
-      default: 1,
-      min: 0.25,
-      max: 4,
-      step: 0.25,
-      unit: '\u00d7',
-    },
-    { key: 'keep_pitch', label: 'Keep pitch', kind: 'checkbox', default: true },
-  ],
-  channels: [
-    {
-      key: 'layout',
-      label: 'Channel layout',
-      kind: 'select',
-      default: 'stereo',
-      options: ['mono', 'stereo'],
-    },
-  ],
-  shift: [
-    {
-      key: 'offset',
-      label: 'Shift by',
-      kind: 'number',
-      default: 0,
-      step: 0.1,
-      unit: 's',
-    },
-  ],
-  split: [
-    {
-      key: 'parts',
-      label: 'Number of parts',
-      kind: 'number',
-      default: 2,
-      min: 2,
-      max: 50,
-      step: 1,
-    },
-  ],
-};
-
+/**
+ * The tool's fields, exactly as the backend declares them.
+ *
+ * `ui/src/fields.generated.json` is written by `scripts/gen-ui-fields.py` from
+ * `convertme probe --fields`, and a test fails when it is stale. The mock therefore
+ * cannot show a control the real dialog does not have — a hand-written copy did.
+ */
 export function mockToolFields(category: string, tool: string): Field[] {
-  const fields =
-    tool === 'compress'
-      ? category === 'video'
-        ? VIDEO_COMPRESS_FIELDS
-        : category === 'audio'
-          ? AUDIO_COMPRESS_FIELDS
-          : (TOOL_FIELDS.compress ?? [])
-      : (TOOL_FIELDS[tool] ?? []);
-  return structuredClone(fields);
+  const byCategory = (generatedFields as Record<string, Record<string, unknown>>)[category];
+  const fields = byCategory?.[tool];
+  if (!Array.isArray(fields)) return [];
+  return readFields(fields);
 }
-
-/** Mirrors `fields_for(Video/Audio, Compress)`: a proportion, with opt-in absolutes. */
-const VIDEO_COMPRESS_FIELDS: Field[] = [
-  {
-    key: 'percent',
-    label: 'Size (% of the original)',
-    kind: 'range',
-    default: 50,
-    min: 5,
-    max: 100,
-    step: 1,
-    unit: '%',
-  },
-  {
-    key: 'size_target',
-    label: 'Or a target file size',
-    kind: 'checkbox',
-    default: false,
-    control: true,
-  },
-  {
-    key: 'target_bytes',
-    label: 'Target size',
-    kind: 'number',
-    default: 5000000,
-    min: 1000,
-    max: 20000000000,
-    step: 1000,
-    unit: 'bytes',
-    show_if: { key: 'size_target', equals: 'true' },
-  },
-];
-
-const AUDIO_COMPRESS_FIELDS: Field[] = [
-  ...VIDEO_COMPRESS_FIELDS.slice(0, 1),
-  {
-    key: 'bitrate_set',
-    label: 'Or a bitrate',
-    kind: 'checkbox',
-    default: false,
-    control: true,
-  },
-  {
-    key: 'bitrate',
-    label: 'Bitrate',
-    kind: 'number',
-    default: 128,
-    min: 8,
-    max: 512,
-    step: 1,
-    unit: 'kbps',
-    show_if: { key: 'bitrate_set', equals: 'true' },
-  },
-  ...VIDEO_COMPRESS_FIELDS.slice(1),
-];
 
 let historySeq = 1000;
 const historyRows: HistoryRow[] = [
@@ -730,4 +393,182 @@ export function mockPickFiles(): string[] {
       ? null
       : new URLSearchParams(location.search).get('mock-files');
   return [...(DEMO_FILES[category ?? 'images'] ?? MOCK_DEMO_PATHS)];
+}
+
+// ------------------------------------------------------------ dialog data
+
+/** A deterministic pseudo-random number from a string, so a mock never flickers. */
+function hashSeed(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash);
+}
+
+/**
+ * The mock's media facts. A video shows 10 s and the frame size the fixture name
+ * implies; audio shows a track length; an image shows its pixels. The real command
+ * reads them from the file, so nothing here may be the only source of a number the
+ * layout depends on.
+ */
+export function mockMediaInfo(path: string): MediaInfo {
+  const ext = extensionOf(path);
+  const video = ['mp4', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'm4v'];
+  const audio = ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'oga', 'opus', 'aiff', 'aif', 'wma'];
+  if (video.includes(ext)) {
+    const portrait = path.includes('portrait');
+    return {
+      duration: 10,
+      width: portrait ? 1080 : 1280,
+      height: portrait ? 1920 : 720,
+      has_audio: !path.includes('silent'),
+      has_video: true,
+      format: ext,
+    };
+  }
+  if (audio.includes(ext)) {
+    return {
+      duration: path.includes('30s') ? 30 : 14.1,
+      width: 0,
+      height: 0,
+      has_audio: true,
+      has_video: false,
+      format: ext,
+    };
+  }
+  const landscape = !path.includes('portrait') && !path.includes('poster');
+  return {
+    duration: 0,
+    width: landscape ? 4000 : 2000,
+    height: landscape ? 3000 : 3000,
+    has_audio: false,
+    has_video: false,
+    format: ext,
+  };
+}
+
+export function mockFilmstrip(frames: number): string[] {
+  const count = Math.max(1, Math.min(12, frames));
+  return Array.from({ length: count }, (_, index) =>
+    svgDataUrl(`${index + 1}`, 320, 180),
+  );
+}
+
+/** A waveform that looks like speech: loud in the middle, quiet at the ends. */
+export function mockWaveformData(path: string): WaveformData {
+  const info = mockMediaInfo(path);
+  const buckets = 400;
+  const peaks: [number, number][] = [];
+  for (let i = 0; i < buckets; i += 1) {
+    const at = i / buckets;
+    const envelope = Math.sin(Math.PI * at) ** 0.6;
+    const wiggle = 0.35 + 0.65 * Math.abs(Math.sin(i / 7 + hashSeed(path) % 7));
+    const amplitude = envelope * wiggle;
+    peaks.push([-amplitude, amplitude]);
+  }
+  return { duration_ms: Math.round(info.duration * 1000), truncated: false, peaks };
+}
+
+export function mockChannelWaveforms(path: string): ChannelWaveforms {
+  const left = mockWaveformData(path);
+  const right = mockWaveformData(`${path}-right`);
+  return {
+    left,
+    right: {
+      ...right,
+      peaks: right.peaks.map(([lo, hi]) => [lo * 0.6, hi * 0.6] as [number, number]),
+    },
+  };
+}
+
+export function mockPdfPages(path: string): PdfPage[] {
+  const pages = path.includes('scanned') ? 3 : 5;
+  return Array.from({ length: pages }, (_, index) => ({
+    page: index + 1,
+    width: 595,
+    height: 842,
+    thumb: svgDataUrl(`${index + 1}`, 149, 211),
+  }));
+}
+
+export function mockLoudness(path: string): Loudness {
+  const quiet = path.includes('quiet') || path.includes('speech');
+  return {
+    input_i: quiet ? -23.4 : -14.2,
+    input_tp: quiet ? -6.1 : -0.8,
+    input_lra: 7.4,
+  };
+}
+
+export function mockAudioPreview(
+  path: string,
+  tool: string,
+  params: Record<string, unknown>,
+): string {
+  void tool;
+  void params;
+  void path;
+  // Not playable in the mock, but a URL the dialog can point at, which is what the
+  // layout check needs.
+  return svgDataUrl('preview', 320, 80);
+}
+
+export function mockPhotoPreview(path: string, params: Record<string, unknown>): string {
+  const exposure = Number(params.exposure ?? 0);
+  const label = exposure === 0 ? baseName(path) : `${exposure > 0 ? '+' : ''}${exposure} EV`;
+  return svgDataUrl(label, 1024, 768);
+}
+
+export function mockCollagePreview(paths: string[], params: Record<string, unknown>): string {
+  const count = Math.max(1, paths.length);
+  const style = String(params.style ?? 'grid');
+  return svgDataUrl(`collage · ${style} · ${count}`, 512, 512);
+}
+
+export function mockFileMetadata(path: string): MetaGroup[] {
+  const ext = extensionOf(path);
+  const image = ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff', 'heic', 'avif'];
+  const audio = ['mp3', 'm4a', 'wav', 'flac', 'ogg', 'opus', 'aiff', 'wma'];
+  const group = image.includes(ext)
+    ? {
+        name: 'Image',
+        fields: ['Title', 'Description', 'Artist', 'Copyright'].map((tag) => ({
+          key: tag,
+          label: tag,
+          value: '',
+          editable: true,
+        })),
+      }
+    : audio.includes(ext)
+      ? {
+          name: 'Audio',
+          fields: ['Title', 'Artist', 'Album', 'Year'].map((tag) => ({
+            key: tag,
+            label: tag,
+            value: tag === 'Title' ? baseName(path) : '',
+            editable: true,
+          })),
+        }
+      : {
+          name: 'Document',
+          fields: ['Title', 'Author', 'Subject', 'Keywords', 'Creator', 'Producer'].map((tag) => ({
+            key: tag,
+            label: tag,
+            value: '',
+            editable: true,
+          })),
+        };
+  return [
+    {
+      name: 'File',
+      fields: [
+        { key: 'Name', label: 'Name', value: baseName(path), editable: false },
+        { key: 'Size', label: 'Size', value: '2.4 MB', editable: false },
+        { key: 'Format', label: 'Format', value: ext.toUpperCase(), editable: false },
+      ],
+    },
+    group,
+  ];
 }

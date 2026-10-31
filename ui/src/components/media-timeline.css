@@ -1,0 +1,153 @@
+/* Video timeline: the source at the top, the range underneath, the transport last.
+   Nothing in here re-renders per pointer event; a handle drag writes one style. */
+.media-timeline {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.timeline-stage {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--sunken);
+}
+
+.timeline-video {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  background: #000;
+}
+
+.timeline-strip {
+  display: flex;
+  height: 108px;
+  overflow: hidden;
+}
+
+.timeline-frame {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  border-right: 1px solid var(--surface);
+}
+
+.timeline-blank {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.timeline-track {
+  position: relative;
+  height: 22px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--rule);
+}
+
+.timeline-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-wash);
+  box-shadow: inset 1px 0 0 var(--accent), inset -1px 0 0 var(--accent);
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.timeline-marker {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.timeline-marker::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 5px;
+  width: 2px;
+  height: 100%;
+  background: var(--ink);
+}
+
+.timeline-handles {
+  display: grid;
+  gap: 4px;
+}
+
+.timeline-handle {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-handle-label {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.timeline-handle input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.timeline-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.timeline-button {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.timeline-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.timeline-readout {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.timeline-total {
+  color: var(--ink-3);
+}
+
+.timeline-range {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}

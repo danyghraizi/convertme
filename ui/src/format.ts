@@ -74,3 +74,19 @@ export function formatBytes(bytes: number): string {
   }
   return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
+
+/**
+ * A timeline readout: `m:ss.cc`. Hundredths are what a frame-accurate handle needs
+ * at 25 fps, and the same shape the reference's readouts use.
+ */
+export function formatTimecode(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00.00';
+  // Round once, in hundredths: rounding the fraction and the seconds separately
+  // printed 59.999 s as "0:60.00".
+  const total = Math.round(seconds * 100);
+  const hundredths = total % 100;
+  const whole = Math.floor(total / 100);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return `${minutes}:${String(rest).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`;
+}

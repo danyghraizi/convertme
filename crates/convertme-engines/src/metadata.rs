@@ -13,27 +13,28 @@ use convertme_core::job::Job;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The tag names each format family accepts in `params.set`.
+/// The tag names each format family's writer accepts.
+///
+/// This is the browser's list *and* the writer's contract: a name here must be
+/// settable and (where `supports_remove` says so) removable. Camera tags such as
+/// `ExposureTime` are deliberately absent — the readers show them, but parsing
+/// "1/250" into an EXIF rational is not something this writer does, and a row the
+/// writer rejects is a control that fails the job.
 pub fn editable_tags(format: FormatId) -> &'static [&'static str] {
     match format.0 {
-        "JPG" | "HEIC" => &[
+        "JPG" | "HEIC" | "TIFF" => &[
             "Title",
             "Description",
             "Artist",
             "Copyright",
-            "DateTimeOriginal",
             "Make",
             "Model",
             "LensModel",
-            "ExposureTime",
-            "FNumber",
-            "ISO",
-            "FocalLength",
             "Orientation",
-            "GPSLatitude",
-            "GPSLongitude",
-            "GPSAltitude",
         ],
+        // No EXIF writer for these containers: ImageMagick sets the four tags it can
+        // and clears whole profiles, so nothing here is individually removable.
+        "PNG" | "WEBP" => &["Title", "Description", "Artist", "Copyright"],
         "MP3" | "M4A" | "FLAC" | "OGG" | "OPUS" | "WAV" | "AIFF" | "WMA" => &[
             "Title",
             "Artist",
@@ -54,7 +55,35 @@ pub fn editable_tags(format: FormatId) -> &'static [&'static str] {
     }
 }
 
-/// `params.set` (object of tag → value) and `params.strip` (bool).
+/// Whether this format's writer can delete a single tag.
+///
+/// A writer that can only clear everything (the ImageMagick EXIF path, which
+/// strips whole profiles) reports `false`: the metadata browser then draws no minus
+/// button for its rows, and `Remove All` stays the supported route. Quietly
+/// accepting `remove` and doing nothing would look like a working control.
+pub fn supports_remove(format: FormatId) -> bool {
+    matches!(
+        format.0,
+        "JPG"
+            | "HEIC"
+            | "TIFF"
+            | "MP3"
+            | "M4A"
+            | "FLAC"
+            | "OGG"
+            | "OPUS"
+            | "WAV"
+            | "AIFF"
+            | "WMA"
+            | "MP4"
+            | "MOV"
+            | "M4V"
+            | "PDF"
+    )
+}
+
+/// `params.set` (object of tag → value), `params.remove` (array of tags) and
+/// `params.strip` (bool).
 pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     if job.intent.tool_id() != Some(ToolId::Metadata) {
         return Err(JobError::new(ErrorCode::Unsupported, "not a metadata job"));
@@ -74,10 +103,21 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         })
         .unwrap_or_default();
 
-    if !strip && set.is_empty() {
+    let remove: Vec<String> = params
+        .get("remove")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !strip && set.is_empty() && remove.is_empty() {
         return Err(JobError::new(
             ErrorCode::Unsupported,
-            "nothing to change: give `set` tags or `strip: true`",
+            "nothing to change: give `set` tags, `remove` tags or `strip: true`",
         ));
     }
 
@@ -86,11 +126,29 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         .or_else(|| Registry::detect(&job.source).map(|f| f.id))
         .ok_or_else(|| JobError::new(ErrorCode::Unsupported, "unknown input format"))?;
 
+    // Every key must be one the writer knows; otherwise a typo silently edits nothing.
+    let writable = editable_tags(format);
+    for key in set.keys().chain(remove.iter()) {
+        if !writable.iter().any(|t| t.eq_ignore_ascii_case(key)) {
+            return Err(JobError::new(
+                ErrorCode::Unsupported,
+                format!("{key} is not a writable tag for {}", format.0),
+            ));
+        }
+    }
+    if !remove.is_empty() && !supports_remove(format) {
+        let key = &remove[0];
+        return Err(JobError::new(
+            ErrorCode::Unsupported,
+            format!("{key} cannot be removed from {}; strip every tag instead", format.0),
+        ));
+    }
+
     let mut written = Vec::new();
     for (index, source) in job.inputs.iter().enumerate() {
         cx.ctx.checkpoint()?;
         let staged = cx.copy_of(index, job)?;
-        apply(&staged, format, &set, strip, cx)?;
+        apply(&staged, format, &set, &remove, strip, cx)?;
         let ext = source
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -193,23 +251,20 @@ fn apply(
     path: &Path,
     format: FormatId,
     set: &BTreeMap<String, String>,
+    remove: &[String],
     strip: bool,
     cx: &Context<'_>,
 ) -> Result<(), JobError> {
     match format.0 {
-        "JPG" | "HEIC" | "TIFF" | "PNG" | "WEBP" => {
-            if editable_tags(format).is_empty() {
-                // No EXIF writer for this container: fall back to ImageMagick,
-                // which can also clear the profile wholesale.
-                return exif_via_magick(path, set, strip, cx);
-            }
-            exif_direct(path, set, strip)
-        }
+        "JPG" | "HEIC" | "TIFF" => exif_direct(path, set, remove, strip),
+        // No EXIF writer for these containers: ImageMagick sets what it can and
+        // clears profiles wholesale, which is also why they cannot remove one tag.
+        "PNG" | "WEBP" => exif_via_magick(path, set, strip, cx),
         "MP3" | "M4A" | "FLAC" | "OGG" | "OPUS" | "WAV" | "AIFF" | "WMA" => {
-            audio_tags(path, set, strip)
+            audio_tags(path, set, remove, strip)
         }
-        "MP4" | "MOV" | "M4V" => mp4_tags(path, set, strip),
-        "PDF" => pdf_info(path, set, strip),
+        "MP4" | "MOV" | "M4V" => mp4_tags(path, set, remove, strip),
+        "PDF" => pdf_info(path, set, remove, strip),
         _ => Err(JobError::new(
             ErrorCode::Unsupported,
             format!("{} has no writable metadata", format.0),
@@ -217,7 +272,12 @@ fn apply(
     }
 }
 
-fn exif_direct(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<(), JobError> {
+fn exif_direct(
+    path: &Path,
+    set: &BTreeMap<String, String>,
+    remove: &[String],
+    strip: bool,
+) -> Result<(), JobError> {
     use little_exif::exif_tag::ExifTag;
     use little_exif::metadata::Metadata;
 
@@ -236,6 +296,12 @@ fn exif_direct(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Resu
         return Ok(());
     }
 
+    // Deletions first: setting and then deleting the same tag must end deleted.
+    for key in remove {
+        if let Some(tag) = exif_tag_for(key, "") {
+            metadata.remove_tag(tag);
+        }
+    }
     for (key, value) in set {
         let tag = match key.as_str() {
             "Title" => ExifTag::ImageDescription(value.clone()),
@@ -264,6 +330,21 @@ fn exif_direct(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Resu
         .write_to_file(path)
         .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("writing EXIF: {e}")))?;
     Ok(())
+}
+
+/// The little_exif tag a UI tag name maps to, for deletion.
+fn exif_tag_for(key: &str, value: &str) -> Option<little_exif::exif_tag::ExifTag> {
+    use little_exif::exif_tag::ExifTag;
+    Some(match key {
+        "Title" | "Description" => ExifTag::ImageDescription(value.to_string()),
+        "Artist" => ExifTag::Artist(value.to_string()),
+        "Copyright" => ExifTag::Copyright(value.to_string()),
+        "Make" => ExifTag::Make(value.to_string()),
+        "Model" => ExifTag::Model(value.to_string()),
+        "LensModel" => ExifTag::LensModel(value.to_string()),
+        "Orientation" => ExifTag::Orientation(vec![value.parse().unwrap_or(1)]),
+        _ => return None,
+    })
 }
 
 fn exif_via_magick(
@@ -310,7 +391,12 @@ fn exif_via_magick(
     Ok(())
 }
 
-fn audio_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<(), JobError> {
+fn audio_tags(
+    path: &Path,
+    set: &BTreeMap<String, String>,
+    remove: &[String],
+    strip: bool,
+) -> Result<(), JobError> {
     use lofty::config::WriteOptions;
     use lofty::prelude::{Accessor, TagExt, TaggedFileExt};
     use lofty::probe::Probe;
@@ -333,6 +419,28 @@ fn audio_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Resul
     let mut tag = tagged
         .remove(tag_type)
         .unwrap_or_else(|| Tag::new(tag_type));
+    for key in remove {
+        use lofty::tag::ItemKey;
+        let item = match key.as_str() {
+            "Title" => ItemKey::TrackTitle,
+            "Artist" => ItemKey::TrackArtist,
+            "Album" => ItemKey::AlbumTitle,
+            "AlbumArtist" => ItemKey::AlbumArtist,
+            "TrackNumber" => ItemKey::TrackNumber,
+            "DiscNumber" => ItemKey::DiscNumber,
+            "Year" => ItemKey::Year,
+            "Genre" => ItemKey::Genre,
+            "Comment" => ItemKey::Comment,
+            "Composer" => ItemKey::Composer,
+            other => {
+                return Err(JobError::new(
+                    ErrorCode::Unsupported,
+                    format!("{other} is not removable for audio"),
+                ));
+            }
+        };
+        tag.remove_key(item);
+    }
     for (key, value) in set {
         match key.as_str() {
             "Title" => tag.set_title(value.clone()),
@@ -382,14 +490,36 @@ fn audio_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Resul
     Ok(())
 }
 
-fn mp4_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<(), JobError> {
+fn mp4_tags(
+    path: &Path,
+    set: &BTreeMap<String, String>,
+    remove: &[String],
+    strip: bool,
+) -> Result<(), JobError> {
     let mut tag = mp4ameta::Tag::read_from_path(path)
         .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading MP4 tags: {e}")))?;
+    // Every tag `editable_tags` offers for MP4 is handled here; a name the writer
+    // cannot set would show in the browser and then fail the job, so the two lists
+    // are kept in step by this match.
+    // `take_*` hand back the value they removed; the value is not what is reported.
+    let take = |tag: &mut mp4ameta::Tag, key: &str| {
+        let _ = match key {
+            "Title" => tag.take_title(),
+            "Artist" => tag.take_artist(),
+            "Album" => tag.take_album(),
+            "Comment" => tag.take_comment(),
+            "Year" => tag.take_year(),
+            "Genre" => tag.take_genre(),
+            _ => None,
+        };
+    };
     if strip {
-        tag.take_title();
-        tag.take_artist();
-        tag.take_album();
-        tag.take_comment();
+        for key in ["Title", "Artist", "Album", "Comment", "Year", "Genre"] {
+            take(&mut tag, key);
+        }
+    }
+    for key in remove {
+        take(&mut tag, key);
     }
     for (key, value) in set {
         match key.as_str() {
@@ -398,6 +528,7 @@ fn mp4_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<
             "Album" => tag.set_album(value.clone()),
             "Comment" => tag.set_comment(value.clone()),
             "Year" => tag.set_year(value.clone()),
+            "Genre" => tag.set_genre(value.clone()),
             other => {
                 return Err(JobError::new(
                     ErrorCode::Unsupported,
@@ -411,12 +542,30 @@ fn mp4_tags(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<
     Ok(())
 }
 
-fn pdf_info(path: &Path, set: &BTreeMap<String, String>, strip: bool) -> Result<(), JobError> {
+fn pdf_info(
+    path: &Path,
+    set: &BTreeMap<String, String>,
+    remove: &[String],
+    strip: bool,
+) -> Result<(), JobError> {
     use lopdf::{Dictionary, Document, Object};
 
     let mut doc = Document::load(path)
         .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}")))?;
     let mut info = Dictionary::new();
+    if strip {
+        // `strip` means every information value goes, including keys this build does
+        // not model: the dictionary is replaced wholesale.
+    } else {
+        // Keep what the file already says, then edit that dictionary: replacing it
+        // outright dropped Producer and CreationDate on every single edit.
+        if let Ok(existing) = doc.trailer.get(b"Info").and_then(|o| o.as_dict()) {
+            info = existing.clone();
+        }
+        for key in remove {
+            info.remove(key.as_bytes());
+        }
+    }
     if !strip {
         for (key, value) in set {
             let allowed = [
@@ -484,11 +633,32 @@ mod tests {
 
         let mut set = BTreeMap::new();
         set.insert("Title".to_string(), "Hello".to_string());
-        pdf_info(&pdf, &set, false).unwrap();
+        set.insert("Author".to_string(), "Nobody".to_string());
+        pdf_info(&pdf, &set, &[], false).unwrap();
         let tags = read(&pdf);
         assert_eq!(tags.get("Title").map(String::as_str), Some("Hello"));
-        pdf_info(&pdf, &BTreeMap::new(), true).unwrap();
+
+        // Removing one key leaves the other alone: replacing the whole dictionary
+        // would have dropped it.
+        pdf_info(&pdf, &BTreeMap::new(), &["Author".to_string()], false).unwrap();
+        let tags = read(&pdf);
+        assert!(!tags.contains_key("Author"));
+        assert_eq!(tags.get("Title").map(String::as_str), Some("Hello"));
+
+        pdf_info(&pdf, &BTreeMap::new(), &[], true).unwrap();
         assert!(!read(&pdf).contains_key("Title"));
+    }
+
+    #[test]
+    fn a_tag_the_writer_cannot_delete_is_refused_not_ignored() {
+        // The metadata browser hides the minus for these, so a `remove` that still
+        // arrives is a contract violation and must say so.
+        assert!(supports_remove(FormatId("PDF")));
+        assert!(supports_remove(FormatId("JPG")));
+        assert!(supports_remove(FormatId("MP3")));
+        assert!(!supports_remove(FormatId("PNG")));
+        assert!(!supports_remove(FormatId("WEBP")));
+        assert!(!supports_remove(FormatId("MKV")));
     }
 
     #[test]

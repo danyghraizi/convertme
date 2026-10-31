@@ -2,6 +2,7 @@
 //! watcher, one IPC endpoint.
 
 use crate::commands;
+use crate::dialog;
 use crate::instance;
 use crate::state::{AppState, Selection};
 use convertme_core::capability::Capabilities;
@@ -102,6 +103,16 @@ pub fn run() -> i32 {
             commands::wheels,
             commands::run,
             commands::tool_fields,
+            dialog::media_info,
+            dialog::filmstrip,
+            dialog::waveform_data,
+            dialog::channel_waveforms,
+            dialog::pdf_pages,
+            dialog::measure_loudness,
+            dialog::audio_preview,
+            dialog::bleep_preview,
+            dialog::photo_preview,
+            dialog::file_metadata,
             commands::history,
             commands::cancel_job,
             commands::cancel_all,

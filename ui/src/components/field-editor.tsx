@@ -2,6 +2,9 @@ import { For, Match, Show, Switch, createSignal, onMount } from 'solid-js';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import * as ipc from '../ipc';
 import ColourPicker from './colour-picker';
+import FileOrder from './file-order';
+import MetadataEditor from './metadata-editor';
+import PageOrganizer from './page-organizer';
 import GradientEditor from './gradient-editor';
 import { asBool, asBoxes, asNumber, asOrder, asText } from '../fields';
 import type { Box, Field, FieldValue } from '../types';
@@ -10,6 +13,8 @@ interface FieldEditorProps {
   field: Field;
   value: FieldValue;
   previewPath: string | null;
+  /** The whole selection: a reorder editor lists every file, not just the preview. */
+  files?: { path: string; label: string }[];
   onChange: (value: FieldValue) => void;
 }
 
@@ -279,9 +284,21 @@ function OrderEditor(props: OrderEditorProps) {
 export default function FieldEditor(props: FieldEditorProps) {
   const id = (): string => `field-${props.field.key}`;
   const unit = (): string => props.field.unit ?? '';
+  /**
+   * Editors that are a surface rather than a control take the full width, with the
+   * label above them. So does a slider whose label is too long to sit beside its
+   * track — the reference puts those under their label with the value at the right.
+   */
+  const isBlock = (): boolean => {
+    const kind = props.field.kind;
+    if (kind === 'boxes' || kind === 'pages' || kind === 'files' || kind === 'metadata' || kind === 'shapes') {
+      return true;
+    }
+    return kind === 'range' && props.field.label.length > 18;
+  };
 
   return (
-    <div class="field field-editor">
+    <div class="field field-editor" classList={{ 'is-block': isBlock() }}>
       <Show when={props.field.kind !== 'checkbox'}>
         <label class="field-label" for={id()}>
           {props.field.label}
@@ -405,6 +422,27 @@ export default function FieldEditor(props: FieldEditorProps) {
             <span class="field-label">{props.field.label}</span>
           </label>
         </Match>
+        <Match when={props.field.kind === 'pages'}>
+          <PageOrganizer
+            path={props.previewPath}
+            value={props.value}
+            onChange={props.onChange}
+          />
+        </Match>
+        <Match when={props.field.kind === 'metadata'}>
+          <MetadataEditor
+            path={props.previewPath}
+            value={props.value}
+            onChange={props.onChange}
+          />
+        </Match>
+        <Match when={props.field.kind === 'files'}>
+          <FileOrder
+            files={props.files ?? []}
+            value={props.value}
+            onChange={props.onChange}
+          />
+        </Match>
         <Match when={props.field.kind === 'boxes'}>
           <BoxesEditor
             value={props.value}
@@ -416,6 +454,9 @@ export default function FieldEditor(props: FieldEditorProps) {
           <OrderEditor value={props.value} onChange={props.onChange} />
         </Match>
       </Switch>
+      <Show when={props.field.help}>
+        {(help) => <p class="field-help">{help()}</p>}
+      </Show>
     </div>
   );
 }

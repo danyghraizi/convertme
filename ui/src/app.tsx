@@ -292,6 +292,19 @@ export default function App() {
     const state = modal();
     if (!state) return;
     let announced = 0;
+    // Merge and Join read every input in one job: one document out of the whole
+    // selection. Running them per file produced one artifact per input instead.
+    if (state.tool.id === 'merge' || state.tool.id === 'join') {
+      const params = entries[0]?.params ?? {};
+      const result = await ipc.run(
+        entries.map((entry) => entry.path),
+        state.category,
+        { kind: 'tool', tool: state.tool.id, params },
+      );
+      announceRun(result, state.tool.label);
+      scheduleHistory();
+      return;
+    }
     for (const entry of entries) {
       const params = { ...entry.params };
       if (state.tool.id === 'crop') {
