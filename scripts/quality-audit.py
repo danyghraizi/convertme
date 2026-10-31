@@ -93,12 +93,15 @@ def image_check(format_name=None, size=None, alpha=None, unchanged_size=False):
             {"name": "magic", "ok": True, "actual": facts["magick"]}
         )
         if format_name:
-            # ImageMagick calls JPEG "JPEG"; the registry calls it JPG.
-            expected = {"JPG": "JPEG"}.get(format_name.upper(), format_name.upper())
+            # ImageMagick reports the coder (`JPEG`, `TIFF`); the registry says `JPG`,
+            # `TIF`. Compare the canonical names, not the spellings.
+            aliases = {"JPEG": "JPG", "TIFF": "TIF"}
+            actual = facts["magick"].upper()
+            canonical = aliases.get(actual, actual)
             checks.append(
                 {
                     "name": f"container is {format_name}",
-                    "ok": facts["magick"].upper().startswith(expected),
+                    "ok": canonical.startswith(format_name.upper()),
                     "actual": facts["magick"],
                 }
             )

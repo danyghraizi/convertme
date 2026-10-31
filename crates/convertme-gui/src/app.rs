@@ -115,6 +115,7 @@ pub fn run() -> i32 {
             dialog::audio_preview,
             dialog::bleep_preview,
             dialog::photo_preview,
+            dialog::collage_preview,
             dialog::file_metadata,
             commands::cache_stats,
             commands::clear_cache,

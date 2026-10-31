@@ -213,6 +213,22 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         .and_then(|v| v.as_str())
         .unwrap_or("#000000")
         .to_string();
+    if color.trim().is_empty() {
+        return Err(JobError::new(
+            ErrorCode::Unsupported,
+            "`color` cannot be empty",
+        ));
+    }
+    let style = params
+        .get("style")
+        .and_then(|v| v.as_str())
+        .unwrap_or("solid");
+    if !["solid", "blur"].contains(&style) {
+        return Err(JobError::new(
+            ErrorCode::Unsupported,
+            "`style` must be solid or blur",
+        ));
+    }
 
     let is_video = matches!(
         job.input_format.map(|f| f.0),
@@ -225,10 +241,24 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             | Some("GIF")
     );
 
+    let allowed: &[&str] = if is_video {
+        &["boxes", "color", "ranges", "style"]
+    } else {
+        &["boxes", "color", "style"]
+    };
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(JobError::new(
+                ErrorCode::Unsupported,
+                format!("unknown parameter `{key}`"),
+            ));
+        }
+    }
+
     if is_video {
         redact_video(job, cx, &params)
     } else {
-        redact_image(job, cx, &boxes, &color)
+        redact_image(job, cx, &boxes, &color, style)
     }
 }
 
@@ -237,6 +267,7 @@ fn redact_image(
     cx: &Context<'_>,
     boxes: &[Rect],
     color: &str,
+    style: &str,
 ) -> Result<Vec<PathBuf>, JobError> {
     let magick = cx.tools.path(ToolKey::Magick)?;
     let ext = job
@@ -247,25 +278,35 @@ fn redact_image(
     let out = cx.out(&format!("{}-redacted.{ext}", stem_of(&job.source)));
     let (w, h) = image_size(&job.source, cx)?;
 
-    let mut draw = String::new();
-    for b in boxes {
-        let (x, y, bw, bh) = b.pixels(w, h);
-        draw.push_str(&format!("rectangle {x},{y} {},{}\n", x + bw, y + bh));
-    }
-
-    proc::run(
-        Cmd::new(&magick)
-            .arg(&job.source)
+    let mut cmd = Cmd::new(&magick).arg(&job.source);
+    if style == "blur" {
+        // Blur the marked region only: `-region` scopes the next operation. The radius
+        // grows with the region so a small box is still unreadable.
+        for b in boxes {
+            let (x, y, bw, bh) = b.pixels(w, h);
+            let radius = (f64::from(bw.min(bh)) * 0.15).max(8.0);
+            cmd = cmd
+                .arg("-region")
+                .arg(format!("{bw}x{bh}+{x}+{y}"))
+                .arg("-blur")
+                .arg(format!("0x{radius:.1}"))
+                .arg("+region");
+        }
+    } else {
+        let mut draw = String::new();
+        for b in boxes {
+            let (x, y, bw, bh) = b.pixels(w, h);
+            draw.push_str(&format!("rectangle {x},{y} {},{}\n", x + bw, y + bh));
+        }
+        cmd = cmd
             .arg("-fill")
             .arg(color)
             .arg("-stroke")
             .arg("none")
             .arg("-draw")
-            .arg(draw.trim_end())
-            .arg(&out),
-        cx.ctx,
-    )?
-    .ok()?;
+            .arg(draw.trim_end());
+    }
+    proc::run(cmd.arg(&out), cx.ctx)?.ok()?;
     ensure_file(&out, "the redactor")?;
     Ok(vec![out])
 }

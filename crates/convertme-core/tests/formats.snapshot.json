@@ -832,6 +832,11 @@
     },
     {
       "category": "images",
+      "id": "collage",
+      "label": "Collage"
+    },
+    {
+      "category": "images",
       "id": "add-background",
       "label": "Add background"
     },

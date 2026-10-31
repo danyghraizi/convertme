@@ -434,6 +434,7 @@ pub enum ToolId {
     Compress,
     Crop,
     Annotate,
+    Collage,
     AddBackground,
     EditPhoto,
     Metadata,
@@ -461,6 +462,7 @@ impl ToolId {
             ToolId::Compress => "compress",
             ToolId::Crop => "crop",
             ToolId::Annotate => "annotate",
+            ToolId::Collage => "collage",
             ToolId::AddBackground => "add-background",
             ToolId::EditPhoto => "edit-photo",
             ToolId::Metadata => "metadata",
@@ -607,6 +609,20 @@ pub static TOOLS: &[Tool] = &[
         [
             "Add numbered labels, arrows, and text",
             "Draw or highlight directly on the photo"
+        ],
+        None
+    ),
+    tool!(
+        Collage,
+        Images,
+        "Collage",
+        "Create a collage",
+        "Create Collage",
+        "Arrange several images into one composition.",
+        ImageMagick,
+        [
+            "Grid, row, column, and featured layouts",
+            "Set final dimensions, spacing, corners, and background"
         ],
         None
     ),
@@ -1140,6 +1156,12 @@ mod tests {
                 ToolId::Annotate,
                 "Annotate photos",
                 "Save Annotated Copy",
+            ),
+            (
+                Category::Images,
+                ToolId::Collage,
+                "Create a collage",
+                "Create Collage",
             ),
             (
                 Category::Images,

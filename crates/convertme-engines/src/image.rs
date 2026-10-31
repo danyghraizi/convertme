@@ -128,6 +128,68 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             }
             Ok(())
         }
+        ToolId::Collage => {
+            check_params(
+                params,
+                &[
+                    "style",
+                    "columns",
+                    "aspect",
+                    "width",
+                    "fit",
+                    "spacing",
+                    "background",
+                    "radius",
+                    "order",
+                ],
+            )?;
+            let style = string(params, "style")?.unwrap_or("grid");
+            if !["grid", "row", "column", "featured"].contains(&style) {
+                return Err(unsupported(
+                    "`style` must be grid, row, column or featured",
+                ));
+            }
+            if let Some(columns) = unsigned(params, "columns")?
+                && !(1..=6).contains(&columns)
+            {
+                return Err(unsupported("`columns` must be between 1 and 6"));
+            }
+            if let Some(aspect) = string(params, "aspect")?
+                && !aspect.eq_ignore_ascii_case("auto")
+                && !aspect.is_empty()
+            {
+                parse_aspect(aspect)?;
+            }
+            if let Some(width) = unsigned(params, "width")?
+                && !(512..=8192).contains(&width)
+            {
+                return Err(unsupported("`width` must be between 512 and 8192"));
+            }
+            if let Some(fit) = string(params, "fit")?
+                && !["crop", "contain"].contains(&fit)
+            {
+                return Err(unsupported("`fit` must be crop or contain"));
+            }
+            for key in ["spacing", "radius"] {
+                if let Some(value) = unsigned(params, key)?
+                    && value > 64
+                {
+                    return Err(unsupported(format!("`{key}` must be between 0 and 64")));
+                }
+            }
+            if let Some(background) = string(params, "background")?
+                && background.trim().is_empty()
+            {
+                return Err(unsupported("`background` cannot be empty"));
+            }
+            if let Some(value) = params.get("order")
+                && !value.is_array()
+                && !value.is_null()
+            {
+                return Err(unsupported("`order` must be an array of indices"));
+            }
+            Ok(())
+        }
         ToolId::AddBackground => {
             check_params(
                 params,
@@ -145,6 +207,7 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     "bg_zoom",
                     "bg_x",
                     "bg_y",
+                    "bg_blur",
                 ],
             )?;
             if let Some(color) = string(params, "color")?
@@ -173,6 +236,11 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 {
                     return Err(unsupported(format!("`{key}` must be a number")));
                 }
+            }
+            if let Some(v) = number(params, "bg_blur")?
+                && (!v.is_finite() || !(0.0..=50.0).contains(&v))
+            {
+                return Err(unsupported("`bg_blur` is pixels from 0 to 50"));
             }
             for key in ["padding", "radius"] {
                 if let Some(v) = number(params, key)?
@@ -217,41 +285,81 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                     "hue",
                     "temperature",
                     "gamma",
+                    "highlights",
+                    "shadows",
+                    "whites",
+                    "blacks",
+                    "tint",
+                    "vibrance",
+                    "clarity",
+                    "dehaze",
+                    "grain",
+                    "noise",
+                    "sharpness",
                 ],
             )?;
-            let brightness = number(params, "brightness")?.unwrap_or(0.0);
-            let contrast = number(params, "contrast")?.unwrap_or(0.0);
-            let saturation = number(params, "saturation")?.unwrap_or(0.0);
-            let temperature = number(params, "temperature")?.unwrap_or(0.0);
-            let hue = number(params, "hue")?.unwrap_or(0.0);
             let exposure = number(params, "exposure")?.unwrap_or(0.0);
-            for (key, value) in [
-                ("brightness", brightness),
-                ("contrast", contrast),
-                ("saturation", saturation),
-                ("temperature", temperature),
-                ("hue", hue),
+            if !(-5.0..=5.0).contains(&exposure) {
+                return Err(unsupported("`exposure` must be between -5 and 5 stops"));
+            }
+            for key in [
+                "brightness",
+                "contrast",
+                "saturation",
+                "hue",
+                "temperature",
+                "highlights",
+                "shadows",
+                "whites",
+                "blacks",
+                "tint",
+                "vibrance",
+                "clarity",
+                "dehaze",
             ] {
-                if !(-100.0..=100.0).contains(&value) {
+                if let Some(value) = number(params, key)?
+                    && !(-100.0..=100.0).contains(&value)
+                {
                     return Err(unsupported(format!("`{key}` must be between -100 and 100")));
                 }
             }
-            if !(-3.0..=3.0).contains(&exposure) {
-                return Err(unsupported("`exposure` must be between -3 and 3 stops"));
+            for key in ["grain", "noise", "sharpness"] {
+                if let Some(value) = number(params, key)?
+                    && !(0.0..=100.0).contains(&value)
+                {
+                    return Err(unsupported(format!("`{key}` must be between 0 and 100")));
+                }
             }
             if let Some(gamma) = number(params, "gamma")?
                 && !(0.1..=10.0).contains(&gamma)
             {
                 return Err(unsupported("`gamma` must be between 0.1 and 10"));
             }
-            if brightness == 0.0
-                && contrast == 0.0
-                && saturation == 0.0
-                && temperature == 0.0
-                && hue == 0.0
-                && exposure == 0.0
-                && number(params, "gamma")?.is_none()
-            {
+            let neutral = |key: &str| -> Result<bool, JobError> {
+                Ok(number(params, key)?.unwrap_or(0.0) == 0.0)
+            };
+            let mut touched = exposure != 0.0;
+            for key in [
+                "brightness",
+                "contrast",
+                "saturation",
+                "hue",
+                "temperature",
+                "highlights",
+                "shadows",
+                "whites",
+                "blacks",
+                "tint",
+                "vibrance",
+                "clarity",
+                "dehaze",
+                "grain",
+                "noise",
+                "sharpness",
+            ] {
+                touched = touched || !neutral(key)?;
+            }
+            if !touched && number(params, "gamma")?.is_none() {
                 return Err(unsupported("no photo adjustment was requested"));
             }
             Ok(())
@@ -289,6 +397,7 @@ fn run_tool(
         ToolId::Compress => compress(job, cx, params),
         ToolId::Crop => crop(job, cx, params),
         ToolId::Annotate => annotate(job, cx, params),
+        ToolId::Collage => collage(job, cx, params),
         ToolId::AddBackground => add_background(job, cx, params),
         ToolId::EditPhoto => edit_photo(job, cx, params),
         _ => Err(unsupported(format!(
@@ -827,6 +936,306 @@ fn track_smallest(path: &Path, len: u64, smallest: &mut Option<PathBuf>, size: &
     }
 }
 
+// --------------------------------------------------------------------- collage
+
+/// How the cells are arranged.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollageStyle {
+    Grid,
+    Row,
+    Column,
+    Featured,
+}
+
+/// One cell of the composition: which input, where, and how many cell units it spans.
+struct CollageCell {
+    input: usize,
+    row: usize,
+    col: usize,
+    row_span: usize,
+    col_span: usize,
+}
+
+fn collage_style(params: &ToolParams) -> Result<CollageStyle, JobError> {
+    Ok(match string(params, "style")?.unwrap_or("grid") {
+        "grid" => CollageStyle::Grid,
+        "row" => CollageStyle::Row,
+        "column" => CollageStyle::Column,
+        "featured" => CollageStyle::Featured,
+        other => {
+            return Err(unsupported(format!(
+                "unknown collage style `{other}`; use grid, row, column or featured"
+            )));
+        }
+    })
+}
+
+/// The inputs in the order the dialog lists them. An untouched list is the selection
+/// order; indices outside the selection and repeats are dropped, never applied.
+fn collage_order(params: &ToolParams, count: usize) -> Result<Vec<usize>, JobError> {
+    let mut order: Vec<usize> = Vec::new();
+    match params.get("order") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for item in items {
+                let Some(index) = item.as_u64().map(|value| value as usize) else {
+                    return Err(unsupported("`order` entries must be indices"));
+                };
+                if index < count && !order.contains(&index) {
+                    order.push(index);
+                }
+            }
+        }
+        Some(_) => return Err(unsupported("`order` must be an array of indices")),
+    }
+    if order.is_empty() {
+        order.extend(0..count);
+    }
+    Ok(order)
+}
+
+fn collage_ratio(
+    params: &ToolParams,
+    magick: &Path,
+    first: &Path,
+    ctx: &JobCtx,
+) -> Result<f64, JobError> {
+    let aspect = string(params, "aspect")?.unwrap_or("auto");
+    if aspect.eq_ignore_ascii_case("auto") || aspect.is_empty() {
+        let (w, h) = image_size_with(magick, first, ctx)?;
+        return Ok(f64::from(w.max(1)) / f64::from(h.max(1)));
+    }
+    let (a, b) = parse_aspect(aspect)?;
+    Ok(f64::from(a) / f64::from(b))
+}
+
+/// The cell grid. `row` is one column of N rows, `column` N columns of one row;
+/// `featured` lets the first picture take a 2×2 block and fills the rest around it.
+fn collage_cells(
+    style: CollageStyle,
+    columns: usize,
+    count: usize,
+) -> (usize, usize, Vec<CollageCell>) {
+    let columns = columns.clamp(1, 6);
+    let featured = style == CollageStyle::Featured && count >= 3 && columns >= 2;
+    let (cols, rows) = if featured {
+        let rows = ((count + 3).div_ceil(columns)).max(2);
+        (columns, rows)
+    } else {
+        match style {
+            CollageStyle::Row => (1, count.max(1)),
+            CollageStyle::Column => (count.max(1), 1),
+            CollageStyle::Grid | CollageStyle::Featured => {
+                let rows = count.div_ceil(columns).max(1);
+                (columns, rows)
+            }
+        }
+    };
+
+    let mut cells = Vec::with_capacity(count);
+    if featured {
+        cells.push(CollageCell {
+            input: 0,
+            row: 0,
+            col: 0,
+            row_span: 2,
+            col_span: 2,
+        });
+        let mut next = 1;
+        for row in 0..rows {
+            for col in 0..cols {
+                if next >= count {
+                    break;
+                }
+                if row < 2 && col < 2 {
+                    continue;
+                }
+                cells.push(CollageCell {
+                    input: next,
+                    row,
+                    col,
+                    row_span: 1,
+                    col_span: 1,
+                });
+                next += 1;
+            }
+        }
+    } else {
+        for input in 0..count {
+            cells.push(CollageCell {
+                input,
+                row: input / cols,
+                col: input % cols,
+                row_span: 1,
+                col_span: 1,
+            });
+        }
+    }
+    (cols, rows, cells)
+}
+
+/// One `magick` invocation composes the whole canvas; the dialog's preview calls the
+/// same function at 512 px, so what it shows is what the job writes.
+fn compose_collage(
+    magick: &Path,
+    inputs: &[PathBuf],
+    params: &ToolParams,
+    width_override: Option<u32>,
+    out: &Path,
+    ctx: &JobCtx,
+) -> Result<(), JobError> {
+    if inputs.is_empty() {
+        return Err(unsupported("a collage needs at least one image"));
+    }
+    let order = collage_order(params, inputs.len())?;
+    if order.is_empty() {
+        return Err(unsupported("a collage needs at least one image"));
+    }
+    let style = collage_style(params)?;
+    let columns = unsigned(params, "columns")?.unwrap_or(2).clamp(1, 6) as usize;
+    let fit = string(params, "fit")?.unwrap_or("crop");
+    if !["crop", "contain"].contains(&fit) {
+        return Err(unsupported("`fit` must be crop or contain"));
+    }
+    let spacing = unsigned(params, "spacing")?.unwrap_or(0).min(64) as u32;
+    let radius = unsigned(params, "radius")?.unwrap_or(0).min(64) as u32;
+    let background = string(params, "background")?
+        .unwrap_or("#ffffff")
+        .to_string();
+    if background.trim().is_empty() {
+        return Err(unsupported("`background` cannot be empty"));
+    }
+    let requested = width_override
+        .or_else(|| unsigned(params, "width").ok().flatten().map(|w| w as u32))
+        .unwrap_or(2048)
+        .clamp(16, 8192);
+    let width = requested - requested % 2;
+    let ratio = collage_ratio(params, magick, &inputs[order[0]], ctx)?;
+    let height = ((f64::from(width) / ratio).round() as u32).max(2);
+    let height = height - height % 2;
+
+    let (cols, rows, cells) = collage_cells(style, columns, order.len());
+    let cell_w = ((i64::from(width) - i64::from(spacing) * (cols as i64 + 1)) / cols as i64)
+        .max(1) as u32;
+    let cell_h = ((i64::from(height) - i64::from(spacing) * (rows as i64 + 1)) / rows as i64)
+        .max(1) as u32;
+
+    let mut args: Vec<OsString> = vec![
+        os("-size"),
+        os(format!("{width}x{height}")),
+        os(format!("xc:{background}")),
+    ];
+    ctx.set_stage("composing the collage");
+    let total = cells.len().max(1);
+    for (position, cell) in cells.iter().enumerate() {
+        let span_w = cell_w * cell.col_span as u32 + spacing * (cell.col_span as u32 - 1);
+        let span_h = cell_h * cell.row_span as u32 + spacing * (cell.row_span as u32 - 1);
+        let x = spacing as u64 + cell.col as u64 * u64::from(cell_w + spacing);
+        let y = spacing as u64 + cell.row as u64 * u64::from(cell_h + spacing);
+
+        args.push(os("("));
+        args.push(os("("));
+        args.push(os(&inputs[order[cell.input]]));
+        args.push(os("-auto-orient"));
+        if fit == "crop" {
+            args.push(os("-resize"));
+            args.push(os(format!("{span_w}x{span_h}^")));
+            args.push(os("-gravity"));
+            args.push(os("center"));
+            args.push(os("-extent"));
+            args.push(os(format!("{span_w}x{span_h}")));
+        } else {
+            args.push(os("-resize"));
+            args.push(os(format!("{span_w}x{span_h}")));
+            args.push(os("-background"));
+            args.push(os(&background));
+            args.push(os("-gravity"));
+            args.push(os("center"));
+            args.push(os("-extent"));
+            args.push(os(format!("{span_w}x{span_h}")));
+        }
+        args.push(os(")"));
+        if radius > 0 {
+            let r = radius.min(span_w.min(span_h) / 2).max(1);
+            args.push(os("("));
+            args.push(os("-size"));
+            args.push(os(format!("{span_w}x{span_h}")));
+            args.push(os("xc:black"));
+            args.push(os("-fill"));
+            args.push(os("white"));
+            args.push(os("-draw"));
+            args.push(os(format!(
+                "roundrectangle 0,0 {},{} {r},{r}",
+                span_w.saturating_sub(1),
+                span_h.saturating_sub(1)
+            )));
+            args.push(os(")"));
+            args.push(os("-alpha"));
+            args.push(os("off"));
+            args.push(os("-compose"));
+            args.push(os("CopyOpacity"));
+            args.push(os("-composite"));
+        }
+        args.push(os(")"));
+        // `-gravity` is a persistent setting: the cell used `center` for its extent,
+        // and leaving it set made `-geometry` place the overlay in the middle of the
+        // canvas instead of at the cell's corner.
+        args.push(os("-gravity"));
+        args.push(os("NorthWest"));
+        args.push(os("-compose"));
+        args.push(os("Over"));
+        args.push(os("-geometry"));
+        args.push(os(format!("+{x}+{y}")));
+        args.push(os("-composite"));
+        ctx.set_progress((position + 1) as f64 / total as f64);
+        if ctx.is_cancelled() {
+            return Err(JobError::new(
+                ErrorCode::Cancelled,
+                "the collage was cancelled",
+            ));
+        }
+    }
+    args.push(os("-quality"));
+    args.push(os("90"));
+    args.push(os(out));
+
+    let output = proc::run(
+        Cmd::new(magick).args(args).budget(Budget::Long),
+        ctx,
+    )?;
+    output.ok()?;
+    ensure_file(out, "the collage composer")?;
+    ctx.set_progress(1.0);
+    Ok(())
+}
+
+fn collage(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<PathBuf>, JobError> {
+    let magick = magick_path(cx)?;
+    let inputs = if job.inputs.is_empty() {
+        vec![job.source.clone()]
+    } else {
+        job.inputs.clone()
+    };
+    let out = tool_out(job, cx, ToolId::Collage);
+    compose_collage(&magick, &inputs, params, None, &out, cx.ctx)?;
+    Ok(vec![out])
+}
+
+/// The composition at preview size, rendered by the real engine into the cache.
+pub fn collage_preview(
+    tools: &crate::Toolset,
+    cache: &crate::preview::PreviewCache,
+    inputs: &[PathBuf],
+    params: &ToolParams,
+    out: &Path,
+    width: u32,
+) -> Result<(), JobError> {
+    let magick = tools.path(ToolKey::Magick)?;
+    let ctx = JobCtx::new();
+    let _permit = cache.preview_permit();
+    compose_collage(&magick, inputs, params, Some(width), out, &ctx)
+}
+
 // ------------------------------------------------------------------------ crop
 
 fn crop(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<PathBuf>, JobError> {
@@ -951,7 +1360,7 @@ fn annotate(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
         args.push(os("4"));
         for shape in &shapes {
             args.push(os("-draw"));
-            args.push(os(draw_command(shape, width, height)));
+            args.push(os(draw_command(shape, width, height, &color)));
         }
     }
 
@@ -968,19 +1377,46 @@ fn annotate(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 enum ShapeKind {
     Rect,
     Arrow,
+    Ellipse,
+    Line,
+    Highlight,
+    Number,
+    Text,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl ShapeKind {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "rect" | "rectangle" => ShapeKind::Rect,
+            "arrow" => ShapeKind::Arrow,
+            "ellipse" | "circle" => ShapeKind::Ellipse,
+            "line" | "pen" => ShapeKind::Line,
+            "highlight" => ShapeKind::Highlight,
+            "number" => ShapeKind::Number,
+            "text" => ShapeKind::Text,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct DrawShape {
     kind: ShapeKind,
     x: f32,
     y: f32,
     w: f32,
     h: f32,
+    /// Freehand and polyline points, normalised like `x`/`y`.
+    points: Vec<(f32, f32)>,
+    text: Option<String>,
+    color: Option<String>,
+    /// Stroke width for drawn shapes, point size for text.
+    size: Option<f32>,
 }
 
-/// `shapes` and `boxes` are arrays of `{x,y,w,h}`; `arrow` is one such object.
-/// All coordinates are fractions of the image, with the origin top-left.
+/// `shapes` and `boxes` are arrays of shape objects; `arrow` is one such object.
+/// All coordinates are fractions of the image, with the origin top-left, so the same
+/// value draws correctly at preview size and at full resolution.
 fn parse_shapes(params: &ToolParams) -> Result<Vec<DrawShape>, JobError> {
     let mut shapes = Vec::new();
 
@@ -1010,6 +1446,9 @@ fn parse_shapes(params: &ToolParams) -> Result<Vec<DrawShape>, JobError> {
         }
     }
 
+    if shapes.len() > 200 {
+        return Err(unsupported("at most 200 shapes can be drawn"));
+    }
     Ok(shapes)
 }
 
@@ -1017,15 +1456,12 @@ fn shape_from_object(
     object: &serde_json::Map<String, Value>,
     kind: &str,
 ) -> Result<DrawShape, JobError> {
-    let kind = match kind {
-        "rect" | "rectangle" => ShapeKind::Rect,
-        "arrow" => ShapeKind::Arrow,
-        other => {
-            return Err(unsupported(format!(
-                "unknown shape kind `{other}`; use `rect` or `arrow`"
-            )));
-        }
-    };
+    let kind = ShapeKind::parse(kind).ok_or_else(|| {
+        unsupported(format!(
+            "unknown shape kind `{kind}`; use `rect`, `arrow`, `ellipse`, `line`, \
+             `highlight`, `number` or `text`"
+        ))
+    })?;
     let read = |key: &str| -> Result<f32, JobError> {
         object
             .get(key)
@@ -1034,44 +1470,149 @@ fn shape_from_object(
             .filter(|v| v.is_finite())
             .ok_or_else(|| unsupported(format!("shape `{key}` must be a finite number")))
     };
-    let shape = DrawShape {
-        kind,
-        x: read("x")?,
-        y: read("y")?,
-        w: read("w")?,
-        h: read("h")?,
+    let optional = |key: &str| -> Option<f32> {
+        object
+            .get(key)
+            .and_then(Value::as_f64)
+            .map(|v| v as f32)
+            .filter(|v| v.is_finite())
     };
     let inside = |v: f32| (0.0..=1.0).contains(&v);
-    if !inside(shape.x) || !inside(shape.y) {
+
+    let x = read("x")?;
+    let y = read("y")?;
+    let mut w = optional("w").unwrap_or(0.0);
+    let mut h = optional("h").unwrap_or(0.0);
+    if !inside(x) || !inside(y) {
         return Err(unsupported(
             "shape `x`/`y` must be fractions between 0 and 1",
         ));
     }
-    match kind {
-        ShapeKind::Rect => {
-            if shape.w <= 0.0 || shape.h <= 0.0 {
-                return Err(unsupported("rectangle `w`/`h` must be > 0"));
+
+    let mut points = Vec::new();
+    if let Some(Value::Array(items)) = object.get("points") {
+        for item in items {
+            let pair = item
+                .as_array()
+                .filter(|pair| pair.len() >= 2)
+                .ok_or_else(|| unsupported("shape `points` must be [x, y] pairs"))?;
+            let px = pair[0]
+                .as_f64()
+                .map(|v| v as f32)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| unsupported("shape `points` must be numbers"))?;
+            let py = pair[1]
+                .as_f64()
+                .map(|v| v as f32)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| unsupported("shape `points` must be numbers"))?;
+            if !inside(px) || !inside(py) {
+                return Err(unsupported(
+                    "shape `points` must be fractions between 0 and 1",
+                ));
             }
-            if !inside(shape.x + shape.w) || !inside(shape.y + shape.h) {
-                return Err(unsupported("rectangle must lie inside the image"));
+            points.push((px, py));
+        }
+    }
+
+    let text = match object.get("text") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => return Err(unsupported("shape `text` must be a string")),
+    };
+    let color = match object.get("color") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+        Some(_) => return Err(unsupported("shape `color` must be a colour string")),
+    };
+    let size = optional("size");
+    if let Some(size) = size
+        && !(1.0..=200.0).contains(&size)
+    {
+        return Err(unsupported("shape `size` must be between 1 and 200"));
+    }
+
+    match kind {
+        ShapeKind::Rect | ShapeKind::Ellipse | ShapeKind::Highlight | ShapeKind::Number => {
+            if w <= 0.0 || h <= 0.0 {
+                return Err(unsupported(format!(
+                    "{kind:?} `w`/`h` must be > 0"
+                )));
+            }
+            if !inside(x + w) || !inside(y + h) {
+                return Err(unsupported("shape must lie inside the image"));
             }
         }
         ShapeKind::Arrow => {
-            if !inside(shape.x + shape.w) || !inside(shape.y + shape.h) {
+            if !inside(x + w) || !inside(y + h) {
                 return Err(unsupported("arrow end point must lie inside the image"));
             }
         }
+        ShapeKind::Line => {
+            if points.len() >= 2 {
+                // A polyline carries its own points; the box is a bounding hint.
+            } else if !inside(x + w) || !inside(y + h) {
+                return Err(unsupported("line end point must lie inside the image"));
+            }
+        }
+        ShapeKind::Text => {
+            let Some(value) = text.as_deref().map(str::trim) else {
+                return Err(unsupported("a text shape needs `text`"));
+            };
+            if value.is_empty() {
+                return Err(unsupported("a text shape needs `text`"));
+            }
+            if w < 0.0 || h < 0.0 {
+                w = 0.0;
+                h = 0.0;
+            }
+            if !inside(x + w) || !inside(y + h) {
+                return Err(unsupported("text must lie inside the image"));
+            }
+        }
     }
-    Ok(shape)
+
+    Ok(DrawShape {
+        kind,
+        x,
+        y,
+        w,
+        h,
+        points,
+        text,
+        color,
+        size,
+    })
 }
 
-fn draw_command(shape: &DrawShape, width: u32, height: u32) -> String {
+/// One `-draw` string per shape. Fill, stroke and width are set inside the string so
+/// each shape can carry its own colour without leaking into the next.
+fn draw_command(shape: &DrawShape, width: u32, height: u32, default: &str) -> String {
+    let colour = shape.color.as_deref().unwrap_or(default);
+    let stroke = shape
+        .size
+        .filter(|_| shape.kind != ShapeKind::Text)
+        .unwrap_or(4.0);
     let x1 = shape.x * width as f32;
     let y1 = shape.y * height as f32;
     let x2 = (shape.x + shape.w) * width as f32;
     let y2 = (shape.y + shape.h) * height as f32;
     match shape.kind {
-        ShapeKind::Rect => format!("rectangle {x1:.2},{y1:.2} {x2:.2},{y2:.2}"),
+        ShapeKind::Rect => format!(
+            "fill none stroke {colour} stroke-width {stroke:.1} rectangle {x1:.2},{y1:.2} {x2:.2},{y2:.2}"
+        ),
+        ShapeKind::Ellipse => {
+            let cx = (x1 + x2) / 2.0;
+            let cy = (y1 + y2) / 2.0;
+            let rx = (x2 - x1).abs() / 2.0;
+            let ry = (y2 - y1).abs() / 2.0;
+            format!(
+                "fill none stroke {colour} stroke-width {stroke:.1} ellipse {cx:.2},{cy:.2} {rx:.2},{ry:.2} 0,360"
+            )
+        }
+        ShapeKind::Highlight => format!(
+            "fill {colour}80 stroke none rectangle {x1:.2},{y1:.2} {x2:.2},{y2:.2}"
+        ),
         ShapeKind::Arrow => {
             let angle = (y2 - y1).atan2(x2 - x1);
             let head = (0.03 * width.min(height) as f32).clamp(8.0, 48.0);
@@ -1080,12 +1621,62 @@ fn draw_command(shape: &DrawShape, width: u32, height: u32) -> String {
             let bx = x2 - head * (angle - 0.45).cos();
             let by = y2 - head * (angle - 0.45).sin();
             format!(
-                "line {x1:.2},{y1:.2} {x2:.2},{y2:.2} \
+                "fill none stroke {colour} stroke-width {stroke:.1} \
+                 line {x1:.2},{y1:.2} {x2:.2},{y2:.2} \
                  line {x2:.2},{y2:.2} {ax:.2},{ay:.2} \
                  line {x2:.2},{y2:.2} {bx:.2},{by:.2}"
             )
         }
+        ShapeKind::Line => {
+            if shape.points.len() >= 2 {
+                let mut path = String::new();
+                for (index, (px, py)) in shape.points.iter().enumerate() {
+                    let command = if index == 0 { 'M' } else { 'L' };
+                    path.push_str(&format!(
+                        "{command} {:.2},{:.2} ",
+                        px * width as f32,
+                        py * height as f32
+                    ));
+                }
+                format!(
+                    "fill none stroke {colour} stroke-width {stroke:.1} path '{}'",
+                    path.trim_end()
+                )
+            } else {
+                format!(
+                    "fill none stroke {colour} stroke-width {stroke:.1} line {x1:.2},{y1:.2} {x2:.2},{y2:.2}"
+                )
+            }
+        }
+        ShapeKind::Number => {
+            let cx = (x1 + x2) / 2.0;
+            let cy = (y1 + y2) / 2.0;
+            let r = ((x2 - x1).abs().min((y2 - y1).abs()) / 2.0).max(1.0);
+            let label = shape.text.as_deref().unwrap_or("1");
+            let font = (r * 1.2).max(8.0);
+            format!(
+                "fill {colour} stroke none circle {cx:.2},{cy:.2} {:.2},{cy:.2} \
+                 fill white stroke none font-size {font:.1} text {:.2},{:.2} '{}'",
+                cx + r,
+                cx - r * 0.35,
+                cy + r * 0.35,
+                escape_draw(label)
+            )
+        }
+        ShapeKind::Text => {
+            let size = shape.size.unwrap_or(32.0).clamp(12.0, 200.0);
+            format!(
+                "fill {colour} stroke none font-size {size:.1} text {x1:.2},{y1:.2} '{}'",
+                escape_draw(shape.text.as_deref().unwrap_or(""))
+            )
+        }
     }
+}
+
+/// Text goes inside a single-quoted `-draw` argument: the quote and the backslash are
+/// the only two characters ImageMagick would read as syntax.
+fn escape_draw(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 // -------------------------------------------------------------- add background
@@ -1314,6 +1905,11 @@ fn add_background(
             vis_h.round()
         )));
         args.push(os("+repage"));
+        let blur = number(params, "bg_blur")?.unwrap_or(0.0).clamp(0.0, 50.0);
+        if blur > 0.0 {
+            args.push(os("-blur"));
+            args.push(os(format!("0x{blur:.1}")));
+        }
         args.push(os("-resize"));
         args.push(os(format!("{size}!")));
         args.push(os(")"));
@@ -1378,6 +1974,17 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
     let exposure = number(params, "exposure")?.unwrap_or(0.0) as f32;
     let hue = number(params, "hue")?.unwrap_or(0.0) as f32;
     let temperature = number(params, "temperature")?.unwrap_or(0.0) as f32;
+    let tint = number(params, "tint")?.unwrap_or(0.0) as f32;
+    let whites = number(params, "whites")?.unwrap_or(0.0) as f32;
+    let blacks = number(params, "blacks")?.unwrap_or(0.0) as f32;
+    let shadows = number(params, "shadows")?.unwrap_or(0.0) as f32;
+    let highlights = number(params, "highlights")?.unwrap_or(0.0) as f32;
+    let vibrance = number(params, "vibrance")?.unwrap_or(0.0) as f32;
+    let clarity = number(params, "clarity")?.unwrap_or(0.0) as f32;
+    let dehaze = number(params, "dehaze")?.unwrap_or(0.0) as f32;
+    let grain = number(params, "grain")?.unwrap_or(0.0) as f32;
+    let noise = number(params, "noise")?.unwrap_or(0.0) as f32;
+    let sharpness = number(params, "sharpness")?.unwrap_or(0.0) as f32;
     let gamma = number(params, "gamma")?;
 
     let mut args: Vec<OsString> = Vec::new();
@@ -1404,6 +2011,34 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
         args.push(os(format!("{:.4}", 1.0 - warm)));
         args.push(os("+channel"));
     }
+    if tint != 0.0 {
+        // Tint is the green/magenta axis: green up and the picture reads magenta.
+        let green = (1.0 - tint / 400.0).clamp(0.05, 2.0);
+        args.push(os("-channel"));
+        args.push(os("G"));
+        args.push(os("-evaluate"));
+        args.push(os("multiply"));
+        args.push(os(format!("{green:.4}")));
+        args.push(os("+channel"));
+    }
+    if whites != 0.0 {
+        args.push(os("-level"));
+        args.push(os(format!("0%,{:.2}%", 100.0 + whites * 0.25)));
+    }
+    if blacks != 0.0 {
+        args.push(os("-level"));
+        args.push(os(format!("{:.2}%,100%", blacks * 0.25)));
+    }
+    if shadows != 0.0 {
+        // Gamma lifts or crushes the dark end without touching white.
+        let g = (1.0 / (1.0 + shadows / 100.0)).clamp(0.05, 20.0);
+        args.push(os("-gamma"));
+        args.push(os(format!("{g:.3}")));
+    }
+    if highlights != 0.0 {
+        args.push(os("-sigmoidal-contrast"));
+        args.push(os(format!("3,{:.1}%", 50.0 + highlights * 0.3)));
+    }
     if brightness != 0.0 || saturation != 0.0 || hue != 0.0 {
         let bright = (100.0 + brightness).clamp(0.0, 200.0);
         let sat = (100.0 + saturation).clamp(0.0, 200.0);
@@ -1419,6 +2054,39 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
     if let Some(gamma) = gamma {
         args.push(os("-gamma"));
         args.push(os(format!("{gamma:.3}")));
+    }
+    if vibrance != 0.0 {
+        let sat = (100.0 + vibrance * 0.5).clamp(0.0, 200.0);
+        args.push(os("-modulate"));
+        args.push(os(format!("100,{sat:.2},100")));
+    }
+    if clarity > 0.0 {
+        args.push(os("-unsharp"));
+        args.push(os(format!("0x1+{:.3}", clarity / 100.0)));
+    } else if clarity < 0.0 {
+        args.push(os("-blur"));
+        args.push(os(format!("0x{:.2}", -clarity / 50.0)));
+    }
+    if dehaze > 0.0 {
+        args.push(os("-sigmoidal-contrast"));
+        args.push(os("4,50%"));
+    }
+    if noise > 0.0 {
+        // Each pass removes another layer of speckle; 25 is one pass.
+        let passes = (noise / 25.0).ceil().clamp(1.0, 4.0) as usize;
+        for _ in 0..passes {
+            args.push(os("-despeckle"));
+        }
+    }
+    if sharpness > 0.0 {
+        args.push(os("-sharpen"));
+        args.push(os(format!("0x{:.3}", sharpness / 50.0)));
+    }
+    if grain > 0.0 {
+        args.push(os("-attenuate"));
+        args.push(os(format!("{:.3}", grain / 100.0)));
+        args.push(os("+noise"));
+        args.push(os("Gaussian"));
     }
     Ok(args)
 }
@@ -1754,6 +2422,12 @@ fn tool_out(job: &Job, cx: &Context<'_>, tool: ToolId) -> PathBuf {
 }
 
 fn image_size(magick: &Path, input: &Path, cx: &Context<'_>) -> Result<(u32, u32), JobError> {
+    image_size_with(magick, input, cx.ctx)
+}
+
+/// Dimensions with a bare `JobCtx`, so a preview (which has no work directory) can
+/// measure the source the same way a job does.
+fn image_size_with(magick: &Path, input: &Path, ctx: &JobCtx) -> Result<(u32, u32), JobError> {
     let cmd = Cmd::new(magick)
         .arg("identify")
         .arg("-format")
@@ -1761,7 +2435,7 @@ fn image_size(magick: &Path, input: &Path, cx: &Context<'_>) -> Result<(u32, u32
         .arg(input)
         .stdout_piped()
         .budget(Budget::Short);
-    let output = proc::run(cmd, cx.ctx)?;
+    let output = proc::run(cmd, ctx)?;
     let output = output.ok()?;
     let mut parts = output.stdout.split_whitespace();
     let width: u32 = parts
@@ -2217,6 +2891,252 @@ mod tests {
         let (sr, _, _) = pixel(&f, &shadowed[0], 260, 366);
         assert_eq!(pr, 255, "the band starts as the background");
         assert!(sr < pr - 5, "the shadow should darken it: {sr} vs {pr}");
+    }
+
+    fn png_dims(path: &Path) -> (u32, u32) {
+        ::image::image_dimensions(path).expect("read the PNG dimensions")
+    }
+
+    #[test]
+    fn collage_quadrants_follow_their_sources_and_the_order() {
+        let Some(f) = fixture() else { return };
+        let inputs = vec![
+            solid(&f, "c1.png", "100x100", "red"),
+            solid(&f, "c2.png", "100x100", "green"),
+            solid(&f, "c3.png", "100x100", "blue"),
+            solid(&f, "c4.png", "100x100", "white"),
+        ];
+        let compose = |order: Value, extra: Value| {
+            let mut map = serde_json::json!({
+                "width": 2048,
+                "spacing": 16,
+                "background": "#000000",
+                "order": order,
+            });
+            if let (Some(map), Some(extra)) = (map.as_object_mut(), extra.as_object()) {
+                for (key, value) in extra {
+                    map.insert(key.clone(), value.clone());
+                }
+            }
+            let job = Job::with_inputs(
+                inputs.clone(),
+                Intent::Tool {
+                    tool: ToolId::Collage,
+                    params: params(map),
+                },
+            );
+            run_engine(&f, &job).expect("compose the collage")
+        };
+
+        let artifacts = compose(serde_json::json!([0, 1, 2, 3]), serde_json::json!({}));
+        assert_eq!(png_dims(&artifacts[0]), (2048, 2048));
+        // cell_w = (2048 - 16*3) / 2 = 1000, first cell at 16.
+        assert_eq!(pixel(&f, &artifacts[0], 516, 516), (255, 0, 0));
+        assert_eq!(pixel(&f, &artifacts[0], 1532, 516), (0, 128, 0));
+        assert_eq!(pixel(&f, &artifacts[0], 516, 1532), (0, 0, 255));
+        assert_eq!(pixel(&f, &artifacts[0], 1532, 1532), (255, 255, 255));
+        // The gutter is the background, not a stretched cell.
+        assert_eq!(pixel(&f, &artifacts[0], 1024, 516), (0, 0, 0));
+
+        // Reversing the order swaps the quadrants, not the layout.
+        let reversed = compose(serde_json::json!([3, 2, 1, 0]), serde_json::json!({}));
+        assert_eq!(pixel(&f, &reversed[0], 516, 516), (255, 255, 255));
+        assert_eq!(pixel(&f, &reversed[0], 1532, 1532), (255, 0, 0));
+
+        // A rounded corner of the first cell is the background.
+        let rounded = compose(
+            serde_json::json!([0, 1, 2, 3]),
+            serde_json::json!({ "radius": 32 }),
+        );
+        assert_eq!(pixel(&f, &rounded[0], 17, 17), (0, 0, 0));
+    }
+
+    #[test]
+    fn collage_contain_leaves_the_background_at_the_cell_edges() {
+        let Some(f) = fixture() else { return };
+        let wide = solid(&f, "wide-collage.png", "200x100", "blue");
+        let second = solid(&f, "square-collage.png", "100x100", "red");
+        let job = Job::with_inputs(
+            vec![wide, second],
+            Intent::Tool {
+                tool: ToolId::Collage,
+                params: params(serde_json::json!({
+                    "width": 2048,
+                    "spacing": 16,
+                    "background": "#000000",
+                    "fit": "contain",
+                })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compose");
+        let (w, h) = png_dims(&artifacts[0]);
+        assert_eq!((w, h), (2048, 1024), "auto ratio follows the first picture");
+        // The wide picture is letterboxed inside its square-ish cell.
+        assert_eq!(pixel(&f, &artifacts[0], 516, 100), (0, 0, 0));
+        assert_eq!(pixel(&f, &artifacts[0], 516, 512), (0, 0, 255));
+    }
+
+    #[test]
+    fn annotate_draws_every_shape_kind_inside_its_box() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "annotate.png", "600x400", "red");
+        let job = Job::new(
+            input.clone(),
+            Intent::Tool {
+                tool: ToolId::Annotate,
+                params: params(serde_json::json!({
+                    "color": "#ff5a36",
+                    "shapes": [
+                        {"kind": "rect", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.3, "color": "#0000ff"},
+                        {"kind": "ellipse", "x": 0.1, "y": 0.55, "w": 0.2, "h": 0.2},
+                        {"kind": "arrow", "x": 0.4, "y": 0.5, "w": 0.2, "h": 0.1},
+                        {"kind": "line", "x": 0.4, "y": 0.7, "w": 0.1, "h": 0.1,
+                         "points": [[0.4, 0.7], [0.5, 0.8], [0.6, 0.72]]},
+                        {"kind": "highlight", "x": 0.65, "y": 0.1, "w": 0.2, "h": 0.2, "color": "#00ff00"},
+                        {"kind": "number", "x": 0.65, "y": 0.55, "w": 0.1, "h": 0.1, "text": "1"},
+                        {"kind": "text", "x": 0.5, "y": 0.9, "w": 0.0, "h": 0.0, "text": "Hi", "size": 20}
+                    ]
+                })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("annotate");
+        assert_eq!(png_dims(&artifacts[0]), (600, 400));
+        // The rectangle's left border is blue; its interior and the corner are not.
+        let border = pixel(&f, &artifacts[0], 60, 100);
+        assert!(border.2 > 150 && border.0 < 120, "rect border was {border:?}");
+        let inside = pixel(&f, &artifacts[0], 200, 100);
+        assert_eq!(inside, (255, 0, 0), "the rectangle has no fill");
+        assert_eq!(pixel(&f, &artifacts[0], 2, 2), (255, 0, 0));
+        // The highlight changes the picture under it without hiding the source.
+        let lit = pixel(&f, &artifacts[0], 450, 80);
+        assert_ne!(lit, (255, 0, 0), "the highlight did not draw");
+    }
+
+    #[test]
+    fn annotate_rejects_a_shape_outside_the_image() {
+        let job = Job::new(
+            PathBuf::from("/tmp/image.png"),
+            Intent::Tool {
+                tool: ToolId::Annotate,
+                params: params(serde_json::json!({
+                    "shapes": [{"kind": "rect", "x": 0.8, "y": 0.1, "w": 0.5, "h": 0.3}]
+                })),
+            },
+        );
+        let err = validate(&job, Category::Images).expect_err("must reject");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn redact_solid_and_blur_change_only_the_box() {
+        let Some(f) = fixture() else { return };
+        let run_redact = |source: &Path, params: Value| {
+            let job = Job::new(
+                source.to_path_buf(),
+                Intent::Tool {
+                    tool: ToolId::Redact,
+                    params: params.as_object().cloned().expect("object params"),
+                },
+            );
+            let work = WorkDir::create(f._dir.path().join(format!("redact-{}", job.id)))
+                .expect("work dir");
+            let ctx = JobCtx::new();
+            let cx = Context {
+                tools: &f.tools,
+                work: &work,
+                ctx: &ctx,
+                preview: None,
+            };
+            crate::redact::run(&job, &cx)
+        };
+
+        let plain = solid(&f, "redact.png", "200x200", "white");
+        let solid_out = run_redact(
+            &plain,
+            serde_json::json!({
+                "boxes": [{"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}],
+                "style": "solid",
+                "color": "#ff0000",
+            }),
+        )
+        .expect("solid redaction");
+        assert_eq!(pixel(&f, &solid_out[0], 100, 100), (255, 0, 0));
+        assert_eq!(pixel(&f, &solid_out[0], 5, 5), (255, 255, 255));
+
+        let noisy = noisy_400(&f, "redact-noise.png");
+        let blur_out = run_redact(
+            &noisy,
+            serde_json::json!({
+                "boxes": [{"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}],
+                "style": "blur",
+            }),
+        )
+        .expect("blurred redaction");
+        let before = pixel(&f, &noisy, 200, 200);
+        let after = pixel(&f, &blur_out[0], 200, 200);
+        assert_ne!(before, after, "the blur did not change the region");
+        assert_eq!(pixel(&f, &blur_out[0], 5, 5), pixel(&f, &noisy, 5, 5));
+    }
+
+    #[test]
+    fn redact_rejects_an_unknown_style() {
+        let Some(f) = fixture() else { return };
+        let plain = solid(&f, "redact-style.png", "100x100", "white");
+        let job = Job::new(
+            plain,
+            Intent::Tool {
+                tool: ToolId::Redact,
+                params: params(serde_json::json!({
+                    "boxes": [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}],
+                    "style": "sparkle",
+                })),
+            },
+        );
+        let work = WorkDir::create(f._dir.path().join("redact-style-work")).expect("work dir");
+        let ctx = JobCtx::new();
+        let cx = Context {
+            tools: &f.tools,
+            work: &work,
+            ctx: &ctx,
+            preview: None,
+        };
+        let err = crate::redact::run(&job, &cx).expect_err("must reject");
+        assert_eq!(err.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn photo_adjustments_reach_the_engine() {
+        let Some(f) = fixture() else { return };
+        let grey = solid(&f, "grey.png", "100x100", "gray");
+        let job = Job::new(
+            grey.clone(),
+            Intent::Tool {
+                tool: ToolId::EditPhoto,
+                params: params(serde_json::json!({ "exposure": 1 })),
+            },
+        );
+        let bright = run_engine(&f, &job).expect("adjust");
+        let before = pixel(&f, &grey, 50, 50);
+        let after = pixel(&f, &bright[0], 50, 50);
+        assert!(after.0 > before.0 + 30, "exposure did not lift the picture");
+
+        let grain = Job::new(
+            grey.clone(),
+            Intent::Tool {
+                tool: ToolId::EditPhoto,
+                params: params(serde_json::json!({ "grain": 100 })),
+            },
+        );
+        assert!(run_engine(&f, &grain).is_ok(), "grain must run");
+
+        let nothing = Job::new(
+            grey,
+            Intent::Tool {
+                tool: ToolId::EditPhoto,
+                params: params(serde_json::json!({ "clarity": 20, "noise": 30 })),
+            },
+        );
+        assert!(run_engine(&f, &nothing).is_ok(), "detail controls must run");
     }
 
     #[test]

@@ -66,7 +66,10 @@ pub fn plan_with_caps(
     }
 
     // Tools that consume the whole selection as one job.
-    let multi_input = matches!(intent.tool_id(), Some(ToolId::Join) | Some(ToolId::Merge));
+    let multi_input = matches!(
+        intent.tool_id(),
+        Some(ToolId::Join) | Some(ToolId::Merge) | Some(ToolId::Collage)
+    );
 
     // Validate the intent against the registry before touching any file.
     match &intent {

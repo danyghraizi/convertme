@@ -741,23 +741,87 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 ..Default::default()
             }
             .hidden(),
-            select(
-                "aspect",
-                "Aspect ratio",
-                "free",
-                &["free", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"],
-            )
-            .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4"]),
+            {
+                // The reference puts the ratios under the crop surface as pills.
+                let mut field = select(
+                    "aspect",
+                    "Aspect ratio",
+                    "free",
+                    &["free", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"],
+                )
+                .labelled(&["Free", "1:1", "16:9", "4:3", "9:16", "3:4", "4:5"]);
+                field.kind = "segmented".into();
+                field
+            },
+            // The surface owns the rectangle; these two mirror it in source pixels and
+            // are a control, never a job parameter.
+            num("w", "Width", 0.0, 0.0, 100_000.0, 1.0, "px").hidden().control(),
+            num("h", "Height", 0.0, 0.0, 100_000.0, 1.0, "px").hidden().control(),
         ],
         (Category::Images, ToolId::Annotate) => vec![
-            text("text", "Text", "", None),
+            // A plain caption burned into the corner, for the quick case where the
+            // user does not want to place a shape on the canvas. It comes first so it
+            // stays above the canvas and is reachable without scrolling.
+            text("text", "Caption", "", None),
+            Field {
+                key: "shapes".into(),
+                label: "Annotations".into(),
+                kind: "shapes".into(),
+                default: serde_json::json!([]),
+                ..Default::default()
+            },
             Field {
                 key: "color".into(),
                 label: "Ink colour".into(),
                 kind: "color".into(),
-                default: serde_json::json!("#f5f5f5"),
+                default: serde_json::json!("#ff5a36"),
                 ..Default::default()
             },
+        ],
+        (Category::Images, ToolId::Collage) => vec![
+            select(
+                "style",
+                "Style",
+                "grid",
+                &["grid", "row", "column", "featured"],
+            )
+            .labelled(&["Grid", "Row", "Column", "Featured"]),
+            num("columns", "Columns", 2.0, 1.0, 6.0, 1.0, ""),
+            select(
+                "aspect",
+                "Canvas ratio",
+                "1:1",
+                &["auto", "1:1", "16:9", "4:3", "3:2"],
+            )
+            .labelled(&["Auto", "1:1", "16:9", "4:3", "3:2"]),
+            num("width", "Width", 2048.0, 512.0, 8192.0, 2.0, "px"),
+            select(
+                "fit",
+                "Fit",
+                "crop",
+                &["crop", "contain"],
+            )
+            .labelled(&["Fill cells (crop edges)", "Fit inside cells"]),
+            num("spacing", "Spacing", 0.0, 0.0, 64.0, 1.0, "px").group("Spacing & background"),
+            Field {
+                key: "background".into(),
+                label: "Background".into(),
+                kind: "color".into(),
+                default: serde_json::json!("#ffffff"),
+                group: Some("Spacing & background".into()),
+                ..Default::default()
+            },
+            num("radius", "Corner radius", 0.0, 0.0, 64.0, 1.0, "px")
+                .group("Spacing & background"),
+            Field {
+                key: "order".into(),
+                label: "Image order".into(),
+                kind: "files".into(),
+                default: serde_json::json!([]),
+                group: Some("Spacing & background".into()),
+                ..Default::default()
+            }
+            .hidden(),
         ],
         (Category::Images, ToolId::AddBackground) => vec![
             select(
@@ -823,6 +887,14 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 });
                 field
             },
+            {
+                let mut field = range("bg_blur", "Background blur", 0.0, 50.0, 1.0, "px");
+                field.show_if = Some(ShowIf {
+                    key: "mode".into(),
+                    equals: "image".into(),
+                });
+                field
+            },
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("shadow_pct", "Shadow", 2.0, 0.0, 100.0, 1.0, "%"),
@@ -850,9 +922,17 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             },
         ],
         (Category::Images, ToolId::EditPhoto) => vec![
-            range("exposure", "Exposure", -3.0, 3.0, 0.1, "EV").group("Light"),
+            {
+                let mut field = range("exposure", "Exposure", -5.0, 5.0, 0.01, "EV");
+                field.group = Some("Light".into());
+                field
+            },
             range("brightness", "Brightness", -100.0, 100.0, 1.0, "").group("Light"),
             range("contrast", "Contrast", -100.0, 100.0, 1.0, "").group("Light"),
+            range("highlights", "Highlights", -100.0, 100.0, 1.0, "").group("Light"),
+            range("shadows", "Shadows", -100.0, 100.0, 1.0, "").group("Light"),
+            range("whites", "Whites", -100.0, 100.0, 1.0, "").group("Light"),
+            range("blacks", "Blacks", -100.0, 100.0, 1.0, "").group("Light"),
             {
                 let mut field = range("gamma", "Gamma", 0.2, 3.0, 0.01, "").group("Light");
                 // 1.0 is "leave it alone"; the slider starts neutral, not at zero.
@@ -860,28 +940,55 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 field
             },
             range("temperature", "Temperature", -100.0, 100.0, 1.0, "").group("Colour"),
+            range("tint", "Tint", -100.0, 100.0, 1.0, "").group("Colour"),
             range("saturation", "Saturation", -100.0, 100.0, 1.0, "").group("Colour"),
+            range("vibrance", "Vibrance", -100.0, 100.0, 1.0, "").group("Colour"),
             range("hue", "Hue", -180.0, 180.0, 1.0, "°").group("Colour"),
+            range("clarity", "Clarity", -100.0, 100.0, 1.0, "").group("Detail"),
+            range("dehaze", "Dehaze", -100.0, 100.0, 1.0, "").group("Detail"),
+            range("grain", "Grain", 0.0, 100.0, 1.0, "").group("Detail"),
+            range("noise", "Noise reduction", 0.0, 100.0, 1.0, "").group("Detail"),
+            range("sharpness", "Sharpness", 0.0, 100.0, 1.0, "").group("Detail"),
         ],
         // The tags differ per container (EXIF for JPG/TIFF, ImageMagick for PNG/WEBP);
         // the browser asks the writer which ones it can change.
         (Category::Images, ToolId::Metadata) => vec![metadata_field()],
-        (Category::Images, ToolId::Redact) => {
-            let fields = vec![
-                Field {
-                    key: "boxes".into(),
-                    label: "Areas to fill".into(),
-                    kind: "boxes".into(),
-                    default: serde_json::json!([]),
+        (Category::Images, ToolId::Redact) => vec![
+            Field {
+                key: "boxes".into(),
+                label: "Areas to fill".into(),
+                kind: "boxes".into(),
+                default: serde_json::json!([]),
+                ..Default::default()
+            }
+            .hidden(),
+            {
+                // Two real treatments: a solid fill or a blur of the region. The
+                // switch is a control (the modal adds `style` to the parameters) so
+                // the colour's `show_if` has a driver that is not itself a parameter.
+                let mut field = select("style", "Style", "solid", &["solid", "blur"])
+                    .labelled(&["Solid", "Blur"])
+                    .control();
+                field.kind = "segmented".into();
+                field
+            },
+            {
+                // The colour has no meaning when the region is blurred, so the control
+                // is not shown (and not sent) in that mode.
+                let mut field = Field {
+                    key: "color".into(),
+                    label: "Colour".into(),
+                    kind: "color".into(),
+                    default: serde_json::json!("#000000"),
                     ..Default::default()
-                }
-                .hidden(),
-                text("color", "Fill colour", "#000000", None),
-            ];
-            // Region detection lives in the boxes editor's Detect faces/text
-            // buttons; a no-op checkbox here would not do anything at run time.
-            fields
-        }
+                };
+                field.show_if = Some(ShowIf {
+                    key: "style".into(),
+                    equals: "solid".into(),
+                });
+                field
+            },
+        ],
         (Category::Video, ToolId::Compress) => vec![
             // Relative to the source, as lesson 11: a fixed byte default compressed a
             // 62 KB clip into 131 KB.

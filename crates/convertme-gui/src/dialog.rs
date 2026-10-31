@@ -395,6 +395,66 @@ pub async fn photo_preview(
     .map_err(|e| e.to_string())?
 }
 
+/// The collage at 512 px, rendered by the real engine into the cache.
+///
+/// The preview is the same composer as the job, so changing the layout in the dialog
+/// shows exactly the arrangement the save will produce.
+#[tauri::command]
+pub async fn collage_preview(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    params: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let inputs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    if inputs.is_empty() {
+        return Err("a collage needs at least one image".to_string());
+    }
+    let raw = params.and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    let params = convertme_core::params::normalize(Category::Images, ToolId::Collage, raw)?;
+    let cache = state.cache.clone();
+    let tools = state.tools.clone();
+    // The cache key covers every input, not just the first: the same lead image with a
+    // different second picture is a different collage.
+    let identity = inputs
+        .iter()
+        .map(|path| {
+            std::fs::metadata(path)
+                .ok()
+                .map(|meta| {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    format!("{}:{}:{mtime}", path.display(), meta.len())
+                })
+                .unwrap_or_else(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let source = inputs[0].clone();
+    let key = cache
+        .artifact_key(
+            &source,
+            "collage",
+            &preview_key_arg("collage", &params, &identity),
+            "png",
+        )
+        .ok_or_else(|| "cannot stat the source for a preview".to_string())?;
+    if key.exists() {
+        return Ok(key.to_string_lossy().into_owned());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        convertme_engines::image::collage_preview(&tools, &cache, &inputs, &params, &key, 512)
+            .map_err(|e| e.to_string())?;
+        cache.enforce_cap();
+        Ok::<String, String>(key.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // --------------------------------------------------------------- metadata
 
 /// One editable or read-only row of the metadata browser.

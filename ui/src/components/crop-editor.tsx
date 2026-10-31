@@ -13,6 +13,8 @@ interface CropEditorProps {
   value: Box | null;
   /** `free` or `w:h`; the region keeps this ratio while it is dragged. */
   aspect: string;
+  /** Source pixels behind the preview, so the dialog can show W/H inputs. */
+  onSize?: (size: { w: number; h: number }) => void;
   onChange: (box: Box) => void;
 }
 
@@ -44,7 +46,19 @@ export default function CropEditor(props: CropEditorProps) {
       .previewThumb(path, 1024)
       .then((url) => {
         const image = new Image();
-        image.onload = () => setNatural({ w: image.naturalWidth, h: image.naturalHeight });
+        image.onload = () => {
+          // The preview is a thumbnail; the W/H row must show the file's own pixels.
+          const fallback = { w: image.naturalWidth, h: image.naturalHeight };
+          setNatural(fallback);
+          void ipc
+            .imageSize(path)
+            .then((size) => {
+              const source = size ?? fallback;
+              setNatural(source);
+              props.onSize?.(source);
+            })
+            .catch(() => props.onSize?.(fallback));
+        };
         image.src = ipc.assetUrl(url);
         setPreview(ipc.assetUrl(url));
       })
@@ -227,7 +241,7 @@ export default function CropEditor(props: CropEditorProps) {
         onPointerCancel={end}
       >
         <Show when={preview()} fallback={<p class="crop-placeholder">Preview unavailable</p>}>
-          <img src={preview()} alt="Crop preview" draggable={false} />
+          <img src={preview()} alt="Crop area" draggable={false} />
           <span class="crop-shade" />
           <div
             class="crop-region"

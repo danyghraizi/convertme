@@ -317,6 +317,20 @@
         "unit": "%"
       },
       {
+        "default": 0.0,
+        "key": "bg_blur",
+        "kind": "range",
+        "label": "Background blur",
+        "max": 50.0,
+        "min": 0.0,
+        "show_if": {
+          "equals": "image",
+          "key": "mode"
+        },
+        "step": 1.0,
+        "unit": "px"
+      },
+      {
         "default": 4.0,
         "key": "padding_pct",
         "kind": "range",
@@ -386,13 +400,130 @@
         "default": "",
         "key": "text",
         "kind": "text",
-        "label": "Text"
+        "label": "Caption"
       },
       {
-        "default": "#f5f5f5",
+        "default": [],
+        "key": "shapes",
+        "kind": "shapes",
+        "label": "Annotations"
+      },
+      {
+        "default": "#ff5a36",
         "key": "color",
         "kind": "color",
         "label": "Ink colour"
+      }
+    ],
+    "collage": [
+      {
+        "default": "grid",
+        "key": "style",
+        "kind": "select",
+        "label": "Style",
+        "option_labels": [
+          "Grid",
+          "Row",
+          "Column",
+          "Featured"
+        ],
+        "options": [
+          "grid",
+          "row",
+          "column",
+          "featured"
+        ]
+      },
+      {
+        "default": 2.0,
+        "key": "columns",
+        "kind": "number",
+        "label": "Columns",
+        "max": 6.0,
+        "min": 1.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": "1:1",
+        "key": "aspect",
+        "kind": "select",
+        "label": "Canvas ratio",
+        "option_labels": [
+          "Auto",
+          "1:1",
+          "16:9",
+          "4:3",
+          "3:2"
+        ],
+        "options": [
+          "auto",
+          "1:1",
+          "16:9",
+          "4:3",
+          "3:2"
+        ]
+      },
+      {
+        "default": 2048.0,
+        "key": "width",
+        "kind": "number",
+        "label": "Width",
+        "max": 8192.0,
+        "min": 512.0,
+        "step": 2.0,
+        "unit": "px"
+      },
+      {
+        "default": "crop",
+        "key": "fit",
+        "kind": "select",
+        "label": "Fit",
+        "option_labels": [
+          "Fill cells (crop edges)",
+          "Fit inside cells"
+        ],
+        "options": [
+          "crop",
+          "contain"
+        ]
+      },
+      {
+        "default": 0.0,
+        "group": "Spacing & background",
+        "key": "spacing",
+        "kind": "number",
+        "label": "Spacing",
+        "max": 64.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "px"
+      },
+      {
+        "default": "#ffffff",
+        "group": "Spacing & background",
+        "key": "background",
+        "kind": "color",
+        "label": "Background"
+      },
+      {
+        "default": 0.0,
+        "group": "Spacing & background",
+        "key": "radius",
+        "kind": "number",
+        "label": "Corner radius",
+        "max": 64.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "px"
+      },
+      {
+        "default": [],
+        "group": "Spacing & background",
+        "hidden": true,
+        "key": "order",
+        "kind": "files",
+        "label": "Image order"
       }
     ],
     "compress": [
@@ -488,7 +619,7 @@
       {
         "default": "free",
         "key": "aspect",
-        "kind": "select",
+        "kind": "segmented",
         "label": "Aspect ratio",
         "option_labels": [
           "Free",
@@ -496,7 +627,8 @@
           "16:9",
           "4:3",
           "9:16",
-          "3:4"
+          "3:4",
+          "4:5"
         ],
         "options": [
           "free",
@@ -507,6 +639,30 @@
           "3:4",
           "4:5"
         ]
+      },
+      {
+        "control": true,
+        "default": 0.0,
+        "hidden": true,
+        "key": "w",
+        "kind": "number",
+        "label": "Width",
+        "max": 100000.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "px"
+      },
+      {
+        "control": true,
+        "default": 0.0,
+        "hidden": true,
+        "key": "h",
+        "kind": "number",
+        "label": "Height",
+        "max": 100000.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "px"
       }
     ],
     "edit-photo": [
@@ -516,9 +672,9 @@
         "key": "exposure",
         "kind": "range",
         "label": "Exposure",
-        "max": 3.0,
-        "min": -3.0,
-        "step": 0.1,
+        "max": 5.0,
+        "min": -5.0,
+        "step": 0.01,
         "unit": "EV"
       },
       {
@@ -538,6 +694,50 @@
         "key": "contrast",
         "kind": "range",
         "label": "Contrast",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "highlights",
+        "kind": "range",
+        "label": "Highlights",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "shadows",
+        "kind": "range",
+        "label": "Shadows",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "whites",
+        "kind": "range",
+        "label": "Whites",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "blacks",
+        "kind": "range",
+        "label": "Blacks",
         "max": 100.0,
         "min": -100.0,
         "step": 1.0,
@@ -568,9 +768,31 @@
       {
         "default": 0.0,
         "group": "Colour",
+        "key": "tint",
+        "kind": "range",
+        "label": "Tint",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Colour",
         "key": "saturation",
         "kind": "range",
         "label": "Saturation",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Colour",
+        "key": "vibrance",
+        "kind": "range",
+        "label": "Vibrance",
         "max": 100.0,
         "min": -100.0,
         "step": 1.0,
@@ -586,6 +808,61 @@
         "min": -180.0,
         "step": 1.0,
         "unit": "°"
+      },
+      {
+        "default": 0.0,
+        "group": "Detail",
+        "key": "clarity",
+        "kind": "range",
+        "label": "Clarity",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Detail",
+        "key": "dehaze",
+        "kind": "range",
+        "label": "Dehaze",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Detail",
+        "key": "grain",
+        "kind": "range",
+        "label": "Grain",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Detail",
+        "key": "noise",
+        "kind": "range",
+        "label": "Noise reduction",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Detail",
+        "key": "sharpness",
+        "kind": "range",
+        "label": "Sharpness",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": ""
       }
     ],
     "metadata": [
@@ -609,10 +886,29 @@
         "label": "Areas to fill"
       },
       {
+        "control": true,
+        "default": "solid",
+        "key": "style",
+        "kind": "segmented",
+        "label": "Style",
+        "option_labels": [
+          "Solid",
+          "Blur"
+        ],
+        "options": [
+          "solid",
+          "blur"
+        ]
+      },
+      {
         "default": "#000000",
         "key": "color",
-        "kind": "text",
-        "label": "Fill colour"
+        "kind": "color",
+        "label": "Colour",
+        "show_if": {
+          "equals": "solid",
+          "key": "style"
+        }
       }
     ]
   },

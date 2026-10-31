@@ -112,6 +112,7 @@ BACKEND_TOOLS = {
         "Compress",
         "Crop",
         "Annotate",
+        "Collage",
         "Add background",
         "Edit photo",
         "Metadata",
@@ -183,10 +184,47 @@ FIELDLESS = {
 }
 
 CONTROL_EXPECTATIONS = {
-    ("Images", "Crop"): [("combo box", "Aspect ratio")],
-    ("Images", "Annotate"): [("entry", "Text")],
-    ("Images", "Redact"): [("entry", "Fill colour"), ("button", "Detect text")],
-    ("Images", "Edit photo"): [("slider", "Exposure"), ("slider", "Gamma")],
+    ("Images", "Crop"): [
+        ("toggle button", "1:1"),
+        ("entry", "Width"),
+        ("entry", "Height"),
+    ],
+    ("Images", "Annotate"): [
+        ("entry", "Caption"),
+        ("toggle button", "Rectangle"),
+        ("toggle button", "Arrow"),
+        ("toggle button", "Number"),
+        ("toggle button", "Highlight"),
+        ("button", "Undo"),
+    ],
+    ("Images", "Collage"): [
+        ("combo box", "Style"),
+        ("entry", "Columns"),
+        ("combo box", "Canvas ratio"),
+        ("entry", "Width"),
+        ("combo box", "Fit"),
+        ("entry", "Spacing"),
+    ],
+    ("Images", "Redact"): [("button", "Detect text"), ("toggle button", "Blur")],
+    ("Images", "Edit photo"): [
+        ("slider", "Exposure"),
+        ("slider", "Highlights"),
+        ("slider", "Shadows"),
+        ("slider", "Gamma"),
+        ("slider", "Tint"),
+        ("slider", "Vibrance"),
+        ("slider", "Clarity"),
+        ("slider", "Dehaze"),
+        ("slider", "Grain"),
+        ("slider", "Noise reduction"),
+        ("slider", "Sharpness"),
+    ],
+    ("Images", "Add background"): [
+        ("slider", "Padding"),
+        ("slider", "Corner radius"),
+        ("button", "Ink"),
+        ("button", "Dusk"),
+    ],
     ("Images", "Metadata"): [
         ("entry", "Search metadata"),
         ("entry", "Title"),
@@ -2328,6 +2366,12 @@ def scenario_dialogs(h, rec, checks, category):
                 )
                 continue
             dialog, frame, box, nodes = opened
+            # The metadata browser asks the writer for its tags asynchronously; the
+            # rows are not in the tree until that call returns.
+            if label == "Metadata":
+                deadline = time.time() + 5
+                while time.time() < deadline and session.entry("Title") is None:
+                    time.sleep(0.2)
             assert_dialog_inside(rec, checks, f"{category}/{label}", frame, box)
             # A timeline/crop/waveform surface is fetched when the dialog opens;
             # its controls (handles, transports) exist only after that.
@@ -2445,8 +2489,8 @@ def scenario_dialogs(h, rec, checks, category):
                 )
             if label == "Annotate":
                 checks.add(
-                    "Annotate: Text is a text entry",
-                    session.entry("Text") is not None,
+                    "Annotate: Caption is a text entry",
+                    session.entry("Caption") is not None,
                     "entry",
                     None,
                 )
@@ -2914,43 +2958,136 @@ def _first_image(record):
 
 
 def scenario_tool_image_crop(h, rec, checks):
-    with h.launch("tool-image-crop", [h.fixture(POSTER)]) as session:
+    with h.launch("tool-image-crop", [h.fixture("images/photo-landscape-4000x3000.jpg")]) as session:
         rec["workdir"] = session.workdir
+
+        def set_free_box(s):
+            # The W/H row is seeded from the source's real pixels, read asynchronously.
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                entry = s.dialog_entry("Width")
+                if entry is not None and s.text(entry) not in ("", "0"):
+                    break
+                time.sleep(0.2)
+            s.set_entry("Width", "2000")
+            s.set_entry("Height", "1500")
+
+        outputs, _preview = run_tool_job(
+            session, rec, checks, "Crop", category="Images", apply=set_free_box
+        )
+        record = record_outputs(rec, outputs)[0]
+        info = _first_image(record)
+        checks.add(
+            "free crop box 0.5 × 0.5 of 4000×3000 is 2,000×1,500",
+            (info.get("width"), info.get("height")) == (2000, 1500),
+            [2000, 1500],
+            [info.get("width"), info.get("height")],
+        )
+
+        # A ratio keeps the picture's own proportions: 1:1 on 4000×3000 is 3000×3000.
         outputs, _preview = run_tool_job(
             session,
             rec,
             checks,
             "Crop",
             category="Images",
-            apply=lambda s: s.select_option("Aspect ratio", "1:1"),
+            apply=lambda s: s.press_button("1:1", within=s.dialog()),
         )
         record = record_outputs(rec, outputs)[0]
         info = _first_image(record)
-        checks.add("crop writes one PNG", len(outputs) == 1 and record["kind"] == "png", 1, len(outputs))
         checks.add(
-            "1:1 crop is 2,000×2,000",
-            (info.get("width"), info.get("height")) == (2000, 2000),
-            [2000, 2000],
+            "1:1 crop is 3,000×3,000",
+            (info.get("width"), info.get("height")) == (3000, 3000),
+            [3000, 3000],
             [info.get("width"), info.get("height")],
         )
-        checks.add("source is untouched", os.path.getsize(os.path.join(session.workdir, "poster-portrait.png")) == POSTER_SIZE, POSTER_SIZE, os.path.getsize(os.path.join(session.workdir, "poster-portrait.png")))
 
 
 def scenario_tool_image_annotate(h, rec, checks):
-    with h.launch("tool-image-annotate", [h.fixture(POSTER)]) as session:
-        rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(
-            session,
-            rec,
-            checks,
-            "Annotate",
-            category="Images",
-            apply=lambda s: s.set_entry("Text", "Harness"),
+    def click_canvas(s):
+        image = s.preview_image(s.dialog())
+        if image is None:
+            raise Skip("the annotation canvas exposes no image to click")
+        box = s.extents(image)
+        if not box:
+            raise Skip("the annotation canvas has no screen extents")
+        x, y, width, height = box
+        run(
+            ["xdotool", "mousemove", str(x + width // 2), str(y + height // 2)],
+            timeout=10,
         )
+        time.sleep(0.15)
+        run(["xdotool", "click", "1"], timeout=10)
+        time.sleep(0.5)
+
+    def apply(s):
+        s.set_entry("Caption", "Harness")
+        rec["parameters"]["annotations"] = "caption"
+
+    with h.launch("tool-image-annotate", [h.fixture("images/screenshot-text.png")]) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Annotate", category="Images", apply=apply)
         record = record_outputs(rec, outputs)[0]
         info = _first_image(record)
-        checks.add("annotate keeps the dimensions", (info.get("width"), info.get("height")) == (2000, 3000), [2000, 3000], [info.get("width"), info.get("height")])
-        checks.add("annotate changes pixels", compare_pixels(os.path.join(session.workdir, "poster-portrait.png"), outputs[0]) > 0, "> 0", "0")
+        checks.add(
+            "annotate keeps the dimensions",
+            (info.get("width"), info.get("height")) == (1600, 1000),
+            [1600, 1000],
+            [info.get("width"), info.get("height")],
+        )
+        checks.add(
+            "annotate changes pixels",
+            compare_pixels(os.path.join(session.workdir, "screenshot-text.png"), outputs[0]) > 0,
+            "> 0",
+            "0",
+        )
+        # The untouched corner is the guarantee that the engine drew shapes, not a
+        # re-encode of the whole picture.
+        corner = validate.pixel(outputs[0], 2, 2)
+        source_corner = validate.pixel(os.path.join(session.workdir, "screenshot-text.png"), 2, 2)
+        checks.add(
+            "annotate leaves the corner alone",
+            corner == source_corner,
+            source_corner,
+            corner,
+        )
+
+
+def scenario_tool_image_collage(h, rec, checks):
+    fixtures = [
+        h.fixture("batch/wide.png"),
+        h.fixture("batch/portrait.png"),
+        h.fixture("batch/square.png"),
+        h.fixture("images/photo-landscape-4000x3000.jpg"),
+    ]
+    with h.launch("tool-image-collage", fixtures) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Collage", category="Images")
+        record = record_outputs(rec, outputs)[0]
+        info = _first_image(record)
+        checks.add(
+            "collage default is 2,048×2,048",
+            (info.get("width"), info.get("height")) == (2048, 2048),
+            [2048, 2048],
+            [info.get("width"), info.get("height")],
+        )
+        sources = [
+            (fixtures[0], 2400, 1350, 512, 512),
+            (fixtures[1], 1500, 2000, 1536, 512),
+            (fixtures[2], 1600, 1600, 512, 1536),
+            (fixtures[3], 4000, 3000, 1536, 1536),
+        ]
+        for source, sw, sh, ox, oy in sources:
+            expected = validate.pixel(source, sw // 2, sh // 2)
+            actual = validate.pixel(outputs[0], ox, oy)
+            if expected is None or actual is None:
+                raise Skip("pixel sampling needs ImageMagick")
+            checks.add(
+                f"collage quadrant at {ox},{oy} matches {os.path.basename(source)}",
+                max(abs(a - b) for a, b in zip(expected, actual)) <= 12,
+                expected,
+                actual,
+            )
 
 
 def scenario_tool_image_background(h, rec, checks):
@@ -2970,32 +3107,90 @@ def scenario_tool_image_background(h, rec, checks):
 
 
 def scenario_tool_image_edit(h, rec, checks):
-    with h.launch("tool-image-edit", [h.fixture("images/screenshot-text.png")]) as session:
+    source = h.fixture("images/photo-landscape-4000x3000.jpg")
+    with h.launch("tool-image-edit", [source]) as session:
         rec["workdir"] = session.workdir
+
         outputs, _preview = run_tool_job(
             session,
             rec,
             checks,
             "Edit photo",
             category="Images",
-            apply=lambda s: s.set_slider("Exposure", 1.0, -3.0, 0.1),
+            apply=lambda s: s.set_slider("Exposure", 1.0, -5.0, 0.01),
         )
         record = record_outputs(rec, outputs)[0]
         info = _first_image(record)
-        checks.add("edit keeps the dimensions", (info.get("width"), info.get("height")) == (1600, 1000), [1600, 1000], [info.get("width"), info.get("height")])
-        checks.add("+1 EV changes pixels", compare_pixels(os.path.join(session.workdir, "screenshot-text.png"), outputs[0]) > 0, "> 0", "0")
+        checks.add(
+            "edit keeps the full resolution",
+            (info.get("width"), info.get("height")) == (4000, 3000),
+            [4000, 3000],
+            [info.get("width"), info.get("height")],
+        )
+        before = validate.mean_luma(source)
+        after = validate.mean_luma(outputs[0])
+        if before is None or after is None:
+            raise Skip("mean luma needs ImageMagick")
+        rec["measurements"]["edit_mean_luma"] = {"before": before, "after": after}
+        checks.add(
+            "+1 EV raises mean luma by >= 10%",
+            after >= before * 1.10,
+            f">= {before * 1.10:.4f}",
+            after,
+        )
+
+        grain_outputs, _preview = run_tool_job(
+            session,
+            rec,
+            checks,
+            "Edit photo",
+            category="Images",
+            apply=lambda s: s.set_slider("Grain", 100.0, 0.0, 1.0),
+        )
+        base_variance = validate.variance(source)
+        grain_variance = validate.variance(grain_outputs[0])
+        if base_variance is None or grain_variance is None:
+            raise Skip("variance needs ImageMagick")
+        checks.add(
+            "grain 100 raises the variance",
+            grain_variance > base_variance,
+            f"> {base_variance:.4f}",
+            grain_variance,
+        )
+
+        noise_outputs, _preview = run_tool_job(
+            session,
+            rec,
+            checks,
+            "Edit photo",
+            category="Images",
+            apply=lambda s: s.set_slider("Noise reduction", 100.0, 0.0, 1.0),
+        )
+        noise_variance = validate.variance(noise_outputs[0])
+        checks.add(
+            "noise reduction lowers the variance",
+            noise_variance is not None and noise_variance < base_variance,
+            f"< {base_variance:.4f}",
+            noise_variance,
+        )
 
 
 def scenario_tool_image_metadata(h, rec, checks):
     with h.launch("tool-image-metadata", [h.fixture(POSTER)]) as session:
         rec["workdir"] = session.workdir
+        def set_title(s):
+            deadline = time.time() + 5
+            while time.time() < deadline and s.entry("Title") is None:
+                time.sleep(0.2)
+            s.set_entry("Title", "Harness")
+
         outputs, _preview = run_tool_job(
             session,
             rec,
             checks,
             "Metadata",
             category="Images",
-            apply=lambda s: s.set_entry("Title", "Harness"),
+            apply=set_title,
         )
         record = record_outputs(rec, outputs)[0]
         checks.add("metadata writes one PNG", len(outputs) == 1 and record["kind"] == "png", 1, len(outputs))
@@ -3008,13 +3203,40 @@ def scenario_tool_image_redact(h, rec, checks):
         method = s.detect_or_mark(s.dialog())
         rec["parameters"]["region_method"] = method
 
+    def apply_blur(s):
+        s.press_button("Blur", within=s.dialog())
+        s.mark_region(s.dialog())
+        rec["parameters"]["region_method"] = "drawn+blur"
+
     with h.launch("tool-image-redact", [h.fixture("images/screenshot-text.png")]) as session:
         rec["workdir"] = session.workdir
+        source = os.path.join(session.workdir, "screenshot-text.png")
         outputs, _preview = run_tool_job(session, rec, checks, "Redact", category="Images", apply=apply)
         record = record_outputs(rec, outputs)[0]
         info = _first_image(record)
         checks.add("redact keeps the dimensions", (info.get("width"), info.get("height")) == (1600, 1000), [1600, 1000], [info.get("width"), info.get("height")])
-        checks.add("redact changes pixels", compare_pixels(os.path.join(session.workdir, "screenshot-text.png"), outputs[0]) > 0, "> 0", "0")
+        checks.add("redact changes pixels", compare_pixels(source, outputs[0]) > 0, "> 0", "0")
+        # The drawn box covers the picture's centre; solid redaction fills it black.
+        centre = validate.pixel(outputs[0], 800, 500)
+        checks.add("solid redaction fills the centre", centre == (0, 0, 0), (0, 0, 0), centre)
+
+        blur_outputs, _preview = run_tool_job(
+            session, rec, checks, "Redact", category="Images", apply=apply_blur
+        )
+        blurred_centre = validate.pixel(blur_outputs[0], 800, 500)
+        source_centre = validate.pixel(source, 800, 500)
+        checks.add(
+            "blur redaction changes the centre",
+            blurred_centre is not None and blurred_centre != source_centre,
+            "different from the source",
+            blurred_centre,
+        )
+        checks.add(
+            "blur redaction is not the solid fill",
+            blurred_centre != (0, 0, 0),
+            "not black",
+            blurred_centre,
+        )
 
 
 def media_duration(record) -> float:
@@ -3094,7 +3316,7 @@ def scenario_tool_video_crop(h, rec, checks):
         deadline = time.time() + 15
         node = None
         while time.time() < deadline:
-            node = s.find(name="Crop preview", within=s.dialog())
+            node = s.find(name="Crop area", within=s.dialog())
             if node is not None:
                 break
             time.sleep(0.3)
@@ -4378,6 +4600,7 @@ SCENARIOS = [
     ("compress-pdf", scenario_compress_pdf),
     ("tool-image-crop", scenario_tool_image_crop),
     ("tool-image-annotate", scenario_tool_image_annotate),
+    ("tool-image-collage", scenario_tool_image_collage),
     ("tool-image-background", scenario_tool_image_background),
     ("tool-image-edit", scenario_tool_image_edit),
     ("tool-image-metadata", scenario_tool_image_metadata),

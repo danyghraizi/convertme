@@ -1,0 +1,16 @@
+.collage-preview {
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  padding: 8px;
+  border-radius: var(--r-2, 10px);
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
+
+.collage-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  border-radius: 6px;
+}
