@@ -469,7 +469,9 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 /// covers the source file and the parameters, so an old preview would be reused.
 /// v5: PNG target searches use imagequant, and a small palette falls back to a flat
 /// remap when dithering made it larger than the lossless encode.
-const COMPRESS_CACHE_VERSION: &str = "v5";
+/// v6: the optimizer runs before the never-grow comparison, and a resize is its own
+/// artifact — both change the bytes a given request produces.
+const COMPRESS_CACHE_VERSION: &str = "v6";
 
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
@@ -767,54 +769,69 @@ struct TargetSearch<'a> {
 }
 
 impl TargetSearch<'_> {
-    /// The smallest artifact this format can produce for this source: two 85 % downscales
-    /// and the smallest palette (or the lowest quality, for a lossy format).
+    /// The smallest artifact this format can produce for this source.
+    ///
+    /// It is the ladder below restricted to its last helper — one palette-2 encode per
+    /// downscale round instead of seven — because that is the artifact the ladder would
+    /// end on. Reaching the same bytes by the shortest path is what makes an unreachable
+    /// target cheap without changing a reachable one.
     fn floor_candidate(&self, cx: &Context<'_>) -> Result<Option<PathBuf>, JobError> {
         let Self {
             magick,
             source,
             ext,
             lossy,
-            colours,
+            scale,
             ..
         } = *self;
-        // The floor is a *bound*, not a result the user asked for: the ladder it replaces
-        // walks down to two colours whatever palette was requested, so the bound has to be
-        // the same artifact. A requested palette only seeds where the ladder starts.
-        let _ = colours;
-        let palette = 2u32;
-        let small = cx.scratch(&format!("compress-floor-small.{ext}"));
-        run_magick(
-            magick,
-            vec![
-                os(source),
-                os("-resize"),
-                os("85%"),
-                os("-resize"),
-                os("85%"),
-                os(&small),
-            ],
-            cx,
-            Budget::Short,
-        )?;
-        let produced = if lossy {
-            let out = cx.scratch(&format!("compress-floor.{ext}"));
+        let mut current = source.to_path_buf();
+        if let Some(scale) = scale {
+            let resized = cx.scratch(&format!("compress-floor-scaled.{ext}"));
             run_magick(
                 magick,
-                vec![os(&small), os("-quality"), os("1"), os(&out)],
+                vec![
+                    os(source),
+                    os("-resize"),
+                    os(format!("{scale:.2}%")),
+                    os(&resized),
+                ],
                 cx,
                 Budget::Short,
             )?;
-            out
-        } else if ext == "png" {
-            let path = cx.scratch("compress-floor.png");
-            quantize_png(&small, palette, 0.0, &path, cx)?;
-            path
-        } else {
-            small
-        };
-        let optimized = optimize_png(produced, ext, cx)?;
-        Ok(Some(optimized))
+            current = resized;
+        }
+        let mut smallest: Option<PathBuf> = None;
+        let mut smallest_len = u64::MAX;
+        for round in 0..3 {
+            cx.ctx.checkpoint()?;
+            let path = if ext == "png" {
+                let path = cx.scratch(&format!("compress-floor-{round}.png"));
+                quantize_png(&current, 2, 0.0, &path, cx)?;
+                optimize_png(path, ext, cx)?
+            } else if lossy {
+                let path = cx.scratch(&format!("compress-floor-{round}.{ext}"));
+                probe_quality(magick, &current, 1, &path, cx)?;
+                path
+            } else {
+                current.clone()
+            };
+            let len = file_len(&path)?;
+            track_smallest(&path, len, &mut smallest, &mut smallest_len);
+            if round == 2 {
+                break;
+            }
+            let scaled = cx.scratch(&format!("compress-floor-scale-{round}.{ext}"));
+            let mut args = vec![os(&current), os("-resize"), os("85%")];
+            if lossy {
+                args.push(os("-quality"));
+                args.push(os("95"));
+            }
+            args.push(os(&scaled));
+            run_magick(magick, args, cx, Budget::Short)?;
+            ensure_file(&scaled, "the image encoder")?;
+            current = scaled;
+        }
+        Ok(smallest)
     }
 
     fn run(&self, cx: &Context<'_>) -> Result<PathBuf, JobError> {
