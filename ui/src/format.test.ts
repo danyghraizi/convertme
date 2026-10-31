@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extensionOf,
+  formatTimecode,
   isLosslessImage,
   isLosslessSelection,
   isPngSelection,
@@ -41,4 +42,14 @@ test('the preview says when a target is out of reach', () => {
 test('extensionOf handles directories and dots in the name', () => {
   assert.equal(extensionOf('/tmp/a.b/photo.JPEG'), 'jpeg');
   assert.equal(extensionOf('/tmp/photo'), '');
+});
+
+test('a timeline readout never prints 60.00 or a negative time', () => {
+  assert.equal(formatTimecode(0), '0:00.00');
+  assert.equal(formatTimecode(2.5), '0:02.50');
+  assert.equal(formatTimecode(59.999), '1:00.00');
+  assert.equal(formatTimecode(61.25), '1:01.25');
+  assert.equal(formatTimecode(-3), '0:00.00');
+  assert.equal(formatTimecode(Number.NaN), '0:00.00');
+  assert.equal(formatTimecode(600), '10:00.00');
 });

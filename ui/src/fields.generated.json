@@ -1,0 +1,762 @@
+{
+  "archives": {
+    "extract": []
+  },
+  "audio": {
+    "bleep": [
+      {
+        "default": "",
+        "key": "ranges",
+        "kind": "text",
+        "label": "Ranges",
+        "unit": "start-end, comma separated"
+      }
+    ],
+    "channels": [
+      {
+        "default": "1",
+        "key": "channels",
+        "kind": "select",
+        "label": "Channels",
+        "options": [
+          "1",
+          "2"
+        ]
+      }
+    ],
+    "compress": [
+      {
+        "default": 50.0,
+        "key": "percent",
+        "kind": "range",
+        "label": "Size (% of the original)",
+        "max": 100.0,
+        "min": 5.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "control": true,
+        "default": false,
+        "key": "bitrate_set",
+        "kind": "checkbox",
+        "label": "Or a bitrate"
+      },
+      {
+        "default": 128.0,
+        "key": "bitrate",
+        "kind": "number",
+        "label": "Bitrate",
+        "max": 512.0,
+        "min": 8.0,
+        "show_if": {
+          "equals": "true",
+          "key": "bitrate_set"
+        },
+        "step": 1.0,
+        "unit": "kbps"
+      },
+      {
+        "control": true,
+        "default": false,
+        "key": "size_target",
+        "kind": "checkbox",
+        "label": "Or a target file size"
+      },
+      {
+        "default": 5000000.0,
+        "key": "target_bytes",
+        "kind": "number",
+        "label": "Target size",
+        "max": 20000000000.0,
+        "min": 1000.0,
+        "show_if": {
+          "equals": "true",
+          "key": "size_target"
+        },
+        "step": 1000.0,
+        "unit": "bytes"
+      }
+    ],
+    "metadata": [
+      {
+        "default": {
+          "remove": [],
+          "set": {},
+          "strip": false
+        },
+        "key": "meta",
+        "kind": "metadata",
+        "label": "Metadata"
+      }
+    ],
+    "normalize": [
+      {
+        "default": -16.0,
+        "key": "lufs",
+        "kind": "number",
+        "label": "Target loudness",
+        "max": -5.0,
+        "min": -30.0,
+        "step": 0.5,
+        "unit": "LUFS"
+      }
+    ],
+    "trim": [
+      {
+        "default": 0.0,
+        "key": "start",
+        "kind": "number",
+        "label": "Start",
+        "max": 86400.0,
+        "min": 0.0,
+        "step": 0.1,
+        "unit": "s"
+      },
+      {
+        "default": 0.0,
+        "key": "end",
+        "kind": "number",
+        "label": "End",
+        "max": 86400.0,
+        "min": 0.0,
+        "step": 0.1,
+        "unit": "s"
+      }
+    ],
+    "visualize": [
+      {
+        "default": "#0b0d10",
+        "key": "color",
+        "kind": "text",
+        "label": "Background"
+      },
+      {
+        "default": "1280x720",
+        "key": "size",
+        "kind": "select",
+        "label": "Size",
+        "options": [
+          "1280x720",
+          "1920x1080",
+          "1080x1080"
+        ]
+      }
+    ]
+  },
+  "documents": {},
+  "epub": {},
+  "images": {
+    "add-background": [
+      {
+        "control": true,
+        "default": "colour",
+        "key": "mode",
+        "kind": "select",
+        "label": "Background",
+        "option_labels": [
+          "A colour",
+          "A gradient",
+          "Another image"
+        ],
+        "options": [
+          "colour",
+          "gradient",
+          "image"
+        ]
+      },
+      {
+        "default": "#101418",
+        "key": "color",
+        "kind": "color",
+        "label": "Colour",
+        "show_if": {
+          "equals": "colour",
+          "key": "mode"
+        }
+      },
+      {
+        "default": "linear|0|#f6c26b@0,#e4572e@100",
+        "key": "gradient",
+        "kind": "gradient",
+        "label": "Gradient",
+        "show_if": {
+          "equals": "gradient",
+          "key": "mode"
+        }
+      },
+      {
+        "default": "",
+        "key": "image",
+        "kind": "file",
+        "label": "Background image",
+        "show_if": {
+          "equals": "image",
+          "key": "mode"
+        },
+        "unit": "path"
+      },
+      {
+        "default": 1.0,
+        "key": "bg_zoom",
+        "kind": "range",
+        "label": "Image zoom",
+        "max": 3.0,
+        "min": 1.0,
+        "show_if": {
+          "equals": "image",
+          "key": "mode"
+        },
+        "step": 0.1,
+        "unit": "×"
+      },
+      {
+        "default": 0.0,
+        "key": "bg_x",
+        "kind": "range",
+        "label": "Image across",
+        "max": 100.0,
+        "min": -100.0,
+        "show_if": {
+          "equals": "image",
+          "key": "mode"
+        },
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 0.0,
+        "key": "bg_y",
+        "kind": "range",
+        "label": "Image up/down",
+        "max": 100.0,
+        "min": -100.0,
+        "show_if": {
+          "equals": "image",
+          "key": "mode"
+        },
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 4.0,
+        "key": "padding_pct",
+        "kind": "range",
+        "label": "Padding",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 4.0,
+        "key": "radius_pct",
+        "kind": "range",
+        "label": "Corner radius",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 2.0,
+        "key": "shadow_pct",
+        "kind": "range",
+        "label": "Shadow",
+        "max": 100.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 180.0,
+        "key": "shadow_angle",
+        "kind": "range",
+        "label": "Shadow angle",
+        "max": 360.0,
+        "min": 0.0,
+        "step": 5.0,
+        "unit": "°"
+      },
+      {
+        "default": "free",
+        "key": "aspect",
+        "kind": "segmented",
+        "label": "Canvas ratio",
+        "option_labels": [
+          "Auto",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:4",
+          "4:5"
+        ],
+        "options": [
+          "free",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:4",
+          "4:5"
+        ]
+      }
+    ],
+    "annotate": [
+      {
+        "default": "",
+        "key": "text",
+        "kind": "text",
+        "label": "Text"
+      },
+      {
+        "default": "#f5f5f5",
+        "key": "color",
+        "kind": "color",
+        "label": "Ink colour"
+      }
+    ],
+    "compress": [
+      {
+        "default": 80.0,
+        "key": "quality",
+        "kind": "range",
+        "label": "Quality",
+        "max": 100.0,
+        "min": 1.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": "100",
+        "key": "scale",
+        "kind": "select",
+        "label": "Image size",
+        "option_labels": [
+          "Keep original dimensions",
+          "75 % of the dimensions",
+          "50 % of the dimensions",
+          "25 % of the dimensions"
+        ],
+        "options": [
+          "100",
+          "75",
+          "50",
+          "25"
+        ]
+      },
+      {
+        "control": true,
+        "default": false,
+        "key": "reduce",
+        "kind": "checkbox",
+        "label": "Reduce colours (lossy)"
+      },
+      {
+        "default": "256",
+        "key": "colours",
+        "kind": "select",
+        "label": "Colours",
+        "option_labels": [
+          "256 colours",
+          "128 colours",
+          "64 colours",
+          "32 colours",
+          "16 colours"
+        ],
+        "options": [
+          "256",
+          "128",
+          "64",
+          "32",
+          "16"
+        ],
+        "show_if": {
+          "equals": "true",
+          "key": "reduce"
+        }
+      },
+      {
+        "control": true,
+        "default": false,
+        "key": "target",
+        "kind": "checkbox",
+        "label": "Compress to a target file size"
+      },
+      {
+        "default": 500000.0,
+        "key": "target_bytes",
+        "kind": "number",
+        "label": "Target size",
+        "max": 2000000000.0,
+        "min": 1000.0,
+        "show_if": {
+          "equals": "true",
+          "key": "target"
+        },
+        "step": 1000.0,
+        "unit": "bytes"
+      }
+    ],
+    "crop": [
+      {
+        "default": [],
+        "hidden": true,
+        "key": "boxes",
+        "kind": "boxes",
+        "label": "Area to keep"
+      },
+      {
+        "default": "free",
+        "key": "aspect",
+        "kind": "select",
+        "label": "Aspect ratio",
+        "option_labels": [
+          "Free",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:4"
+        ],
+        "options": [
+          "free",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:4",
+          "4:5"
+        ]
+      }
+    ],
+    "edit-photo": [
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "exposure",
+        "kind": "range",
+        "label": "Exposure",
+        "max": 3.0,
+        "min": -3.0,
+        "step": 0.1,
+        "unit": "EV"
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "brightness",
+        "kind": "range",
+        "label": "Brightness",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Light",
+        "key": "contrast",
+        "kind": "range",
+        "label": "Contrast",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 1.0,
+        "group": "Light",
+        "key": "gamma",
+        "kind": "range",
+        "label": "Gamma",
+        "max": 3.0,
+        "min": 0.2,
+        "step": 0.01,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Colour",
+        "key": "temperature",
+        "kind": "range",
+        "label": "Temperature",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Colour",
+        "key": "saturation",
+        "kind": "range",
+        "label": "Saturation",
+        "max": 100.0,
+        "min": -100.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
+        "default": 0.0,
+        "group": "Colour",
+        "key": "hue",
+        "kind": "range",
+        "label": "Hue",
+        "max": 180.0,
+        "min": -180.0,
+        "step": 1.0,
+        "unit": "°"
+      }
+    ],
+    "metadata": [
+      {
+        "default": {
+          "remove": [],
+          "set": {},
+          "strip": false
+        },
+        "key": "meta",
+        "kind": "metadata",
+        "label": "Metadata"
+      }
+    ],
+    "redact": [
+      {
+        "default": [],
+        "hidden": true,
+        "key": "boxes",
+        "kind": "boxes",
+        "label": "Areas to fill"
+      },
+      {
+        "default": "#000000",
+        "key": "color",
+        "kind": "text",
+        "label": "Fill colour"
+      }
+    ]
+  },
+  "pdf": {
+    "compress": [
+      {
+        "default": "ebook",
+        "key": "preset",
+        "kind": "select",
+        "label": "Quality",
+        "options": [
+          "screen",
+          "ebook",
+          "printer",
+          "prepress"
+        ]
+      },
+      {
+        "default": 0.0,
+        "key": "target_bytes",
+        "kind": "number",
+        "label": "Target size",
+        "max": 2000000000.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": "bytes"
+      }
+    ],
+    "extract-text": [],
+    "merge": [
+      {
+        "default": [],
+        "hidden": true,
+        "key": "order",
+        "kind": "files",
+        "label": "Order"
+      }
+    ],
+    "metadata": [
+      {
+        "default": {
+          "remove": [],
+          "set": {},
+          "strip": false
+        },
+        "key": "meta",
+        "kind": "metadata",
+        "label": "Metadata"
+      }
+    ],
+    "organize": [
+      {
+        "default": {
+          "order": [],
+          "rotate": []
+        },
+        "key": "pages",
+        "kind": "pages",
+        "label": "Pages"
+      },
+      {
+        "default": false,
+        "help": "Pages are scaled proportionally to match the narrowest page; their heights may still differ.",
+        "key": "same_width",
+        "kind": "checkbox",
+        "label": "Make all pages the same width"
+      }
+    ],
+    "save-pages": [
+      {
+        "default": "jpg",
+        "key": "format",
+        "kind": "select",
+        "label": "Image format",
+        "options": [
+          "jpg",
+          "png"
+        ]
+      }
+    ],
+    "split": []
+  },
+  "slides": {},
+  "spreadsheets": {},
+  "subtitles": {},
+  "video": {
+    "compress": [
+      {
+        "default": 50.0,
+        "key": "percent",
+        "kind": "range",
+        "label": "Size (% of the original)",
+        "max": 100.0,
+        "min": 5.0,
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "control": true,
+        "default": false,
+        "key": "size_target",
+        "kind": "checkbox",
+        "label": "Or a target file size"
+      },
+      {
+        "default": 5000000.0,
+        "key": "target_bytes",
+        "kind": "number",
+        "label": "Target size",
+        "max": 20000000000.0,
+        "min": 1000.0,
+        "show_if": {
+          "equals": "true",
+          "key": "size_target"
+        },
+        "step": 1000.0,
+        "unit": "bytes"
+      }
+    ],
+    "crop": [
+      {
+        "default": "free",
+        "key": "aspect",
+        "kind": "select",
+        "label": "Aspect ratio",
+        "options": [
+          "free",
+          "1:1",
+          "16:9",
+          "4:3",
+          "9:16",
+          "3:2"
+        ]
+      }
+    ],
+    "join": [
+      {
+        "default": [],
+        "hidden": true,
+        "key": "order",
+        "kind": "files",
+        "label": "Order"
+      }
+    ],
+    "mute": [],
+    "redact": [
+      {
+        "default": [],
+        "hidden": true,
+        "key": "boxes",
+        "kind": "boxes",
+        "label": "Areas to blur"
+      },
+      {
+        "default": "",
+        "key": "ranges",
+        "kind": "text",
+        "label": "Time ranges",
+        "unit": "start-end, comma separated"
+      }
+    ],
+    "snapshot": [
+      {
+        "default": "",
+        "key": "times",
+        "kind": "text",
+        "label": "Timestamps",
+        "unit": "seconds, comma separated"
+      },
+      {
+        "default": 0.0,
+        "key": "interval",
+        "kind": "number",
+        "label": "Or every",
+        "max": 3600.0,
+        "min": 0.0,
+        "step": 0.1,
+        "unit": "s"
+      }
+    ],
+    "speed": [
+      {
+        "default": 2.0,
+        "key": "factor",
+        "kind": "number",
+        "label": "Speed",
+        "max": 8.0,
+        "min": 0.25,
+        "step": 0.05,
+        "unit": "×"
+      }
+    ],
+    "split": [
+      {
+        "default": "",
+        "key": "sections",
+        "kind": "text",
+        "label": "Sections",
+        "unit": "start-end, comma separated"
+      }
+    ],
+    "trim": [
+      {
+        "default": 0.0,
+        "key": "start",
+        "kind": "number",
+        "label": "Start",
+        "max": 86400.0,
+        "min": 0.0,
+        "step": 0.1,
+        "unit": "s"
+      },
+      {
+        "default": 0.0,
+        "key": "end",
+        "kind": "number",
+        "label": "End",
+        "max": 86400.0,
+        "min": 0.0,
+        "step": 0.1,
+        "unit": "s"
+      }
+    ]
+  }
+}

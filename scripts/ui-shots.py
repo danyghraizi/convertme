@@ -126,6 +126,77 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+REPO = Path(__file__).resolve().parent.parent
+BIN = REPO / "target/release/convertme"
+
+
+def tool_table() -> dict:
+    """The backend tool table, when the release binary exists.
+
+    The mock renders the same copy from `ui/src/catalog.ts`, and this table is what
+    proves the two agree: a rail that disagrees with the backend is the failure the
+    mock cannot see on its own.
+    """
+    if not BIN.is_file():
+        return {}
+    try:
+        result = subprocess.run(
+            [str(BIN), "probe", "--tools"], capture_output=True, text=True, timeout=60
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {}
+    return {
+        (item["category"], item["label"]): item for item in payload.get("tools", [])
+    }
+
+
+def design_failures(info: dict, key: str, tool: str, table: dict) -> list[str]:
+    """The two-pane contract, measured in the browser."""
+    problems = []
+    sheet = info.get("sheet") or {}
+    rail = info.get("rail")
+    screen = info.get("screen") or {}
+    if not rail:
+        problems.append(f"{key}/{tool}: no rail beside the sheet")
+    else:
+        if abs(rail.get("w", 0) - 336) > 2:
+            problems.append(f"{key}/{tool}: rail is {rail.get('w')} px, expected 336")
+        if abs(sheet.get("w", 0) - 600) > 2:
+            problems.append(f"{key}/{tool}: sheet is {sheet.get('w')} px, expected 600")
+        if rail.get("x", 0) + rail.get("w", 0) > screen.get("w", 0):
+            problems.append(f"{key}/{tool}: the rail leaves the viewport")
+    if not info.get("railTitle"):
+        problems.append(f"{key}/{tool}: the rail has no title")
+    if not info.get("primary"):
+        problems.append(f"{key}/{tool}: the footer has no primary action")
+    # A row whose label and control do not share a centre line is the grammar broken.
+    for row in info.get("rows", []):
+        if row.get("block"):
+            continue
+        if row.get("offset", 0) > 4:
+            problems.append(
+                f"{key}/{tool}: {row['label']!r} and its control are {row['offset']}px apart"
+            )
+    meta = table.get((key, tool))
+    if meta:
+        if info.get("railTitle") != meta["title"]:
+            problems.append(
+                f"{key}/{tool}: rail title {info.get('railTitle')!r} != backend {meta['title']!r}"
+            )
+        expected = meta["action"]
+        if expected.count("{n}") == 0 and info.get("primary") != expected:
+            problems.append(
+                f"{key}/{tool}: primary {info.get('primary')!r} != backend {expected!r}"
+            )
+        if len(info.get("benefits", [])) != len(meta["benefits"]):
+            problems.append(
+                f"{key}/{tool}: {len(info.get('benefits', []))} benefits, backend has "
+                f"{len(meta['benefits'])}"
+            )
+    return problems
+
+
 def serve(directory: Path):
     class Quiet(SimpleHTTPRequestHandler):
         def log_message(self, *_args):
@@ -162,8 +233,38 @@ def measure_modal(m: Marionette):
       const r = el.getBoundingClientRect();
       return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
     };
-    const modal = document.querySelector('.modal');
+    // The sheet is the form; the rail is the copy beside it.
+    const sheet = document.querySelector('.dialog-sheet') || document.querySelector('.modal');
+    const modal = document.querySelector('.modal') || sheet;
     if (!modal) return { dialog: false };
+    const rail = document.querySelector('.dialog-rail');
+    const railText = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? el.innerText.trim() : '';
+    };
+    const railTitle = railText('.rail-title');
+    const railEyebrow = railText('.rail-eyebrow');
+    const railCopy = railText('.rail-copy');
+    const benefits = [...document.querySelectorAll('.rail-benefits li')].map((li) => li.innerText.trim());
+    const primary = document.querySelector('[data-testid="primary"]');
+    // A row is aligned when the label's and its control's vertical centres agree.
+    const rows = [...document.querySelectorAll('.modal .field')].map((row) => {
+      const label = row.querySelector('.field-label');
+      // Measure the control the user sees, not the first input inside it: the colour
+      // row hides a native <input type=color> whose own box is not the control.
+      const control = row.querySelector(
+        '.colour-control, .segmented, .range-row, .number-row, .checkbox-row, select, input, textarea'
+      );
+      if (!label || !control) return null;
+      const a = label.getBoundingClientRect();
+      const b = control.getBoundingClientRect();
+      return {
+        label: label.innerText.trim(),
+        kind: control.tagName.toLowerCase() + (control.type ? ':' + control.type : ''),
+        offset: Math.round(Math.abs((a.top + a.height / 2) - (b.top + b.height / 2))),
+        block: row.classList.contains('is-block'),
+      };
+    }).filter(Boolean);
     const fields = [...document.querySelectorAll('.modal .field-label')].map((l) => l.innerText);
     const controls = [...document.querySelectorAll('.modal input, .modal select, .modal textarea')].map((el) => ({
       tag: el.tagName.toLowerCase(), type: el.type || '', value: el.value ?? '',
@@ -188,6 +289,15 @@ def measure_modal(m: Marionette):
       controls,
       modal: modalRect,
       screen: { w: window.innerWidth, h: window.innerHeight },
+      sheet: rect(sheet),
+      rail: rail ? rect(rail) : null,
+      railTitle,
+      railEyebrow,
+      railCopy,
+      benefits,
+      primary: primary ? primary.innerText.trim() : '',
+      primaryBox: rect(primary),
+      rows,
       preview: preview ? rect(preview) : null,
       previewLoaded: img ? !!(img.complete && img.naturalWidth > 0) : null,
       overflow,
@@ -218,14 +328,12 @@ def open_category(m: Marionette, label: str):
         raise RuntimeError(f"tool list did not switch to {label}")
 
 
-def click_cancel(m: Marionette):
+def close_dialog(m: Marionette):
+    """The X in the sheet head: the reference dialog has no Cancel button."""
     m.js(
         """
-        const footer = document.querySelector('.modal-footer');
-        if (footer) {
-          const cancel = [...footer.querySelectorAll('button')].find((b) => b.innerText.trim() === 'Cancel');
-          if (cancel) cancel.click();
-        }
+        const close = document.querySelector('.sheet-close');
+        if (close) close.click();
         return true;
         """
     )
@@ -253,6 +361,7 @@ def main() -> int:
     firefox = start_firefox(profile)
     failures = []
     report = []
+    table = tool_table()
     try:
         m = Marionette()
         m.cmd("WebDriver:NewSession", {"capabilities": {}})
@@ -322,7 +431,7 @@ def main() -> int:
                         failures.append("images-lossless/compress: Colours did not appear with Reduce colours")
                     if combined.get("preview") and not combined.get("previewLoaded"):
                         failures.append("images-lossless/compress-combined: preview did not load")
-                    click_cancel(m)
+                    close_dialog(m)
                 else:
                     failures.append("images-lossless/compress: no dialog")
             for index, tool in enumerate(tools):
@@ -343,11 +452,12 @@ def main() -> int:
                 screen = info.get("screen") or {}
                 if modal and (modal.get("w", 0) > screen.get("w", 0) or modal.get("h", 0) > screen.get("h", 0)):
                     failures.append(f"{key}/{tool}: modal larger than the viewport")
+                failures.extend(design_failures(info, key, tool, table))
                 if info.get("overflow"):
                     failures.append(f"{key}/{tool}: a field overflows the modal horizontally")
                 if info.get("preview") and not info.get("previewLoaded"):
                     failures.append(f"{key}/{tool}: the preview image did not load")
-                click_cancel(m)
+                close_dialog(m)
             entries = [r for r in report if r["category"] == key]
             print(f"  captured {sum(1 for r in entries if r.get('dialog'))} dialogs of {len(entries)} tools", flush=True)
         (out / "report.json").write_text(json.dumps(report, indent=2))

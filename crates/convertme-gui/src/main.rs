@@ -6,22 +6,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let is_cli = args
         .first()
-        .map(|a| {
-            matches!(
-                a.as_str(),
-                "convert"
-                    | "tool"
-                    | "probe"
-                    | "history"
-                    | "sweep"
-                    | "help"
-                    | "--help"
-                    | "-h"
-                    | "--version"
-                    | "-V"
-                    | "version"
-            )
-        })
+        .map(|a| convertme_gui::cli::is_cli_command(a))
         .unwrap_or(false);
 
     let code = if is_cli {

@@ -1,0 +1,63 @@
+/* Chosen moments: a button that adds the playhead, then one chip per choice. */
+.range-chips {
+  display: grid;
+  gap: 6px;
+}
+
+.range-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.range-chip-add {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px dashed var(--rule-2);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.range-chip-add:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.range-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.range-chip-remove {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.range-chip-remove:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}

@@ -20,10 +20,12 @@ static PROBE_PERMITS: Mutex<usize> = Mutex::new(2);
 static PROBE_WAKE: Condvar = Condvar::new();
 
 /// Take one of the two preview slots, waiting if both are busy.
-struct Permit;
+pub struct Permit;
 
 impl Permit {
-    fn acquire() -> Permit {
+    /// The process-wide preview pool. Two slots, shared with the probes, so a
+    /// superseded preview and twenty rapid ones still cannot starve a job.
+    pub fn acquire() -> Permit {
         let mut permits = PROBE_PERMITS.lock().unwrap();
         while *permits == 0 {
             permits = PROBE_WAKE.wait(permits).unwrap();
@@ -51,6 +53,25 @@ pub struct Waveform {
     pub truncated: bool,
 }
 
+/// Pages rendered for the organizer are capped here: past this the grid draws a
+/// numbered card, so a 900-page document still opens immediately.
+const MAX_PAGE_THUMBS: usize = 100;
+
+/// The DPI the page grid renders at. Small on purpose: it is a thumbnail.
+const PAGE_THUMB_DPI: &str = "32";
+
+/// One page of a document, as the organizer needs it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PageImage {
+    pub page: u32,
+    /// In PostScript points, straight from the page's MediaBox.
+    pub width: u32,
+    pub height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<PathBuf>,
+}
+
+#[derive(Clone)]
 pub struct PreviewCache {
     root: PathBuf,
     cap: u64,
@@ -64,6 +85,39 @@ impl PreviewCache {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// One preview slot, for the rendered previews that run their own encoder.
+    pub fn preview_permit(&self) -> Permit {
+        Permit::acquire()
+    }
+
+    /// Bytes the cache is holding, and how many entries it has.
+    pub fn stats(&self) -> (u64, usize) {
+        let mut bytes = 0u64;
+        let mut files = 0usize;
+        if let Ok(read) = std::fs::read_dir(&self.root) {
+            for entry in read.flatten() {
+                match entry.metadata() {
+                    Ok(meta) if meta.is_dir() => {
+                        let (b, f) = tree_usage(&entry.path());
+                        bytes += b;
+                        files += f;
+                    }
+                    Ok(meta) => {
+                        bytes += meta.len();
+                        files += 1;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        (bytes, files)
+    }
+
+    /// The cap itself, so Settings can say what it is enforcing.
+    pub fn cap(&self) -> u64 {
+        self.cap
     }
 
     /// Cache file for a source, or `None` when the source cannot be stat'ed.
@@ -208,15 +262,11 @@ impl PreviewCache {
             .key(source, "strip", &frames.to_string())
             .ok_or_else(|| JobError::new(ErrorCode::Io, "cannot stat the video for a filmstrip"))?
             .with_extension("");
-        if dir.is_dir() {
-            let mut existing: Vec<PathBuf> = std::fs::read_dir(&dir)
-                .map_err(|e| JobError::io("reading the filmstrip cache", &e))?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .collect();
-            existing.sort();
-            if existing.len() == frames {
-                return Ok(existing);
-            }
+        if dir.is_dir()
+            && let Some(existing) = read_frames(&dir)
+            && existing.len() == frames
+        {
+            return Ok(existing);
         }
         std::fs::create_dir_all(&dir)
             .map_err(|e| JobError::io("creating the filmstrip cache", &e))?;
@@ -240,26 +290,46 @@ impl PreviewCache {
         )?
         .ok()?;
 
-        let mut produced: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .map_err(|e| JobError::io("reading the filmstrip cache", &e))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .collect();
-        produced.sort();
-        if produced.is_empty() {
-            return Err(JobError::new(
-                ErrorCode::EngineFailed,
-                "the video produced no frames",
-            ));
-        }
+        let produced = read_frames(&dir).ok_or_else(|| {
+            JobError::new(ErrorCode::EngineFailed, "the video produced no frames")
+        })?;
         self.enforce_cap();
         Ok(produced)
     }
 
     /// Waveform peaks, 8 kHz mono, capped at 10 minutes.
     pub fn waveform(&self, source: &Path) -> Result<Waveform, JobError> {
+        self.waveform_filtered(source, "8k", None)
+    }
+
+    /// The two source channels, one waveform each, for the Channels dialog: the
+    /// gains are applied as a row scale, so the preview shows what each channel
+    /// carries before the `pan` filter mixes them.
+    pub fn waveform_channels(
+        &self,
+        source: &Path,
+    ) -> Result<(Waveform, Waveform), JobError> {
+        // A mono file has one channel; the second row then shows the same signal,
+        // which is what the engine does when it duplicates it.
+        let left = self.waveform_filtered(source, "8k-c0", Some("pan=mono|c0=c0"))?;
+        let right = match self.waveform_filtered(source, "8k-c1", Some("pan=mono|c0=c1")) {
+            Ok(right) => right,
+            Err(_) => left.clone(),
+        };
+        Ok((left, right))
+    }
+
+    /// Peaks for a decoded stream, with an optional FFmpeg audio filter in front of
+    /// the resample so both channels come from one measurement path.
+    fn waveform_filtered(
+        &self,
+        source: &Path,
+        arg: &str,
+        filter: Option<&str>,
+    ) -> Result<Waveform, JobError> {
         let _permit = Permit::acquire();
         let cache = self
-            .key(source, "wave", "8k")
+            .key(source, "wave", arg)
             .ok_or_else(|| JobError::new(ErrorCode::Io, "cannot stat the audio for a waveform"))?;
         if let Ok(bytes) = std::fs::read(&cache)
             && let Some(w) = decode_waveform(&bytes)
@@ -271,12 +341,12 @@ impl PreviewCache {
             crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
         let ctx = JobCtx::new();
         let raw = cache.with_extension("raw");
+        let mut cmd = Cmd::new(ffmpeg).arg("-y").arg("-i").arg(source);
+        if let Some(filter) = filter {
+            cmd = cmd.arg("-af").arg(filter);
+        }
         proc::run(
-            Cmd::new(ffmpeg)
-                .arg("-y")
-                .arg("-i")
-                .arg(source)
-                .arg("-t")
+            cmd.arg("-t")
                 .arg("600")
                 .arg("-ac")
                 .arg("1")
@@ -298,6 +368,36 @@ impl PreviewCache {
             self.enforce_cap();
         }
         Ok(waveform)
+    }
+
+    /// The page organizer's data: every page's size, plus a thumbnail for the first
+    /// hundred. A document longer than that keeps every page editable — the grid
+    /// draws a numbered card where there is no image.
+    pub fn pdf_pages(&self, source: &Path) -> Result<Vec<PageImage>, JobError> {
+        let _permit = Permit::acquire();
+        let sizes = pdf_page_sizes(source)?;
+        let dir = self
+            .key(source, "pdfpages", "32")
+            .ok_or_else(|| JobError::new(ErrorCode::Io, "cannot stat the PDF for its pages"))?
+            .with_extension("");
+        let rendered = read_frames(&dir).unwrap_or_default();
+        let wanted = sizes.len().min(MAX_PAGE_THUMBS);
+        let thumbs: Vec<PathBuf> = if rendered.len() >= wanted && wanted > 0 {
+            rendered
+        } else {
+            render_pdf_pages(source, &dir, wanted)?
+        };
+
+        Ok(sizes
+            .into_iter()
+            .enumerate()
+            .map(|(index, (width, height))| PageImage {
+                page: index as u32 + 1,
+                width,
+                height,
+                thumb: thumbs.get(index).cloned(),
+            })
+            .collect())
     }
 
     /// Keep the cache under its cap, oldest-used first.
@@ -361,6 +461,165 @@ impl PreviewCache {
         }
         Ok(())
     }
+}
+
+/// Page sizes straight from the document, so the organizer can show a card for a
+/// page it never rendered.
+fn pdf_page_sizes(path: &Path) -> Result<Vec<(u32, u32)>, JobError> {
+    use lopdf::Object;
+    let doc = lopdf::Document::load(path).map_err(|e| {
+        JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}"))
+    })?;
+
+    fn resolve<'a>(doc: &'a lopdf::Document, object: &'a Object) -> &'a Object {
+        let mut current = object;
+        for _ in 0..8 {
+            match current {
+                Object::Reference(id) => match doc.get_object(*id) {
+                    Ok(next) => current = next,
+                    Err(_) => break,
+                },
+                _ => break,
+            }
+        }
+        current
+    }
+
+    let number = |object: &Object| -> Option<f32> {
+        match object {
+            Object::Integer(i) => Some(*i as f32),
+            Object::Real(f) => Some(*f),
+            _ => None,
+        }
+    };
+
+    let mut sizes = Vec::new();
+    for (_, id) in doc.get_pages() {
+        let page = doc
+            .get_object(id)
+            .ok()
+            .and_then(|o| o.as_dict().ok())
+            .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "a PDF page is not a dictionary"))?;
+        let media = page
+            .get(b"MediaBox")
+            .ok()
+            .map(|o| resolve(&doc, o))
+            .and_then(|o| o.as_array().ok());
+        let (width, height) = match media {
+            Some(box_) if box_.len() == 4 => {
+                let values: Vec<f32> = box_.iter().filter_map(number).collect();
+                if values.len() == 4 {
+                    ((values[2] - values[0]).abs(), (values[3] - values[1]).abs())
+                } else {
+                    (A4_WIDTH_PT, A4_HEIGHT_PT)
+                }
+            }
+            _ => (A4_WIDTH_PT, A4_HEIGHT_PT),
+        };
+        // A page turned on its side reads as landscape in the grid.
+        let rotate = page
+            .get(b"Rotate")
+            .ok()
+            .and_then(|o| number(resolve(&doc, o)))
+            .unwrap_or(0.0) as i64;
+        let (width, height) = if rotate.rem_euclid(180) == 90 {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        sizes.push((width.round().max(1.0) as u32, height.round().max(1.0) as u32));
+    }
+    if sizes.is_empty() {
+        return Err(JobError::new(
+            ErrorCode::EngineFailed,
+            "the document has no pages",
+        ));
+    }
+    Ok(sizes)
+}
+
+/// A4 in PostScript points, used when a page has no readable MediaBox.
+const A4_WIDTH_PT: f32 = 595.0;
+const A4_HEIGHT_PT: f32 = 842.0;
+
+/// Image files in a cache directory, in page/frame order.
+fn read_frames(dir: &Path) -> Option<Vec<PathBuf>> {
+    let mut frames: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let suffix: String = path
+                .file_stem()?
+                .to_string_lossy()
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let index = suffix.parse().unwrap_or(0);
+            Some((index, path))
+        })
+        .collect();
+    if frames.is_empty() {
+        return None;
+    }
+    frames.sort_by_key(|(index, _)| *index);
+    Some(frames.into_iter().map(|(_, path)| path).collect())
+}
+
+/// Render the first `wanted` pages at the grid's DPI.
+fn render_pdf_pages(source: &Path, dir: &Path, wanted: usize) -> Result<Vec<PathBuf>, JobError> {
+    if wanted == 0 {
+        return Ok(Vec::new());
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|e| JobError::io("creating the page cache", &e))?;
+    let pdftoppm = crate::probe::which("pdftoppm")
+        .ok_or_else(|| JobError::missing_tool("Poppler (pdftoppm)"))?;
+    let ctx = JobCtx::new();
+    let prefix = dir.join("page");
+    proc::run(
+        Cmd::new(pdftoppm)
+            .arg("-jpeg")
+            .arg("-r")
+            .arg(PAGE_THUMB_DPI)
+            .arg("-f")
+            .arg("1")
+            .arg("-l")
+            .arg(wanted.to_string())
+            .arg(source)
+            .arg(&prefix)
+            .budget(proc::Budget::Long),
+        &ctx,
+    )?
+    .ok()?;
+    Ok(read_frames(dir).unwrap_or_default())
+}
+
+fn tree_usage(dir: &Path) -> (u64, usize) {
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for entry in read.flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => {
+                let (b, f) = tree_usage(&entry.path());
+                bytes += b;
+                files += f;
+            }
+            Ok(meta) => {
+                bytes += meta.len();
+                files += 1;
+            }
+            Err(_) => {}
+        }
+    }
+    (bytes, files)
 }
 
 fn build_waveform(bytes: &[u8], rate: u32, truncated: bool) -> Waveform {

@@ -18,10 +18,21 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 
 - `crates/convertme-gui/src/commands.rs` describes every tool's fields; the UI renders
   them in `ui/src/components/field-editor.tsx`.
+- The dialog's copy (title, primary action, rail benefits, eyebrow) lives on `Tool` in
+  `crates/convertme-core/src/formats.rs` and reaches the UI through the wheel payload,
+  `ui/src/catalog.ts` (the empty-wheel fallback) and `convertme probe --tools`.
+- The mock renders `ui/src/fields.generated.json`, which is the backend's own table.
+  After changing a field table: `UPDATE_FIELDS=1 cargo test -p convertme-gui
+  generated_fields`, then `npm --prefix ui run build` (the file lives under `ui/src`, so
+  the frontend build is what makes the bundle current). Plain `cargo test` fails while
+  the file is stale. `./scripts/gen-ui-fields.py` writes the same file from a built
+  binary, for a machine that has one.
 - Adding or renaming a field kind or key means: the Rust field table, `ui/src/types.ts`,
-  `ui/src/field-parse.ts`, the mock, and the tests in `commands::field_payload` and
-  `ui/src/field-parse.test.ts`.
+  `ui/src/field-parse.ts`, the tests in `commands::field_payload` and
+  `ui/src/field-parse.test.ts`, and a new `is-block`/editor arm when it needs one.
 - Never bypass `readFields` in mock mode: the mock must travel the same path as the app.
+- A field a dedicated editor owns is `hidden: true` in the Rust table; its value is
+  still collected, so the editor never adds a second control for the same number.
 
 ## Engine work
 
@@ -31,6 +42,17 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - Bound intermediates: crop the source, then scale to the canvas; never upscale to
   `zoom × canvas`. Compose at depth 8.
 - Masks apply to the layer the control names (rounding is the photo's, not the canvas's).
+
+## Dialogs
+
+- The tool dialog is two panes: the sheet (`600px`) and a rail (`336px`) holding the
+  tool's own copy. `ui/src/components/tool-info.tsx` renders the rail; every string it
+  shows comes from the tool table.
+- `./scripts/ui-shots.py` measures the contract (pane widths, rail copy against the
+  backend table, the primary button's label, label/control alignment) and
+  `./scripts/app-e2e.py --only dialogs-images` measures it in the real window.
+- The primary button is named by the tool (`Save Organized PDF`), never "Run". Use
+  `press_primary()` in the harness, not a literal label.
 
 ## Verification
 

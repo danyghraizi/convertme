@@ -1,0 +1,141 @@
+/* Pages as cards: drag to reorder, a toolbar per card, a badge with the output position. */
+.page-organizer {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.page-organizer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.page-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.page-reset {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.page-reset:disabled {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  max-height: 340px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.page-card {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  cursor: grab;
+}
+
+.page-card.is-dragging {
+  opacity: 0.55;
+}
+
+.page-face {
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  max-height: 150px;
+}
+
+.page-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.page-number-only {
+  font-family: var(--mono);
+  font-size: 22px;
+  color: var(--ink-3);
+}
+
+.page-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+
+.page-card:hover .page-tools,
+.page-card:focus-within .page-tools {
+  opacity: 1;
+}
+
+.page-tool {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.page-tool:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.page-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-rotation {
+  color: var(--accent);
+}

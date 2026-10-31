@@ -1,0 +1,88 @@
+/* A reorderable selection: number, thumbnail, name, and two arrows. The rows are
+   the files, so nothing here may renumber them. */
+.file-order {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.file-order-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.file-order-row {
+  display: grid;
+  grid-template-columns: 18px 40px minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.file-order-number {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.file-order-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--sunken);
+  display: grid;
+  place-items: center;
+}
+
+.file-order-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.file-order-blank {
+  width: 100%;
+  height: 100%;
+  background: var(--sunken);
+}
+
+.file-order-name {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-order-step {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-order-step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.file-order-step:not(:disabled):hover {
+  color: var(--ink);
+  border-color: var(--rule-2);
+}

@@ -44,6 +44,8 @@ import zipfile
 from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "scripts"))
+import validate  # noqa: E402 - shared artifact validators
 BIN = os.path.join(REPO, "target/release/convertme")
 UI_DIST = os.path.join(REPO, "crates/convertme-gui/ui-dist")
 DEFAULT_FIXTURES = os.environ.get(
@@ -147,11 +149,34 @@ BACKEND_TOOLS = {
     "Archives": ["Extract"],
 }
 
+TOOL_TABLE: dict = {}
+
+
+def tool_table() -> dict:
+    """The backend tool table, read from the binary itself.
+
+    The dialog's title, primary action and rail benefits are product copy that lives
+    in `crates/convertme-core/src/formats.rs`. Reading it through `convertme probe
+    --tools` means the harness asserts against the real table instead of a fourth
+    copy of the same strings, which would drift and then agree with itself.
+    """
+    result = run([BIN, "probe", "--tools"], timeout=60)
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    return {
+        (item["category"].capitalize() if item["category"] != "pdf" else "PDF",
+         item["label"]): item
+        for item in payload.get("tools", [])
+    }
+
+
 # Tools whose field table is empty: clicking the card runs the job immediately.
 FIELDLESS = {
     ("Video", "Remove audio"),
-    ("Video", "Join"),
-    ("PDF", "Merge"),
     ("PDF", "Split pages"),
     ("PDF", "Extract text"),
     ("Archives", "Extract"),
@@ -162,7 +187,11 @@ CONTROL_EXPECTATIONS = {
     ("Images", "Annotate"): [("entry", "Text")],
     ("Images", "Redact"): [("entry", "Fill colour"), ("button", "Detect text")],
     ("Images", "Edit photo"): [("slider", "Exposure"), ("slider", "Gamma")],
-    ("Images", "Metadata"): [("entry", "Title"), ("check box", "Remove all tags")],
+    ("Images", "Metadata"): [
+        ("entry", "Search metadata"),
+        ("entry", "Title"),
+        ("button", "Remove All"),
+    ],
     ("Video", "Compress"): [
         ("slider", "Size (% of the original)"),
         ("check box", "Or a target file size"),
@@ -183,15 +212,19 @@ CONTROL_EXPECTATIONS = {
     ("Audio", "Visualize"): [("entry", "Background"), ("combo box", "Size")],
     ("Audio", "Bleep"): [("entry", "Ranges")],
     ("Audio", "Metadata"): [
+        ("entry", "Search metadata"),
         ("entry", "Title"),
         ("entry", "Artist"),
-        ("check box", "Remove all tags"),
     ],
     ("PDF", "Compress"): [("combo box", "Quality"), ("entry", "Target size")],
-    ("PDF", "Organize pages"): [("entry", "Page order"), ("entry", "Rotate")],
+    ("PDF", "Organize pages"): [
+        ("button", "Reset Order"),
+        ("check box", "Make all pages the same width"),
+    ],
     ("PDF", "Metadata"): [
+        ("entry", "Search metadata"),
         ("entry", "Title"),
-        ("check box", "Remove all information"),
+        ("button", "Remove All"),
     ],
     ("PDF", "Save pages as images"): [("combo box", "Image format")],
 }
@@ -1340,15 +1373,150 @@ class Session:
         bar = self.find(role="status bar")
         return _text(bar) if bar is not None else ""
 
-    def press_run(self):
+    def dialog_buttons(self):
+        """Every button in the dialog, in document order.
+
+        WebKit reports role `button`; AT-SPI's `push button` is what other toolkits
+        call the same thing. One walk, so the order is the DOM's — the footer is last,
+        which is how the primary is found among the fields' own buttons.
+        """
         dialog = self.dialog()
         if dialog is None:
-            raise ScenarioFailure("Run pressed with no dialog")
-        run_button = self.button("Run", within=dialog)
-        if run_button is None:
-            raise ScenarioFailure("Run button not found")
-        if not self.press(run_button):
-            raise ScenarioFailure("could not press Run")
+            return []
+        return [
+            node
+            for node, _depth in _walk(dialog)
+            if _safe(node, "get_role_name") in ("push button", "button", "toggle button")
+        ]
+
+    def primary_button(self):
+        """The dialog's commit button: the last button that is not Reset or Close.
+
+        Its label comes from the tool table ("Save Organized PDF", "Create Collage"),
+        so it cannot be matched by name. The footer is the last thing in the sheet, so
+        the primary is the last button in document order — the fields' own buttons
+        (colour swatches, segmented options, Choose…) all come before it.
+        """
+        for node in reversed(self.dialog_buttons()):
+            name = _safe(node, "get_name") or ""
+            if name in ("Reset", "Close", "Cancel"):
+                continue
+            return node
+        return None
+
+    def primary_label(self) -> str:
+        node = self.primary_button()
+        return (_safe(node, "get_name") or "") if node is not None else ""
+
+    def press_primary(self):
+        dialog = self.dialog()
+        if dialog is None:
+            raise ScenarioFailure("the primary action was pressed with no dialog")
+        button = self.primary_button()
+        if button is None:
+            labels = [_safe(node, "get_name") for node in self.dialog_buttons()]
+            raise ScenarioFailure(f"no primary button in the dialog; buttons: {labels}")
+        if "SENSITIVE" not in _states(button) and "ENABLED" not in _states(button):
+            raise ScenarioFailure(
+                f"the primary button {_safe(button, 'get_name')!r} is disabled"
+            )
+        if not self.press(button):
+            raise ScenarioFailure("could not press the primary button")
+
+    def press_run(self):
+        self.press_primary()
+
+    def press_in_dialog(self, name: str):
+        dialog = self.dialog()
+        if dialog is None:
+            raise ScenarioFailure(f"{name!r} pressed with no dialog")
+        self.press_button(name, within=dialog)
+
+    def dialog_entry(self, label: str):
+        dialog = self.dialog()
+        return self.entry(label) if dialog is None else (
+            self.find(role="entry", name=label, within=dialog)
+            or self.find(role="entry", contains=label, within=dialog)
+        )
+
+    def dialog_check(self, label: str):
+        dialog = self.dialog()
+        if dialog is None:
+            return self.check_box(label)
+        return self.find(role="check box", name=label, within=dialog)
+
+    def rail(self):
+        dialog = self.dialog()
+        if dialog is None:
+            return None
+        return self.find(name="About this tool", within=dialog)
+
+    def sheet(self):
+        """The settings pane: the form inside the dialog wrapper."""
+        dialog = self.dialog()
+        if dialog is None:
+            return None
+        return self.find(tag="form", within=dialog) or dialog
+
+    def dialog_info(self) -> dict:
+        """Everything the two-pane design promises, measured."""
+        dialog = self.dialog()
+        if dialog is None:
+            return {"dialog": False}
+        rail = self.rail()
+        sheet = self.sheet()
+        # AT-SPI text carries the newlines the DOM has; the copy is compared stripped.
+        rail_texts = [
+            " ".join(text.split()) for role, text in self.all_texts(within=rail)
+            if text.strip() and role in ("label", "list item", "heading", "paragraph")
+        ] if rail is not None else []
+        buttons = [_safe(node, "get_name") or "" for node in self.dialog_buttons()]
+        # WebKit exposes an <h2> as a heading in some builds and as a label in
+        # others; the sheet title is whichever one carries the tag.
+        title_nodes = []
+        if sheet is not None:
+            for role in ("heading", "label"):
+                title_nodes.extend(self.find_all(role=role, within=sheet))
+        sheet_title = ""
+        for node in title_nodes:
+            if (_attributes(node).get("tag") or "") in ("h2", "h1"):
+                sheet_title = _safe(node, "get_name") or _text(node) or ""
+                break
+        if not sheet_title and title_nodes:
+            sheet_title = _safe(title_nodes[0], "get_name") or _text(title_nodes[0]) or ""
+        return {
+            "dialog": True,
+            "sheet_title": sheet_title,
+            "rail_present": rail is not None,
+            "rail_texts": rail_texts,
+            "rail_title": rail_texts[1] if len(rail_texts) > 1 else "",
+            "eyebrow": rail_texts[0] if rail_texts else "",
+            "benefits": rail_texts[3:] if len(rail_texts) > 3 else [],
+            "buttons": buttons,
+            "primary": self.primary_label(),
+            "sheet_box": list(self.extents(sheet)) if sheet is not None and self.extents(sheet) else None,
+            "rail_box": list(self.extents(rail)) if rail is not None and self.extents(rail) else None,
+            "dialog_box": list(self.extents(dialog)) if self.extents(dialog) else None,
+            "frame_box": list(self.frame_extents()) if self.frame_extents() else None,
+        }
+
+    def set_slider_auto(self, label: str, value: float):
+        """Set a slider without being told its bounds: AT-SPI reports both."""
+        node = self.slider(label)
+        if node is None:
+            raise ScenarioFailure(f"slider {label!r} not found")
+        value_iface = _safe(node, "get_value_iface")
+        minimum = (
+            float(_safe(value_iface, "get_minimum_value"))
+            if value_iface is not None and _safe(value_iface, "get_minimum_value") is not None
+            else 0.0
+        )
+        step = (
+            float(_safe(value_iface, "get_minimum_increment"))
+            if value_iface is not None and _safe(value_iface, "get_minimum_increment")
+            else 1.0
+        )
+        self.set_slider(label, value, minimum, step or 1.0)
 
     def wait_job(self, before_files, before_rows, timeout=180, expect=1):
         deadline = time.time() + timeout
@@ -1732,6 +1900,106 @@ def record_dialog(rec, session, label):
     return dialog, frame, box, nodes
 
 
+def action_label(action: str, count: int = 0) -> str:
+    """The primary button's text, with the count substituted.
+
+    The tool table writes `Save {n} Frame(s)`; one frame reads "Frame", anything else
+    "Frames". Shared with `ui/src/components/tool-modal.tsx::actionLabel`.
+    """
+    if "{n}" not in action:
+        return action
+    return action.replace("{n}", str(count)).replace(
+        "Frame(s)", "Frame" if count == 1 else "Frames"
+    )
+
+
+def assert_design(rec, checks, session, meta, category, label):
+    """The two-pane dialog contract: copy, geometry, and one primary action.
+
+    A dialog that lost its rail still looks plausible in a screenshot, which is why
+    every one of these is a measurement rather than a picture: the rail's text must be
+    the backend's own copy, both panes must sit inside the window, and the footer must
+    carry the tool's action label.
+    """
+    info = session.dialog_info()
+    rec["measurements"][f"design_{label}"] = info
+    if not info.get("dialog"):
+        checks.add(f"{label}: dialog opened", False, "a dialog", "none")
+        return
+    expected_title = meta.get("title") or label
+    checks.add(
+        f"{label}: sheet title",
+        info["sheet_title"] == expected_title,
+        expected_title,
+        info["sheet_title"],
+    )
+    checks.add(
+        f"{label}: rail present",
+        info["rail_present"],
+        "a rail beside the sheet",
+        info.get("rail_box"),
+    )
+    checks.add(
+        f"{label}: rail title",
+        info["rail_title"] == expected_title,
+        expected_title,
+        info["rail_title"],
+    )
+    eyebrow = meta.get("eyebrow") or category
+    checks.add(
+        f"{label}: eyebrow",
+        (info["eyebrow"] or "").strip().lower() == eyebrow.strip().lower(),
+        eyebrow,
+        info["eyebrow"],
+    )
+    benefits = [" ".join(benefit.split()) for benefit in (meta.get("benefits") or [])]
+    checks.add(
+        f"{label}: rail lists the tool's benefits",
+        all(benefit in info["rail_texts"] for benefit in benefits) and len(benefits) > 0,
+        benefits,
+        info["benefits"],
+    )
+    expected_action = action_label(meta.get("action") or "Run")
+    checks.add(
+        f"{label}: primary action label",
+        info["primary"] == expected_action,
+        expected_action,
+        info["primary"],
+    )
+    checks.add(
+        f"{label}: Reset on the left, Close in the head",
+        "Reset" in info["buttons"] and "Close" in info["buttons"],
+        ["Reset", "Close"],
+        info["buttons"],
+    )
+    checks.add(
+        f"{label}: no Cancel button",
+        "Cancel" not in info["buttons"],
+        "no Cancel",
+        info["buttons"],
+    )
+    frame = info.get("frame_box")
+    for pane in ("sheet_box", "rail_box"):
+        box = info.get(pane)
+        if not box or not frame:
+            checks.add(f"{label}: {pane} measured", False, "extents", box)
+            continue
+        fx, fy, fw, fh = frame
+        x, y, w, h = box
+        checks.add(
+            f"{label}: {pane} inside the window",
+            x >= fx - 2 and y >= fy - 2 and x + w <= fx + fw + 2 and y + h <= fy + fh + 2,
+            f"inside {frame}",
+            box,
+        )
+        checks.add(
+            f"{label}: {pane} has no horizontal overflow",
+            x + w <= fx + fw + 2,
+            f"right edge <= {fx + fw + 2}",
+            x + w,
+        )
+
+
 def assert_dialog_inside(rec, checks, label, frame, box):
     if not frame or not box:
         checks.add(f"{label}: dialog geometry", False, "frame and dialog extents", box)
@@ -1756,16 +2024,17 @@ def open_and_record(session, rec, label):
 
 
 def close_dialog(session):
+    """The X in the sheet head — the reference has no Cancel button."""
     dialog = session.dialog()
     if dialog is None:
         return
-    cancel = session.button("Cancel", within=dialog)
-    if cancel is None:
-        raise ScenarioFailure("Cancel button not found")
-    if not session.press(cancel):
-        raise ScenarioFailure("could not press Cancel")
+    close = session.button("Close", within=dialog)
+    if close is None:
+        raise ScenarioFailure("Close button not found")
+    if not session.press(close):
+        raise ScenarioFailure("could not press Close")
     if not session.wait_dialog_closed():
-        raise ScenarioFailure("dialog did not close after Cancel")
+        raise ScenarioFailure("dialog did not close after Close")
 
 
 def run_tool_job(session, rec, checks, label, apply=None, expect=1, timeout=240, category=None):
@@ -1988,6 +2257,9 @@ def scenario_dialogs(h, rec, checks, category):
                 }
                 continue
             opened = open_and_record(session, rec, label)
+            if opened is not None:
+                meta = TOOL_TABLE.get((category, label), {})
+                assert_design(rec, checks, session, meta, category, label)
             if opened is None:
                 observed = session.status_text().strip()
                 session.cancel_all()
@@ -2008,11 +2280,21 @@ def scenario_dialogs(h, rec, checks, category):
             dialog, frame, box, nodes = opened
             assert_dialog_inside(rec, checks, f"{category}/{label}", frame, box)
             roles = {node["role"] for node in nodes}
+            # The reference footer has Reset and the tool's own action; the head has
+            # Close. There is no generic Run and no Cancel.
+            labels = [_safe(node, "get_name") or "" for node in session.dialog_buttons()]
             checks.add(
-                f"{category}/{label}: has Run/Cancel/Reset",
-                {"button"} <= roles and bool(session.button("Run", within=dialog)),
-                "Run/Cancel buttons",
-                sorted(roles),
+                f"{category}/{label}: Reset, Close and the tool's action",
+                {"Reset", "Close"} <= set(labels)
+                and bool(TOOL_TABLE.get((category, label), {}).get("action")),
+                ["Reset", "Close", "the tool's action"],
+                labels,
+            )
+            checks.add(
+                f"{category}/{label}: no Run or Cancel button",
+                "Run" not in labels and "Cancel" not in labels,
+                [],
+                [name for name in labels if name in ("Run", "Cancel")],
             )
             for role, name in CONTROL_EXPECTATIONS.get((category, label), []):
                 found = session.find(role=role, name=name, within=dialog)
@@ -2941,6 +3223,66 @@ def scenario_convert_pdf_text(h, rec, checks):
         checks.add("extracted text matches the source", all(word in text for word in words) and bool(words), words, text[:200])
 
 
+def scenario_convert_pdf_docx(h, rec, checks):
+    """The headline defect: PDF → DOCX must keep the document's structure."""
+    source = h.fixture("pdf/Jake_s_Resume__Anonymous_.pdf")
+    with h.launch("convert-pdf-docx", [source]) as session:
+        rec["workdir"] = session.workdir
+        outputs = conversion_job(session, rec, checks, "DOCX")
+        output = outputs[0]
+        record_outputs(rec, outputs)
+        facts = validate.docx(output)
+        if facts is None:
+            raise ScenarioFailure("the published DOCX is not a readable package")
+        rec["measurements"]["docx"] = {
+            key: facts[key]
+            for key in ("paragraphs", "heading1", "heading2", "lists", "numpr",
+                        "images", "page_breaks", "bytes")
+        }
+        checks.add("Heading 1 paragraphs", facts["heading1"] >= 1, ">=1", facts["heading1"])
+        checks.add("Heading 2 paragraphs", facts["heading2"] >= 2, ">=2", facts["heading2"])
+        checks.add("numbered list paragraphs", facts["lists"] >= 23, ">=23", facts["lists"])
+        checks.add("list markers (w:numPr)", facts["numpr"] >= 23, ">=23", facts["numpr"])
+        checks.add("embedded images", facts["images"] >= 4, ">=4", facts["images"])
+        checks.add("no page breaks", facts["page_breaks"] == 0, 0, facts["page_breaks"])
+        # The source's own text layer, not its bytes: `text_of` reads a text file.
+        source_words = validate.pdf_text(source) or ""
+        coverage = validate.text_coverage(source_words, facts["text"])
+        checks.add("text coverage", coverage is not None and coverage >= 0.98, ">=0.98", coverage)
+        checks.add("no bullet glyph in the text", "•" not in facts["text"], "none", "•" in facts["text"])
+        text = facts["text"]
+        sections = [
+            "Summary",
+            "Education",
+            "Relevant Coursework",
+            "Experience",
+            "Projects",
+            "Technical Skills",
+            "Leadership",
+        ]
+        positions = [text.find(name) for name in sections]
+        checks.add(
+            "the seven sections in order",
+            all(position >= 0 for position in positions) and positions == sorted(positions),
+            sections,
+            positions,
+        )
+        checks.add(
+            "the document opens in a reader",
+            "word/document.xml" in zip_members(output),
+            "word/document.xml",
+            zip_members(output)[:4],
+        )
+
+
+def zip_members(path: str) -> list[str]:
+    try:
+        with zipfile.ZipFile(path) as package:
+            return package.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+
 def scenario_convert_document(h, rec, checks):
     source = h.fixture("documents/report.md")
     source_text = text_of(source)
@@ -3051,8 +3393,6 @@ def scenario_immediate_tools(h, rec, checks):
     """Zero-field tools: Mute, Join, PDF Merge, PDF Split, PDF Extract text."""
     jobs = [
         ("mute", "video/clip-landscape-720p-10s.mp4", "Remove audio", _check_muted, 1),
-        ("join", ["video/clip-landscape-720p-10s.mp4", "video/clip-portrait-1080x1920-6s.mp4"], "Join", _check_joined, 1),
-        ("pdf-merge", ["pdf/report-5-pages.pdf", "pdf/scanned-3-pages.pdf"], "Merge", _check_merged, 1),
         ("pdf-split", "pdf/report-5-pages.pdf", "Split pages", _check_split, 5),
         ("pdf-extract-text", "pdf/report-5-pages.pdf", "Extract text", _check_extracted, 1),
     ]
@@ -3117,6 +3457,120 @@ def _check_extracted(session, checks, records, outputs):
     source = os.path.join(session.workdir, "report-5-pages.pdf")
     words = _first_words(run(["pdftotext", source, "-"]).stdout, 3)
     checks.add("extracted text matches the PDF", all(word in text for word in words) and bool(words), words, text[:200])
+
+
+def page_one_text(path: str) -> str:
+    result = run(["pdftotext", "-f", "1", "-l", "1", path, "-"], timeout=60)
+    return " ".join(result.stdout.split())
+
+
+def scenario_tool_pdf_merge(h, rec, checks):
+    """Merge in selection order, then reversed: the first page must follow the order."""
+    files = [h.fixture("pdf/report-5-pages.pdf"), h.fixture("pdf/scanned-3-pages.pdf")]
+    with h.launch("tool-pdf-merge", files) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Merge", category="PDF")
+        record = record_outputs(rec, outputs)[0]
+        info = record.get("pdf", {})
+        checks.add("merge keeps every page", info.get("Pages") == "8", "8", info.get("Pages"))
+        first_line = page_one_text(outputs[0])[:24]
+        source_line = page_one_text(os.path.join(session.workdir, "report-5-pages.pdf"))[:24]
+        checks.add(
+            "merge starts with the first selected document",
+            bool(source_line) and first_line.startswith(source_line),
+            source_line,
+            first_line,
+        )
+
+    with h.launch("tool-pdf-merge-reversed", files) as session:
+        rec["workdir"] = session.workdir
+
+        def reverse(s):
+            # The order editor lists the selection; two moves put the scan first.
+            s.press_in_dialog("Move scanned-3-pages.pdf up")
+            time.sleep(0.4)
+
+        outputs, _preview = run_tool_job(
+            session, rec, checks, "Merge", category="PDF", apply=reverse
+        )
+        record = record_outputs(rec, outputs)[0]
+        info = record.get("pdf", {})
+        checks.add("reversed merge keeps every page", info.get("Pages") == "8", "8", info.get("Pages"))
+        text = page_one_text(outputs[0])
+        checks.add(
+            "reversed merge starts with the last selected document",
+            "ConvertMe Test Report" not in text,
+            "the scan's first page",
+            text[:40],
+        )
+
+
+def scenario_tool_pdf_organize(h, rec, checks):
+    """Duplicate page 2, remove page 4, rotate page 1: the page sequence is the value."""
+    with h.launch("tool-pdf-organize", [h.fixture("pdf/report-5-pages.pdf")]) as session:
+        rec["workdir"] = session.workdir
+
+        def edit(s):
+            s.press_in_dialog("Duplicate page 2")
+            time.sleep(0.3)
+            s.press_in_dialog("Remove page 4")
+            time.sleep(0.3)
+            s.press_in_dialog("Rotate page 1")
+            time.sleep(0.3)
+
+        outputs, _preview = run_tool_job(
+            session, rec, checks, "Organize pages", category="PDF", apply=edit
+        )
+        record = record_outputs(rec, outputs)[0]
+        info = record.get("pdf", {})
+        # duplicate page 2 and drop page 4: 5 -> [1,2,2,3,5]
+        checks.add("organize keeps five pages", info.get("Pages") == "5", "5", info.get("Pages"))
+        source = os.path.join(session.workdir, "report-5-pages.pdf")
+        wanted = [page_one_text_source(source, page) for page in (1, 2, 2, 3, 5)]
+        produced = [page_one_text_page(outputs[0], page) for page in range(1, 6)]
+        checks.add(
+            "page order is [1,2,2,3,5]",
+            all(a.startswith(b[:20]) for a, b in zip(produced, wanted)),
+            [text[:16] for text in wanted],
+            [text[:16] for text in produced],
+        )
+        rotation = run(["qpdf", "--show-pages", "--json", outputs[0]], timeout=60)
+        rotated = 0
+        try:
+            rotated = json.loads(rotation.stdout)["pages"][0].get("rotate", 0)
+        except (json.JSONDecodeError, KeyError, IndexError):
+            rotated = 0
+        checks.add("page 1 is rotated 90°", rotated == 90, 90, rotated)
+
+
+def page_one_text_source(path: str, page: int) -> str:
+    result = run(["pdftotext", "-f", str(page), "-l", str(page), path, "-"], timeout=60)
+    return " ".join(result.stdout.split())
+
+
+def page_one_text_page(path: str, page: int) -> str:
+    return page_one_text_source(path, page)
+
+
+def scenario_tool_video_join(h, rec, checks):
+    clips = [
+        h.fixture("video/clip-landscape-720p-10s.mp4"),
+        h.fixture("video/clip-portrait-1080x1920-6s.mp4"),
+    ]
+    with h.launch("tool-video-join", clips) as session:
+        rec["workdir"] = session.workdir
+        outputs, _preview = run_tool_job(session, rec, checks, "Join", category="Video")
+        record = record_outputs(rec, outputs)[0]
+        media = record.get("media", {})
+        checks.add("join produces one clip", len(outputs) == 1, 1, len(outputs))
+        checks.add(
+            "joined duration covers both clips",
+            media.get("duration", 0) >= 15.0,
+            ">=15 s",
+            media.get("duration"),
+        )
+        streams = [stream["type"] for stream in media.get("streams", [])]
+        checks.add("join keeps the audio", "audio" in streams, "audio", streams)
 
 
 def scenario_negative_corrupt(h, rec, checks):
@@ -3446,6 +3900,8 @@ SCENARIOS = [
     ("tool-audio-bleep", scenario_tool_audio_bleep),
     ("tool-audio-metadata", scenario_tool_audio_metadata),
     ("tool-pdf-organize", scenario_tool_pdf_organize),
+    ("tool-pdf-merge", scenario_tool_pdf_merge),
+    ("tool-video-join", scenario_tool_video_join),
     ("tool-pdf-metadata", scenario_tool_pdf_metadata),
     ("tool-pdf-pages", scenario_tool_pdf_pages),
     ("never-grow-tiny", scenario_never_grow_tiny),
@@ -3457,6 +3913,7 @@ SCENARIOS = [
     ("convert-audio", scenario_convert_audio),
     ("convert-pdf-text", scenario_convert_pdf_text),
     ("convert-document", scenario_convert_document),
+    ("convert-pdf-docx", scenario_convert_pdf_docx),
     ("convert-slides", scenario_convert_slides),
     ("convert-spreadsheet", scenario_convert_spreadsheet),
     ("convert-epub", scenario_convert_epub),
@@ -3560,6 +4017,9 @@ def tool_versions(prefix: str | None = None) -> dict:
         ("ffmpeg", ["ffmpeg", "-version"]),
         ("pdfinfo", ["pdfinfo", "-v"]),
         ("identify", ["identify", "-version"]),
+        # The sidecar is copied beside the binary at build time, so it can be an older
+        # build than vendor/bin's: this line says which one answered.
+        ("convertme-pdf", ["convertme-pdf", "--version"]),
     ):
         binary = os.path.join(prefix, name) if prefix else name
         if prefix and not os.path.exists(binary):
@@ -3599,6 +4059,8 @@ def main(argv=None) -> int:
         for name, _fn in SCENARIOS:
             print(name)
         return 0
+    # The dialog copy asserted by every phase comes from the binary's own tool table.
+    TOOL_TABLE.update(tool_table())
     if args.worker:
         if not args.profile or not args.out:
             raise SystemExit("--worker needs --profile and --out")

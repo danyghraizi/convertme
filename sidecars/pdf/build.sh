@@ -13,7 +13,7 @@ out="${1:-$here/dist}"
 python="${PYTHON:-python3}"
 
 cd "$here"
-"$python" -m pip install --quiet --upgrade pyinstaller pymupdf pdf2docx python-pptx openpyxl
+"$python" -m pip install --quiet --upgrade pyinstaller pymupdf python-docx python-pptx openpyxl
 
 rm -rf "$here/build" "$here/dist"
 "$python" -m PyInstaller \

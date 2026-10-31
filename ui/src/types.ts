@@ -55,6 +55,13 @@ export interface Segment {
   id: string;
   label: string;
   blurb?: string;
+  /** Dialog copy from the tool table: sheet/rail heading and primary button. */
+  title?: string;
+  action?: string;
+  /** The rail's check lines, verbatim. */
+  benefits?: string[];
+  /** Replaces the category label above the rail title ("Any file"). */
+  eyebrow?: string;
   disabled?: boolean;
   hint?: string;
 }
@@ -105,9 +112,52 @@ export type FieldKind =
   | 'select'
   | 'checkbox'
   | 'boxes'
-  | 'order';
+  | 'order'
+  | 'shapes'
+  | 'pages'
+  | 'files'
+  | 'metadata';
 
-export type FieldValue = string | number | boolean | number[] | string[] | Box[];
+/**
+ * One drawn annotation. Coordinates are fractions of the image, so the same shape
+ * survives a preview rendered at any size.
+ */
+export interface Shape {
+  kind: 'rect' | 'arrow' | 'ellipse' | 'line' | 'highlight' | 'number' | 'text';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Freehand and polyline points, normalised like `x`/`y`. */
+  points?: [number, number][];
+  text?: string;
+  color?: string;
+  /** Stroke width, or point size for text. */
+  size?: number;
+}
+
+/** The page organizer's value: which source pages, in which order, at what rotation. */
+export interface PagesValue {
+  order: number[];
+  rotate: number[];
+}
+
+export interface MetaFields {
+  set: Record<string, string>;
+  remove: string[];
+  strip: boolean;
+}
+
+export type FieldValue =
+  | string
+  | number
+  | boolean
+  | number[]
+  | string[]
+  | Box[]
+  | Shape[]
+  | PagesValue
+  | MetaFields;
 
 export interface Field {
   key: string;
@@ -125,8 +175,16 @@ export interface Field {
   show_if?: { key: string; equals: string };
   /** Section heading when the controls are grouped. */
   group?: string;
+  /** One line of help under the control. */
+  help?: string;
   /** A form control (a mode switch), never sent to the backend. */
   control?: boolean;
+  /**
+   * Owned by a dedicated editor: the value is still submitted, but no generic
+   * control is drawn for it. The crop surface, the page grid and the timelines
+   * set it, so the dialog does not show a second, unused input for the same value.
+   */
+  hidden?: boolean;
 }
 
 export interface ConvertIntent {
@@ -203,4 +261,54 @@ export interface ProgressState {
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   fraction: number;
   stage?: string;
+}
+
+/** What the timeline and the crop surface need before they can draw. */
+export interface MediaInfo {
+  duration: number;
+  width: number;
+  height: number;
+  has_audio: boolean;
+  has_video: boolean;
+  format: string;
+}
+
+export interface WaveformData {
+  duration_ms: number;
+  truncated: boolean;
+  /** Per-bucket min/max, in -1.0..1.0. */
+  peaks: [number, number][];
+}
+
+export interface ChannelWaveforms {
+  left: WaveformData;
+  right: WaveformData;
+}
+
+export interface PdfPage {
+  page: number;
+  /** PostScript points, from the page's own MediaBox. */
+  width: number;
+  height: number;
+  /** Rendered thumbnail; `null` past the first hundred pages. */
+  thumb: string | null;
+}
+
+export interface Loudness {
+  input_i: number;
+  input_tp: number;
+  input_lra: number;
+}
+
+export interface MetaFieldRow {
+  key: string;
+  label: string;
+  value: string;
+  /** False for a file fact, or a tag this writer cannot change or delete. */
+  editable: boolean;
+}
+
+export interface MetaGroup {
+  name: string;
+  fields: MetaFieldRow[];
 }

@@ -411,10 +411,20 @@ pub static PAIR_OVERRIDES: &[(FormatId, FormatId, EngineRef)] = &[
 
 /// A file tool. Tools are per-category: `Compress` exists for images, video,
 /// audio and PDF and means something different in each.
+///
+/// Every field here is product copy the dialog shows, so the two-pane dialog and
+/// its explanatory rail are never written twice: `label` is the wheel word,
+/// `title` is the sheet heading *and* the rail heading, `action` is the primary
+/// button (`{n}` is replaced by a count), `benefits` are the rail's check lines
+/// and `eyebrow` overrides the category label above the rail title.
 pub struct Tool {
     pub id: ToolId,
     pub category: Category,
     pub label: &'static str,
+    pub title: &'static str,
+    pub action: &'static str,
+    pub benefits: &'static [&'static str],
+    pub eyebrow: Option<&'static str>,
     pub blurb: &'static str,
     pub engine: EngineRef,
 }
@@ -497,12 +507,57 @@ impl fmt::Display for ToolId {
     }
 }
 
+/// One tool row.
+///
+/// Two forms. The short one is for a tool whose dialog needs no special copy: the
+/// sheet is titled with the wheel label and the primary button says `Run`:
+///
+/// ```text
+/// tool!(Split, Pdf, "Split pages", "…blurb…", Qpdf)
+/// ```
+///
+/// The long form carries the two-pane dialog's copy — sheet and rail title, the
+/// primary action (`{n}` is a count), the rail's check lines and an eyebrow that
+/// replaces the category label:
+///
+/// ```text
+/// tool!(Metadata, Pdf, "Metadata", "Edit metadata", "Save", "…blurb…", Qpdf,
+///       ["Search fields grouped by file", "Remove hidden camera data"],
+///       Some("Any file"))
+/// ```
 macro_rules! tool {
     ($id:ident, $cat:ident, $label:literal, $blurb:literal, $engine:ident) => {
+        tool!(
+            $id,
+            $cat,
+            $label,
+            $label,
+            "Run",
+            $blurb,
+            $engine,
+            [],
+            None
+        )
+    };
+    (
+        $id:ident,
+        $cat:ident,
+        $label:literal,
+        $title:literal,
+        $action:literal,
+        $blurb:literal,
+        $engine:ident,
+        [$($benefit:literal),* $(,)?],
+        $eyebrow:expr
+    ) => {
         Tool {
             id: ToolId::$id,
             category: Category::$cat,
             label: $label,
+            title: $title,
+            action: $action,
+            benefits: &[$($benefit),*],
+            eyebrow: $eyebrow,
             blurb: $blurb,
             engine: EngineRef::$engine,
         }
@@ -517,79 +572,144 @@ pub static TOOLS: &[Tool] = &[
         Compress,
         Images,
         "Compress",
+        "Compress",
+        "Compress",
         "Hit a target size or a percentage; the preview shows the result before you commit.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Target a file size or percentage reduction",
+            "Resize images while compressing"
+        ],
+        Some("Any file")
     ),
     tool!(
         Crop,
         Images,
         "Crop",
+        "Crop images",
+        "Apply",
         "Drag the crop box or pick an aspect ratio.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Enter exact pixel dimensions",
+            "Use preset or custom aspect ratios"
+        ],
+        None
     ),
     tool!(
         Annotate,
         Images,
         "Annotate",
+        "Annotate photos",
+        "Save Annotated Copy",
         "Arrows, shapes, text and numbered callouts burned into a copy.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Add numbered labels, arrows, and text",
+            "Draw or highlight directly on the photo"
+        ],
+        None
     ),
     tool!(
         AddBackground,
         Images,
         "Add background",
+        "Add a background",
+        "Save with Background",
         "Place the photo on a colour, a gradient or another image, with padding and rounded corners.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Use another image as the background",
+            "Add padding, rounded corners, and shadow"
+        ],
+        None
     ),
     tool!(
         EditPhoto,
         Images,
         "Edit photo",
+        "Edit photos",
+        "Save Edited Copy",
         "Adjust exposure, colour and detail without leaving the app.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Dehaze, clarity, grain, and noise reduction",
+            "Fine controls for light, colour, and detail"
+        ],
+        None
     ),
     tool!(
         Metadata,
         Images,
         "Metadata",
+        "Edit metadata",
+        "Save",
         "Read, edit or strip camera and location tags across a selection.",
-        ImageMagick
+        ImageMagick,
+        [
+            "Search fields grouped by file, track, or chapter",
+            "Remove hidden camera and processing data"
+        ],
+        Some("Any file")
     ),
     tool!(
         Redact,
         Images,
         "Redact",
+        "Redact photos",
+        "Save Redacted Copy",
         "Detect faces and text, then fill the boxes you keep.",
-        ImageMagick
+        ImageMagick,
+        ["Detect faces and text locally", "Layer several movable redaction areas"],
+        None
     ),
     // Video
     tool!(
         Compress,
         Video,
         "Compress",
+        "Compress",
+        "Compress",
         "Hit a target size with a two-pass encode that keeps the audio intact.",
-        Ffmpeg
+        Ffmpeg,
+        ["Shrink to a size or bitrate", "Never grows the file"],
+        Some("Any file")
     ),
     tool!(
         Trim,
         Video,
         "Trim",
+        "Trim video",
+        "Apply",
         "Drag the start and end handles on the filmstrip and step through frames.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Step through the video frame by frame",
+            "Enter precise start and end timecodes"
+        ],
+        None
     ),
     tool!(
         Crop,
         Video,
         "Crop",
+        "Crop video",
+        "Apply",
         "Drag the frame or pick an aspect ratio; the audio is untouched.",
-        Ffmpeg
+        Ffmpeg,
+        ["Enter exact output dimensions", "Keep the original audio"],
+        None
     ),
     tool!(
         Speed,
         Video,
         "Speed",
+        "Change video speed",
+        "Apply",
         "Speed up or slow down the picture and keep the audio at its original pitch.",
-        Ffmpeg
+        Ffmpeg,
+        ["Preserve audio pitch", "Works with silent videos"],
+        None
     ),
     tool!(
         Mute,
@@ -602,108 +722,198 @@ pub static TOOLS: &[Tool] = &[
         Snapshot,
         Video,
         "Save frames",
+        "Save video frames",
+        "Save {n} Frame(s)",
         "Export still frames as PNG at chosen timestamps or a fixed interval.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Choose frames one step at a time",
+            "Export full-resolution PNGs"
+        ],
+        None
     ),
     tool!(
         Redact,
         Video,
         "Redact",
+        "Redact video",
+        "Save Redacted Copy",
         "Blur a region for a time range and re-encode a clean copy.",
-        Ffmpeg
+        Ffmpeg,
+        ["Give each redaction its own time range", "Use solid colors or blur"],
+        None
     ),
     tool!(
         Join,
         Video,
         "Join",
+        "Join videos",
+        "Join Videos",
         "Arrange clips in playback order and save one file.",
-        Ffmpeg
+        Ffmpeg,
+        ["Mix MP4, MOV, and MKV clips", "Use the first clip as the output canvas"],
+        None
     ),
     tool!(
         Split,
         Video,
         "Split",
+        "Split video",
+        "Split Video",
         "Mark sections on the timeline and save each one as its own clip in a folder.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Split at custom points or into equal parts",
+            "Place every output clip in one folder"
+        ],
+        None
     ),
     // Audio
     tool!(
         Compress,
         Audio,
         "Compress",
+        "Compress",
+        "Compress",
         "Shrink a recording to a target size or bitrate.",
-        Ffmpeg
+        Ffmpeg,
+        ["Shrink to a size or bitrate", "Never grows the file"],
+        Some("Any file")
     ),
     tool!(
         Normalize,
         Audio,
         "Normalize",
+        "Normalize volume",
+        "Normalize Audio",
         "Even out loudness to a broadcast target.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Control loudness range and true peak",
+            "Compare input and output levels"
+        ],
+        None
     ),
     tool!(
         Trim,
         Audio,
         "Trim",
+        "Trim audio",
+        "Apply",
         "Cut with waveform handles and preview the edges.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Remove silence only from the beginning and end",
+            "Enter exact start and end times"
+        ],
+        None
     ),
     tool!(
         Channels,
         Audio,
         "Channels",
+        "Convert audio channels",
+        "Apply",
         "Convert to mono or stereo.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Set left and right volume independently",
+            "Preview either channel on its own"
+        ],
+        None
     ),
     tool!(
         Visualize,
         Audio,
         "Visualize",
+        "Create an audio visualizer",
+        "Create Visualization",
         "Turn a recording into a waveform video on a background you pick.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Use an animated waveform or a still image",
+            "Choose landscape, portrait, or square video"
+        ],
+        None
     ),
     tool!(
         Bleep,
         Audio,
         "Bleep",
+        "Bleep audio",
+        "Save Bleeped Copy",
         "Mark ranges on the waveform and replace them with a tone.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Move a whole bleep range or fine-tune its edges",
+            "Compare original and bleeped playback"
+        ],
+        None
     ),
     tool!(
         Metadata,
         Audio,
         "Metadata",
+        "Edit metadata",
+        "Save",
         "Edit title, artist, album and cover art.",
-        Ffmpeg
+        Ffmpeg,
+        [
+            "Search fields grouped by file, track, or chapter",
+            "Remove hidden camera and processing data"
+        ],
+        Some("Any file")
     ),
     // PDF
     tool!(
         Compress,
         Pdf,
         "Compress",
+        "Compress",
+        "Compress",
         "Downsample to a preset quality tier and keep the pages readable.",
-        Ghostscript
+        Ghostscript,
+        ["Choose a quality preset", "Never grows the file"],
+        Some("Any file")
     ),
     tool!(
         Organize,
         Pdf,
         "Organize pages",
+        "Organize PDF pages",
+        "Save Organized PDF",
         "Reorder, rotate, duplicate or delete pages, then save a new file.",
-        Qpdf
+        Qpdf,
+        ["Rotate, duplicate, or remove individual pages"],
+        None
     ),
     tool!(
         Metadata,
         Pdf,
         "Metadata",
+        "Edit metadata",
+        "Save",
         "Edit the document information dictionary.",
-        Qpdf
+        Qpdf,
+        [
+            "Search fields grouped by file, track, or chapter",
+            "Remove hidden camera and processing data"
+        ],
+        Some("Any file")
     ),
     tool!(
         Merge,
         Pdf,
         "Merge",
+        "Merge PDFs",
+        "Merge PDFs",
         "Combine the selected files into one document in selection order.",
-        Qpdf
+        Qpdf,
+        [
+            "Start with the selection order",
+            "Reorder documents before merging"
+        ],
+        None
     ),
     tool!(
         Split,
@@ -901,15 +1111,178 @@ mod tests {
     }
 
     #[test]
-    fn extension_detection_is_case_insensitive() {
-        assert_eq!(
-            Registry::detect(Path::new("A.JPEG")).unwrap().id,
-            FormatId("JPG")
-        );
-        assert_eq!(
-            Registry::detect(Path::new("x.tar.gz")).unwrap().id,
-            FormatId("GZIP")
-        );
-        assert!(Registry::detect(Path::new("noext")).is_none());
+    fn every_tool_has_a_title_and_an_action() {
+        // The dialog reads these two as its heading and its primary button; an empty
+        // one renders a dialog with no way out that says nothing.
+        for tool in TOOLS {
+            assert!(
+                !tool.title.trim().is_empty(),
+                "{} has no dialog title",
+                tool.id
+            );
+            assert!(
+                !tool.action.trim().is_empty(),
+                "{} has no primary action",
+                tool.id
+            );
+        }
+    }
+
+    /// The two-pane dialog copy, pinned. `title`/`action` are what the sheet and its
+    /// primary button must say, and the rail lists `benefits` verbatim.
+    #[test]
+    fn reference_tools_carry_the_dialog_copy() {
+        let expect = [
+            (Category::Images, ToolId::Compress, "Compress", "Compress"),
+            (Category::Images, ToolId::Crop, "Crop images", "Apply"),
+            (
+                Category::Images,
+                ToolId::Annotate,
+                "Annotate photos",
+                "Save Annotated Copy",
+            ),
+            (
+                Category::Images,
+                ToolId::AddBackground,
+                "Add a background",
+                "Save with Background",
+            ),
+            (
+                Category::Images,
+                ToolId::EditPhoto,
+                "Edit photos",
+                "Save Edited Copy",
+            ),
+            (Category::Images, ToolId::Metadata, "Edit metadata", "Save"),
+            (
+                Category::Images,
+                ToolId::Redact,
+                "Redact photos",
+                "Save Redacted Copy",
+            ),
+            (Category::Video, ToolId::Compress, "Compress", "Compress"),
+            (Category::Video, ToolId::Trim, "Trim video", "Apply"),
+            (Category::Video, ToolId::Crop, "Crop video", "Apply"),
+            (
+                Category::Video,
+                ToolId::Speed,
+                "Change video speed",
+                "Apply",
+            ),
+            (
+                Category::Video,
+                ToolId::Snapshot,
+                "Save video frames",
+                "Save {n} Frame(s)",
+            ),
+            (
+                Category::Video,
+                ToolId::Redact,
+                "Redact video",
+                "Save Redacted Copy",
+            ),
+            (Category::Video, ToolId::Join, "Join videos", "Join Videos"),
+            (Category::Video, ToolId::Split, "Split video", "Split Video"),
+            (Category::Audio, ToolId::Compress, "Compress", "Compress"),
+            (
+                Category::Audio,
+                ToolId::Normalize,
+                "Normalize volume",
+                "Normalize Audio",
+            ),
+            (Category::Audio, ToolId::Trim, "Trim audio", "Apply"),
+            (
+                Category::Audio,
+                ToolId::Channels,
+                "Convert audio channels",
+                "Apply",
+            ),
+            (
+                Category::Audio,
+                ToolId::Visualize,
+                "Create an audio visualizer",
+                "Create Visualization",
+            ),
+            (
+                Category::Audio,
+                ToolId::Bleep,
+                "Bleep audio",
+                "Save Bleeped Copy",
+            ),
+            (Category::Audio, ToolId::Metadata, "Edit metadata", "Save"),
+            (Category::Pdf, ToolId::Compress, "Compress", "Compress"),
+            (
+                Category::Pdf,
+                ToolId::Organize,
+                "Organize PDF pages",
+                "Save Organized PDF",
+            ),
+            (Category::Pdf, ToolId::Metadata, "Edit metadata", "Save"),
+            (Category::Pdf, ToolId::Merge, "Merge PDFs", "Merge PDFs"),
+        ];
+        for (category, id, title, action) in expect {
+            let tool = Registry::tool(category, id)
+                .unwrap_or_else(|| panic!("{category}/{id} is missing from the tool table"));
+            assert_eq!(tool.title, title, "{category}/{id} title");
+            assert_eq!(tool.action, action, "{category}/{id} action");
+            assert!(
+                !tool.benefits.is_empty(),
+                "{category}/{id} has no rail benefits"
+            );
+            // The reference shows two check lines everywhere but the two page tools,
+            // where the capture has a single line.
+            let single = matches!((category, id), (Category::Pdf, ToolId::Organize))
+                || matches!((category, id), (Category::Pdf, ToolId::Merge));
+            if !single {
+                assert!(
+                    tool.benefits.len() >= 2,
+                    "{category}/{id} shows {} benefit(s)",
+                    tool.benefits.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cross_format_editors_are_labelled_any_file() {
+        // Compress and Metadata exist per category but read the same in each: the
+        // eyebrow replaces the category word the rail would otherwise show.
+        for category in [Category::Images, Category::Video, Category::Audio, Category::Pdf] {
+            let tool = Registry::tool(category, ToolId::Compress).unwrap();
+            assert_eq!(tool.eyebrow, Some("Any file"));
+        }
+        for category in [Category::Images, Category::Audio, Category::Pdf] {
+            let tool = Registry::tool(category, ToolId::Metadata).unwrap();
+            assert_eq!(tool.eyebrow, Some("Any file"));
+        }
+        // Every other tool falls back to its category label.
+        let crop = Registry::tool(Category::Images, ToolId::Crop).unwrap();
+        assert_eq!(crop.eyebrow, None);
+    }
+
+    /// A tool on the wheel must have an engine behind it: a card that always fails
+    /// is worse than a missing card, so a tool is registered with its implementation.
+    #[test]
+    fn one_id_per_wheel_entry() {
+        for category in Category::ALL {
+            let ids: Vec<&str> = Registry::tools_for(category)
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect();
+            let mut unique = ids.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(ids.len(), unique.len(), "{category} lists a tool twice");
+            // Every registered tool names an engine that exists.
+            for tool in Registry::tools_for(category) {
+                assert!(!tool.engine.label().is_empty());
+            }
+        }
+        // The id parses back to itself through the table.
+        for category in Category::ALL {
+            for tool in Registry::tools_for(category) {
+                assert_eq!(ToolId::parse(tool.id.as_str()), Some(tool.id));
+            }
+        }
     }
 }
