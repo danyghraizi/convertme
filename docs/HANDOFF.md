@@ -1,27 +1,57 @@
 # Handoff
 
-State of the project after the real-app harness session: `add background` is complete,
-**Compress is feature-complete across images, video, audio and PDF**, and
-`scripts/app-e2e.py` now drives the release binary under Xvfb, runs a real job for
-**every backend tool**, and validates the published artifacts. The mock screenshot
-harness remains the fast render check. One engine bug is open (never-grow compares
-before PNG optimization; see "First-run failures"); four broken surfaces found while
-extending coverage are fixed. Read this first, then `AGENTS.md` (rules) and
-`docs/LESSONS.md` (why the rules exist).
+State of the project after the **design-alignment session**: the tool dialogs are the
+reference two-pane composition (a 600 px settings sheet plus a 336 px rail carrying the
+tool's own copy), every tool's controls are the reference's, PDF page editing works
+(duplicate, reorder, rotate, delete, one width), and PDF → DOCX keeps the document's
+structure. Read this first, then `AGENTS.md` (rules) and `docs/LESSONS.md` (why the
+rules exist).
+
+## Savepoint and branches
+
+| Ref | What it is |
+|---|---|
+| `savepoint/pre-alignment-2026-10-31` (branch + annotated tag) | the product as it was before this session; the revert point |
+| `master` | the merged product |
+| `work/alignment-foundation` | the dialog shell, field grammar, new field kinds, the dialog commands, the harness foundation (merged) |
+| `work/images-tools`, `work/video-audio-tools` | the Images and Video/Audio tool phases (built in parallel worktrees, merged in that order) |
+
+Nothing is pushed: CI runs on push to `master` and on pull requests, and the merge
+commits carry `[skip ci]`.
 
 ## Where things stand
 
-`add background` and `compress` are feature-complete and verified. The image, video,
-audio, PDF and archive tools each have a real job in the harness; four broken surfaces
-found while extending coverage are fixed (Metadata fields, crop aspect submit, Redact
-boxes editor, video filmstrip). Documents, Slides, Spreadsheets, EPUB and Subtitles
-still have conversions but no backend tools.
+**Dialogs.** Every tool opens the reference composition: a 600 px sheet with the file
+line, the scrollable controls and a footer holding `Reset` and the tool's own primary
+action ("Save Organized PDF", "Create Collage"), and beside it a 336 px rail with the
+tool's eyebrow, title, blurb and check lines. Both harnesses measure it:
+`ui-shots.py` reports the pane widths, the rail copy against the binary's tool table,
+the primary label and the label/control row alignment; `app-e2e.py` (real window,
+AT-SPI) reports the same through `assert_design`, per tool, per category.
 
-`scripts/app-e2e.py` drives the real window through AT-SPI, runs real jobs and validates
-the published artifacts. Current run: 65 scenarios, 58 passed, 1 failed (the open
-never-grow ordering bug), 6 skipped with reasons. Conversions are one representative
-pair per category, not the full 307-option matrix. The wheel, drag layer, queue, history
-and settings exist; the GUI is usable end to end on this machine.
+**Fields.** `commands.rs::fields_for` is the one table; the browser mock renders it from
+`ui/src/fields.generated.json`, which a test keeps current. Editors that own a value
+(crop surface, page grid, metadata browser, timelines, file order) mark the field
+`hidden` so the dialog never shows a second control for the same number.
+
+**PDF.** `Organize pages` is a card grid: duplicate, rotate, remove, drag to reorder,
+"Reset Order", and one width-match checkbox. Duplicated pages are written by cloning the
+page objects when qpdf refuses the repeated page spec. `Merge` orders the selection from
+a reorder list. `PDF → DOCX` keeps structure (headings by size rank, real list numbering,
+hyperlinks, rasterised contact icons, no page breaks): the résumé validates at 7
+Heading 1, 4 Heading 2, 29 list paragraphs, 29 `w:numPr`, 14 drawings, 0 page breaks,
+text coverage 1.0. `PDF → PPTX` follows the page aspect, `PDF → XLSX` writes one sheet per
+page, `PDF → EPUB` is built from the same reflow analyser.
+
+**Harnesses.**
+
+| Layer | What it proves | Command |
+|---|---|---|
+| `ui-shots.py` | layout and the dialog contract, against the mock | `./scripts/ui-shots.py --out DIR` |
+| `app-e2e.py` | the real window through AT-SPI: real jobs, published artifacts, the design contract | `./scripts/app-e2e.py --only <scenario> --out DIR` |
+| `quality-audit.py` | every reachable conversion (276 cases) through the CLI, each artifact validated | `./scripts/quality-audit.py --out DIR` |
+| `docx-quality.py` | one DOCX against the structure contract and a reference | `./scripts/docx-quality.py --source PDF --docx OUT --reference REF` |
+| `perf-audit.py` | per-operation wall time, peak RSS, temp peak, cache bytes, installed size, against ceilings | `./scripts/perf-audit.py --baseline artifacts/perf/baseline.json` |
 
 ## What "compress" does now
 

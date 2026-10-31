@@ -471,7 +471,12 @@ fn produce_compress(
     } else {
         reduce_colours(encoded, ext, params, cx)?
     };
-    optimize_png(prefer_smaller(job, reduced, ext, cx)?, ext, cx)
+    // Optimize *before* the never-grow comparison. The other order compared the raw
+    // encoder output with the source, and oxipng's lossless pass then ran on whatever
+    // survived — so a screenshot whose unoptimized encode was larger than the source
+    // was replaced by the source even though row filters would have halved it.
+    let optimized = optimize_png(reduced, ext, cx)?;
+    prefer_smaller(job, optimized, ext, cx)
 }
 
 /// Lossy palette reduction with libimagequant, the quantizer behind pngquant, writing
@@ -1815,6 +1820,12 @@ fn prefer_smaller(
     if !same_format || file_len(&produced)? < file_len(&job.source)? {
         return Ok(produced);
     }
+    // A resize is an explicit request for other dimensions, so "never grow" cannot
+    // mean "hand back the original": the dialog said 800 × 500. The original is only
+    // the right answer when the shape did not change.
+    if crate::image_dimensions(&produced) != crate::image_dimensions(&job.source) {
+        return Ok(produced);
+    }
     let copy = cx.scratch(&format!("compress-original.{ext}"));
     copy_file(&job.source, &copy)?;
     Ok(copy)
@@ -2457,6 +2468,45 @@ mod tests {
             after < before,
             "an uncompressed TIFF was not compressed: {before} -> {after}"
         );
+    }
+
+    /// A scaled screenshot must be the *scaled* result, not a copy of the source.
+    ///
+    /// The never-grow rule once compared the raw encoder output with the source, before
+    /// oxipng ran. A 16-bit screenshot's unoptimized encode was larger than the original,
+    /// so the tool published the untouched source — at the source's dimensions — while
+    /// the dialog said "600 × 400". Optimizing first and comparing after is the fix.
+    #[test]
+    fn a_scaled_screenshot_is_scaled_and_smaller() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "screenshot.png",
+            vec![
+                os("-size"),
+                os("1600x1000"),
+                os("xc:#f4f4f2"),
+                os("-fill"),
+                os("#202020"),
+                os("-draw"),
+                os("rectangle 40,60 1560,120"),
+                os("-draw"),
+                os("rectangle 40,200 900,260"),
+                os("-depth"),
+                os("16"),
+            ],
+        );
+        let job = Job::new(
+            source,
+            Intent::Tool {
+                tool: ToolId::Compress,
+                params: params(json!({ "scale": 50 })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("compress");
+        let (width, height) =
+            crate::image_dimensions(&artifacts[0]).expect("the artifact is an image");
+        assert_eq!((width, height), (800, 500), "scale 50 halves the dimensions");
     }
 
     /// q100 asks for more fidelity than the source has; the re-encode is larger, so the

@@ -39,10 +39,16 @@ def main(argv: list[str]) -> int:
         print(f"gen-ui-fields: probe failed: {result.stderr.strip()}", file=sys.stderr)
         return 2
     table = json.loads(result.stdout)
-    text = json.dumps(table, indent=2, sort_keys=True) + "\n"
+    # UTF-8 in the file (`×`, `°`), not \u escapes: it is meant to be read.
+    text = json.dumps(table, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if check:
-        current = OUT.read_text() if OUT.exists() else ""
-        if current != text:
+        # Compare the data, not the bytes: the escaping style of one writer is not a
+        # difference in the table (this floor failed a check that was otherwise right).
+        try:
+            current = json.loads(OUT.read_text()) if OUT.exists() else None
+        except json.JSONDecodeError:
+            current = None
+        if current != table:
             print("gen-ui-fields: ui/src/fields.generated.json is stale", file=sys.stderr)
             return 1
         print("gen-ui-fields: up to date")

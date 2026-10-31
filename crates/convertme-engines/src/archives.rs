@@ -134,6 +134,17 @@ fn pack(
     if names.is_empty() {
         return Err(empty_archive());
     }
+    // GZIP is a single compressed stream, not a container: 7-Zip answers a second
+    // member with "E_INVALIDARG", which tells the user nothing. Say what to do.
+    if format == "gzip" {
+        let only = names.len() == 1 && dir.join(&names[0]).is_file();
+        if !only {
+            return Err(JobError::new(
+                ErrorCode::Unsupported,
+                "GZIP holds one file, not a folder: convert to TAR or ZIP instead",
+            ));
+        }
+    }
 
     let (lo, hi) = range;
     let mut cmd = Cmd::new(seven)
@@ -397,6 +408,37 @@ mod tests {
         let listing = listing.ok().expect("7-Zip reads the produced tar");
         assert!(listing.stdout.contains("one.txt"), "{}", listing.stdout);
         assert!(listing.stdout.contains("two.txt"), "{}", listing.stdout);
+    }
+
+    /// GZIP holds one stream. A folder's worth of files must be refused with advice,
+    /// not with 7-Zip's `E_INVALIDARG`.
+    #[test]
+    fn gzip_refuses_a_folder_and_says_what_to_do() {
+        let Some(tools) = toolset() else { return };
+        let seven = tools.path(ToolKey::SevenZip).expect("7zz");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("src dir");
+        fs::write(src.join("one.txt"), b"one").expect("one");
+        fs::write(src.join("two.txt"), b"two").expect("two");
+        let zip = tmp.path().join("bundle.zip");
+        make_zip(&seven, &src, &zip, &["one.txt", "two.txt"]);
+
+        let error = run_job(
+            &tools,
+            &zip,
+            Intent::Convert {
+                target: FormatId("GZIP"),
+            },
+            tmp.path(),
+        )
+        .expect_err("two files cannot become one gzip stream");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("TAR or ZIP"),
+            "the message must say what to do instead: {}",
+            error.message
+        );
     }
 
     #[test]

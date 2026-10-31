@@ -430,8 +430,24 @@ CASES: list[Case] = [
     convert("pdf-to-pptx", "pdf/report-5-pages.pdf", "PPTX", package_check("PPTX")),
     tool_case("pdf-organize", "pdf/report-5-pages.pdf", "organize", "pdf",
               {"order": [1, 2, 3, 4, 5]}, pdf_check(pages=5)),
-    tool_case("pdf-merge-order", "pdf/report-5-pages.pdf", "merge", "pdf", {},
-              pdf_check(pages=5)),
+    # Merge needs the whole selection: the CLI takes every input as one job.
+    Case(
+        "pdf-merge-order",
+        ["pdf/report-5-pages.pdf", "pdf/scanned-3-pages.pdf"],
+        [
+            "tool",
+            "{input}",
+            "--tool",
+            "merge",
+            "--category",
+            "pdf",
+            "--params",
+            "{}",
+            "--overwrite",
+            "replace",
+        ],
+        pdf_check(pages=8),
+    ),
     # Documents, slides, spreadsheets (LibreOffice-dependent ones skip without it)
     convert("doc-md-to-pdf", "documents/report.md", "PDF", pdf_check(at_least_one_page=True)),
     convert("doc-md-to-html", "documents/report.md", "HTML", text_check(20)),
@@ -573,6 +589,9 @@ def hint_for(stderr: str) -> str | None:
         "no decode delegate",
         "unable to load module",
         "is not supported",
+        # A property of the input, not a conversion bug: a silent clip has no audio
+        # to put in an MP3.
+        "the input has no audio track",
     ):
         if marker in lowered:
             return stderr.strip().splitlines()[0][:160]
@@ -629,15 +648,18 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
             record["checks"] = case.check(flattened)
         failures = [check for check in record["checks"] if not check.get("ok")]
         record["status"] = "failed" if failures else "passed"
-        # Keep the artifacts worth looking at with the report.
-        kept = out_dir / case.name
-        kept.mkdir(parents=True, exist_ok=True)
-        for path in produced[:4]:
-            target = kept / path.name
-            if path.is_dir():
-                shutil.copytree(path, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(path, target)
+        # Keep the artifact of a *failed* case (that is when someone needs to look at
+        # it). A passing matrix run produces gigabytes of video otherwise, and the
+        # first version of this filled the disk mid-audit.
+        if failures:
+            kept = out_dir / case.name
+            kept.mkdir(parents=True, exist_ok=True)
+            for path in produced[:2]:
+                target = kept / path.name
+                if path.is_dir():
+                    shutil.copytree(path, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(path, target)
         return record
     finally:
         shutil.rmtree(work, ignore_errors=True)

@@ -32,6 +32,9 @@ cargo fmt --all --check
 
 step "front end"
 npm --prefix ui ci --no-audit --no-fund >/dev/null
+# The mock renders the backend's field table, written to ui/src/fields.generated.json.
+# A stale file means the browser harness would render a different dialog from the app.
+python3 scripts/gen-ui-fields.py --check
 npm --prefix ui run typecheck
 npm --prefix ui run test:geometry
 npm --prefix ui run test:fields
