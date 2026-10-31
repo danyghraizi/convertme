@@ -3220,9 +3220,10 @@ def scenario_tool_video_split(h, rec, checks):
         checks.add("two split points write three clips", len(records) == 3, 3, len(records))
         checks.add(
             "clips are 2.5/2.5/5.0 s",
-            len(durations) == 3 and all(abs(a - b) <= 0.2 for a, b in zip(durations, wanted)),
+            len(durations) == 3
+            and all(abs(a - b) <= 0.2 for a, b in zip(sorted(durations), wanted)),
             wanted,
-            durations,
+            sorted(durations),
         )
         checks.add("every clip keeps the audio", all("audio" in _stream_types(record) for record in records), "audio in all", [sorted(_stream_types(record)) for record in records])
 

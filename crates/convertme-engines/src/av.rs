@@ -1068,7 +1068,9 @@ fn split(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             .arg(&job.source)
             .arg("-t")
             .arg(secs(*end - *start))
-            .args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
+            // No `-avoid_negative_ts make_zero`: on this muxer it turns a 2.5 s
+            // section into a 5 s one by keeping the original offset.
+            .args(["-c", "copy"]);
         if let Some(m) = muxer {
             cmd = cmd.args(["-f", m]);
         }
