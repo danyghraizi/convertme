@@ -830,13 +830,15 @@ editor, the crop readout) did not grow the row: the control overflowed and drew 
 of the following field. The dialog looked like the screenshot was corrupted — and no
 screenshot test noticed, because both rows existed.
 
-**Rule.** A row must be as tall as what it holds: `align-self: start` on the item, so its
-own content decides the height. Measure *overlaps* between sibling controls, not just
-their presence, and treat an overlap as a layout failure.
+**Rule.** A row must be as tall as what it holds: in a flex column, `flex: 0 0 auto` on
+the item lets its own content decide the height. **Do not use `align-self: start` for
+this** — in a flex column that is the horizontal axis and shrink-wraps the row (the
+regression in lesson 64). Measure *overlaps* between sibling controls, not just their
+presence, and treat an overlap as a layout failure.
 
-**Evidence.** The harness's overlap probe reported `#ffffff / 0` and `#101418 / 4`; with
-`align-self: start` the colour row measures 76 px with the control inside, and the images
-pass reports no overlaps.
+**Evidence.** The harness's overlap probe reported `#ffffff / 0` and `#101418 / 4`; the
+colour row measures 76 px with the control inside, and the images pass reports no
+overlaps.
 
 ## 59. Percentages on a letterboxed preview are not percentages of the picture
 

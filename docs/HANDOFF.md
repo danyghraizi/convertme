@@ -34,18 +34,21 @@ A full `./scripts/app-e2e.py` takes ~16 minutes and is the acceptance run.
 ## Invariants a change must not break
 
 1. **One sheet, not a takeover.** `.dialog-sheet` is a flex column (head → file line →
-   optional preview band → scrolling fields → footer), 600 px wide, dragged by its head,
-   resized by its corner, closed from the top right. The preview band is a sibling of the
-   scroller, never an item inside it.
-2. **Rows are as tall as their content.** `.field { align-self: start }` and a flex-column
-   `.modal-fields`: a stretched grid row let a colour strip or the gradient editor paint
-   over the next row. The harness fails on overlaps.
+   optional preview band → scrolling fields → footer), 600 px by default (up to 920 px
+   when resized), dragged by its head, resized from its visible corner and bottom/right
+   edges, closed from the top right. The preview band is a sibling of the scroller, never
+   an item inside it.
+2. **Rows are the stacked form.** The label sits above a full-width control. Height comes
+   from `flex: 0 0 auto` on the children; never use `align-self` on `.field` inside the
+   flex-column `.modal-fields` (that is the horizontal axis and shrink-wraps every row —
+   lesson 64). The harness asserts ≥ 90 % row fill and fails on overlaps.
 3. **The preview is the engine's output.** A preview that is a lookalike is a second
    implementation waiting to disagree (`docs/LESSONS.md` 31). Photo/collage/audio
    previews run the real tool and cache the artifact.
 4. **The web view decodes no media.** WebKitGTK's media stack crashed the process on
-   `Play`; the video transport walks the filmstrip, and an audio preview is written to the
-   cache and handed to the desktop player (`play_preview`).
+   `Play`; video playback walks the `video_frames` still sequence, and an audio preview
+   plays through the headless system sink in `play_preview`. No `<audio>` or `<video>`
+   element exists anywhere, including `preview.tsx` (lessons 61, 66).
 5. **One field table.** `commands.rs::fields_for` is the only description of a tool's
    controls; `ui/src/fields.generated.json` is generated from it and a test fails when it
    is stale. An editor that owns a value marks the field `hidden` (the value is still
@@ -114,9 +117,9 @@ Cause → fix → measurement for each; lessons 57–63.
 | add background "broke" | a tall control (gradient editor, colour strip) was stretched into a 40 px row and painted over the next row | flex-column field list; each row sized by content; sheet is a flex column too | overlap probe went from `#101418 / 4` to none across 31 dialogs |
 | "make the preview always viewable" | the preview was one item in the scrolling list | it is a band between the file line and the scroller | the band is outside `.modal-fields` |
 | metadata "does it fill what is there?" | reader emitted raw EXIF names and never read PNG text chunks; the rows use friendly names | one vocabulary; PNG `tEXt`/`iTXt` read (`comment` → `Title`) | unit test + scenarios reopen the published file and read `Title` |
-| white outline on "Search metadata" | WebKit's native search decoration | filled pill, `appearance: none`, ring only on `:focus-visible` | `images-metadata.png` |
-| "playing the video crashed the app" | `Play` mounted `<video>`; WebKitGTK's media stack killed the process | no media element; Play walks the filmstrip playhead | `dialogs-video` stays alive |
-| "the audio doesn't play" | the preview's work dir was deleted **before** the transcode (always failed); `<audio>` wedged WebKit | transcode before cleanup; command on `spawn_blocking`; file opens in the desktop player | `tool-audio-bleep`: MP3 in cache, 1 kHz tone at the drawn range, dialog still open |
+| white outline on "Search metadata" | WebKit's native search decoration | filled control, `appearance: none`, ring only on `:focus-visible` | `images-metadata.png` |
+| "playing the video crashed the app" | `Play` mounted `<video>`; WebKitGTK's media stack killed the process | no media element; Play walks sampled stills (`video_frames` since Round 3) | `dialogs-video` stays alive |
+| "the audio doesn't play" | the preview's work dir was deleted **before** the transcode (always failed); `<audio>` wedged WebKit | transcode before cleanup; command on `spawn_blocking`; headless sink (`play_preview` since Round 3) | `tool-audio-bleep`: MP3 in cache, 1 kHz tone at the drawn range, dialog still open |
 | timecodes untypable in a redaction row | the row list was keyed by identity: every keystroke rebuilt the focused `<input>` | `<Index>` rows; number inputs commit on change | `tool-video-redact` types `0.5`, frames change inside 0.5–2.0 s |
 | box spacing | 4 px gaps around 18 px swatches | 6 px gaps around 20 px swatches | `images-collage.png` |
 
@@ -224,9 +227,10 @@ Measured before this round; no hot path changed except the audio preview (now a
 4. **AVIF/HEIC** cannot be decoded by the ImageMagick build on this machine (no
    `heic.la` coder module), so those pairs skip in the audit. The capability probe
    records the feature flags; the wheel does not yet mark them unavailable.
-5. **Audio playback is delegated.** The window never decodes audio; the preview file
-   opens in the desktop player. In-app playback would need a working sink and a fallback
-   that cannot wedge the web process (lesson 61).
+5. **Audio playback is delegated to a headless sink.** The window never decodes audio;
+   `play_preview` probes `ffplay`, `mpv`, `paplay`, `pw-play`, `aplay` and falls back to
+   the desktop opener only when none exists. There is no pause/seek: the command resolves
+   when the sound ends (lesson 66).
 6. **Perf was not re-measured this round.** The only touched hot path is the audio
    preview; re-run `perf-audit.py --baseline artifacts/perf/baseline.json` when a change
    touches previews, the queue or startup.
