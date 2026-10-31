@@ -772,3 +772,32 @@ the engine layer (`quality-audit.py`) instead of pretending the dialog was verif
 **Evidence.** `scroll_dialog` plus `ensure_visible` turned the normalize readout and the
 video crop canvas from "absent" into present; `tool-audio-normalize` and
 `tool-video-crop` pass, and `audio-bleep`/`video-redact` name the part the audit covers.
+
+## 55. The floor of a search is one measurement, not the walk
+
+**Trap.** The compress target search walked palette 256 → 2 across up to three
+downscales to find the smallest image it could make. When the target was unreachable
+(a 1,000-byte poster) that walk was the answer: thirteen seconds to learn "no".
+
+**Rule.** Compute the *floor* first — the smallest artifact the format can produce (two
+85 % downscales and the minimum palette) — and compare it with the target before walking
+anything. If the floor is above the target, nothing in the ladder can be below it, and
+the floor is the result. Reaching the same artifact by the shortest path is what keeps
+the reachable cases byte-identical.
+
+**Evidence.** `compress-target-1000b-poster`: 13,445 ms → 1,267 ms, and the pinned
+1,597 B artifact for a reachable target is unchanged (`compress-poster-16-target`).
+
+## 56. A measurement that includes setup measures the setup
+
+**Trap.** The preview command re-probed the host on every invocation: ten `--version`
+spawns per measurement. A 186 ms ImageMagick preview was reported as 777 ms, and the
+team nearly optimised the encoder instead of the wrapper.
+
+**Rule.** A measurement harness must run what the app runs. The app probes once at
+startup and reuses the capability cache; the CLI's preview seeds the same cache and then
+does only the work. Subtract process start explicitly, and print that subtraction — the
+number is only comparable if the reader can see what was removed.
+
+**Evidence.** `photo-preview-1024`: 907 → 201 ms with the probe removed and the JPEG
+decoder asked for a 2× image (`jpeg:size`), which is what a 1024 px preview can afford.
