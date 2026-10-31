@@ -404,18 +404,26 @@
       },
       {
         "default": [],
+        "hidden": true,
         "key": "shapes",
         "kind": "shapes",
         "label": "Annotations"
       },
       {
         "default": "#ff5a36",
+        "hidden": true,
         "key": "color",
         "kind": "color",
         "label": "Ink colour"
       }
     ],
     "collage": [
+      {
+        "default": [],
+        "key": "order",
+        "kind": "files",
+        "label": "Image order"
+      },
       {
         "default": "grid",
         "key": "style",
@@ -516,14 +524,6 @@
         "min": 0.0,
         "step": 1.0,
         "unit": "px"
-      },
-      {
-        "default": [],
-        "group": "Spacing & background",
-        "hidden": true,
-        "key": "order",
-        "kind": "files",
-        "label": "Image order"
       }
     ],
     "compress": [
@@ -639,30 +639,6 @@
           "3:4",
           "4:5"
         ]
-      },
-      {
-        "control": true,
-        "default": 0.0,
-        "hidden": true,
-        "key": "w",
-        "kind": "number",
-        "label": "Width",
-        "max": 100000.0,
-        "min": 0.0,
-        "step": 1.0,
-        "unit": "px"
-      },
-      {
-        "control": true,
-        "default": 0.0,
-        "hidden": true,
-        "key": "h",
-        "kind": "number",
-        "label": "Height",
-        "max": 100000.0,
-        "min": 0.0,
-        "step": 1.0,
-        "unit": "px"
       }
     ],
     "edit-photo": [

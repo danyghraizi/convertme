@@ -152,22 +152,23 @@ def tool_table() -> dict:
 
 
 def design_failures(info: dict, key: str, tool: str, table: dict) -> list[str]:
-    """The two-pane contract, measured in the browser."""
+    """The dialog contract, measured in the browser.
+
+    One sheet that is never the whole window, a title from the tool table, a primary
+    action that names what it does, and no control painted over another.
+    """
     problems = []
     sheet = info.get("sheet") or {}
-    rail = info.get("rail")
     screen = info.get("screen") or {}
-    if not rail:
-        problems.append(f"{key}/{tool}: no rail beside the sheet")
-    else:
-        if abs(rail.get("w", 0) - 336) > 2:
-            problems.append(f"{key}/{tool}: rail is {rail.get('w')} px, expected 336")
-        if abs(sheet.get("w", 0) - 600) > 2:
-            problems.append(f"{key}/{tool}: sheet is {sheet.get('w')} px, expected 600")
-        if rail.get("x", 0) + rail.get("w", 0) > screen.get("w", 0):
-            problems.append(f"{key}/{tool}: the rail leaves the viewport")
-    if not info.get("railTitle"):
-        problems.append(f"{key}/{tool}: the rail has no title")
+    # The sheet is a dialog, not the window: it keeps a margin on both sides.
+    if sheet.get("x", 0) < 8 or sheet.get("y", 0) < 8:
+        problems.append(f"{key}/{tool}: the sheet touches the window edge")
+    if sheet.get("x", 0) + sheet.get("w", 0) > screen.get("w", 0) - 8:
+        problems.append(f"{key}/{tool}: the sheet touches the right edge")
+    if sheet.get("w", 0) > screen.get("w", 0) * 0.85:
+        problems.append(f"{key}/{tool}: the sheet is {sheet.get('w')} px wide, near full screen")
+    if not info.get("sheetTitle"):
+        problems.append(f"{key}/{tool}: the sheet has no title")
     if not info.get("primary"):
         problems.append(f"{key}/{tool}: the footer has no primary action")
     # A row whose label and control do not share a centre line is the grammar broken.
@@ -180,19 +181,14 @@ def design_failures(info: dict, key: str, tool: str, table: dict) -> list[str]:
             )
     meta = table.get((key, tool))
     if meta:
-        if info.get("railTitle") != meta["title"]:
+        if info.get("sheetTitle") != meta["title"]:
             problems.append(
-                f"{key}/{tool}: rail title {info.get('railTitle')!r} != backend {meta['title']!r}"
+                f"{key}/{tool}: sheet title {info.get('sheetTitle')!r} != backend {meta['title']!r}"
             )
         expected = meta["action"]
         if expected.count("{n}") == 0 and info.get("primary") != expected:
             problems.append(
                 f"{key}/{tool}: primary {info.get('primary')!r} != backend {expected!r}"
-            )
-        if len(info.get("benefits", [])) != len(meta["benefits"]):
-            problems.append(
-                f"{key}/{tool}: {len(info.get('benefits', []))} benefits, backend has "
-                f"{len(meta['benefits'])}"
             )
     return problems
 
@@ -248,19 +244,11 @@ def measure_modal(m: Marionette):
       const r = el.getBoundingClientRect();
       return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
     };
-    // The sheet is the form; the rail is the copy beside it.
+    // One sheet: the tool's copy lives in the card that opened it, not beside it.
     const sheet = document.querySelector('.dialog-sheet') || document.querySelector('.modal');
     const modal = document.querySelector('.modal') || sheet;
     if (!modal) return { dialog: false };
-    const rail = document.querySelector('.dialog-rail');
-    const railText = (sel) => {
-      const el = document.querySelector(sel);
-      return el ? el.innerText.trim() : '';
-    };
-    const railTitle = railText('.rail-title');
-    const railEyebrow = railText('.rail-eyebrow');
-    const railCopy = railText('.rail-copy');
-    const benefits = [...document.querySelectorAll('.rail-benefits li')].map((li) => li.innerText.trim());
+    const sheetTitle = (document.querySelector('.sheet-title') || {}).innerText || '';
     const primary = document.querySelector('[data-testid="primary"]');
     // A row is aligned when the label's and its control's vertical centres agree.
     const rows = [...document.querySelectorAll('.modal .field')].map((row) => {
@@ -297,19 +285,48 @@ def measure_modal(m: Marionette):
         }
       }
     }
+    // Overlapping controls: a row drawn on top of another row is a layout defect the
+    // eye catches and a screenshot diff does not. Marks drawn over a canvas are the
+    // editor's own overlay and are excluded.
+    const OVERLAY = '.crop-region, .crop-handle, .crop-shade, .boxes-region, .boxes-handle,'
+      + ' .annotate-shape, .annotate-handle, .waveform-range, .waveform-selection,'
+      + ' .waveform-playhead, .waveform-marker, .timeline-playhead, .timeline-selection,'
+      + ' .timeline-marker, .colour-popover, .fill-preset, .stop-row';
+    const OUTSIDE = '.button, .modal-footer';
+    const measured = [...document.querySelectorAll(
+      '.modal-fields .field-label, .modal-fields .field-help, .modal-fields input,'
+      + ' .modal-fields select, .modal-fields output, .modal-fields .segmented,'
+      + ' .modal-fields .metadata-row, .modal-fields .crop-surface, .modal-fields .modal-file'
+    )]
+      .filter((el) => !el.closest(OVERLAY) && !el.closest(OUTSIDE))
+      .map((el) => ({ el, r: el.getBoundingClientRect() }))
+      .filter((item) => item.r.width > 1 && item.r.height > 1);
+    const overlaps = [];
+    for (let i = 0; i < measured.length; i += 1) {
+      for (let j = i + 1; j < measured.length; j += 1) {
+        const a = measured[i];
+        const b = measured[j];
+        if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+        const w = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left);
+        const h = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+        if (w <= 1 || h <= 1) continue;
+        const smaller = Math.min(a.r.width * a.r.height, b.r.width * b.r.height);
+        if ((w * h) / smaller < 0.35) continue;
+        const name = (el) => (el.innerText || el.getAttribute('aria-label') || el.value
+          || el.tagName).trim().slice(0, 28);
+        overlaps.push(`${name(a.el)} / ${name(b.el)}`);
+      }
+    }
     const scroller = document.querySelector('.modal-fields');
     return {
+      overlaps: [...new Set(overlaps)].slice(0, 12),
       dialog: true,
       labels: fields,
       controls,
       modal: modalRect,
       screen: { w: window.innerWidth, h: window.innerHeight },
       sheet: rect(sheet),
-      rail: rail ? rect(rail) : null,
-      railTitle,
-      railEyebrow,
-      railCopy,
-      benefits,
+      sheetTitle: sheetTitle.trim(),
       primary: primary ? primary.innerText.trim() : '',
       primaryBox: rect(primary),
       rows,
@@ -461,6 +478,58 @@ def run_category(
                 close_dialog(m)
             else:
                 failures.append("images-lossless/compress: no dialog")
+        if key == "images":
+            # The aspect pills must produce the ratio they name, in the picture's own
+            # pixels. A box drawn on a letterboxed preview is square on the black bars
+            # and wrong in the file, which is exactly what shipped once.
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files=images"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "Images")
+            m.js("document.querySelectorAll('.tool-card')[1].click(); return true;")
+            if m.wait_for("document.querySelector('.crop-frame')", 6):
+                for label, expected in (("1:1", 1.0), ("9:16", 9 / 16)):
+                    m.js(
+                        "const b = [...document.querySelectorAll('.segmented button')]"
+                        f".find((x) => x.innerText.trim() === {json.dumps(label)});"
+                        "if (b) b.click(); return !!b;"
+                    )
+                    time.sleep(0.5)
+                    probe = m.js(
+                        """
+                        const frame = document.querySelector('.crop-frame');
+                        const region = document.querySelector('.crop-region');
+                        const inputs = [...document.querySelectorAll('.crop-pixel input')];
+                        if (!frame || !region || inputs.length < 2) return null;
+                        const fr = frame.getBoundingClientRect();
+                        const rr = region.getBoundingClientRect();
+                        return {
+                          frame: { w: Math.round(fr.width), h: Math.round(fr.height) },
+                          region: { w: Math.round(rr.width), h: Math.round(rr.height) },
+                          screenRatio: rr.width / rr.height,
+                          pixelRatio: Number(inputs[0].value) / Number(inputs[1].value),
+                          pixels: inputs.map((i) => Number(i.value)),
+                        };
+                        """
+                    )
+                    report.append(
+                        {"category": "images", "tool": f"crop-{label}", "dialog": True,
+                         "probe": probe}
+                    )
+                    if not probe:
+                        failures.append(f"images/crop: no crop frame for {label}")
+                        continue
+                    if abs(probe["screenRatio"] - expected) > 0.02:
+                        failures.append(
+                            f"images/crop: {label} draws a {probe['screenRatio']:.3f} box"
+                        )
+                    if abs(probe["pixelRatio"] - expected) > 0.02:
+                        failures.append(
+                            f"images/crop: {label} saves {probe['pixels'][0]}x"
+                            f"{probe['pixels'][1]} px"
+                        )
+                close_dialog(m)
+            else:
+                failures.append("images/crop: the crop surface never appeared")
         if key == "video":
             # Typing the output size must work before anything is drawn: the reference
             # dialog lets you enter exact dimensions first.
@@ -566,6 +635,8 @@ def run_category(
             if modal and (modal.get("w", 0) > screen.get("w", 0) or modal.get("h", 0) > screen.get("h", 0)):
                 failures.append(f"{key}/{tool}: modal larger than the viewport")
             failures.extend(design_failures(info, key, tool, table))
+            for pair in info.get("overlaps", []):
+                failures.append(f"{key}/{tool}: overlapping controls: {pair}")
             if info.get("overflow"):
                 failures.append(f"{key}/{tool}: a field overflows the modal horizontally")
             if info.get("preview") and not info.get("previewLoaded"):

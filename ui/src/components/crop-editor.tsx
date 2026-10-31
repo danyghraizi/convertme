@@ -13,8 +13,6 @@ interface CropEditorProps {
   value: Box | null;
   /** `free` or `w:h`; the region keeps this ratio while it is dragged. */
   aspect: string;
-  /** Source pixels behind the preview, so the dialog can show W/H inputs. */
-  onSize?: (size: { w: number; h: number }) => void;
   onChange: (box: Box) => void;
 }
 
@@ -28,6 +26,7 @@ export default function CropEditor(props: CropEditorProps) {
   const [note, setNote] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   let surface: HTMLDivElement | undefined;
+  let frame: HTMLDivElement | undefined;
   let rect: DOMRect | null = null;
   let anchor: { x: number; y: number } | null = null;
   let start: Box | null = null;
@@ -45,6 +44,7 @@ export default function CropEditor(props: CropEditorProps) {
     void ipc
       .previewThumb(path, 1024)
       .then((url) => {
+        setNote('');
         const image = new Image();
         image.onload = () => {
           // The preview is a thumbnail; the W/H row must show the file's own pixels.
@@ -53,11 +53,9 @@ export default function CropEditor(props: CropEditorProps) {
           void ipc
             .imageSize(path)
             .then((size) => {
-              const source = size ?? fallback;
-              setNatural(source);
-              props.onSize?.(source);
+              setNatural(size ?? fallback);
             })
-            .catch(() => props.onSize?.(fallback));
+            .catch(() => setNatural(fallback));
         };
         image.src = ipc.assetUrl(url);
         setPreview(ipc.assetUrl(url));
@@ -113,7 +111,7 @@ export default function CropEditor(props: CropEditorProps) {
   }
 
   function point(event: PointerEvent): { x: number; y: number } {
-    const r = rect ?? surface?.getBoundingClientRect();
+    const r = rect ?? frame?.getBoundingClientRect();
     if (!r || r.width === 0) return { x: 0, y: 0 };
     return {
       x: clamp01((event.clientX - r.left) / r.width),
@@ -122,8 +120,8 @@ export default function CropEditor(props: CropEditorProps) {
   }
 
   function begin(event: PointerEvent, which: Handle): void {
-    if (!surface) return;
-    rect = surface.getBoundingClientRect();
+    if (!surface || !frame) return;
+    rect = frame.getBoundingClientRect();
     mode = which;
     anchor = point(event);
     start = { ...box() };
@@ -207,6 +205,24 @@ export default function CropEditor(props: CropEditorProps) {
     setNote('');
   }
 
+  /**
+   * Typing a dimension moves the matching edge and keeps the origin, in fractions of
+   * the source. The rectangle stays inside the picture and never collapses.
+   */
+  function setPixels(axis: 'w' | 'h', pixels: number): void {
+    const size = natural();
+    const total = axis === 'w' ? size.w : size.h;
+    if (total <= 0 || !Number.isFinite(pixels) || pixels <= 0) return;
+    const current = box();
+    const fraction = Math.min(
+      axis === 'w' ? 1 - current.x : 1 - current.y,
+      pixels / total,
+    );
+    if (fraction < MIN) return;
+    props.onChange(axis === 'w' ? { ...current, w: fraction } : { ...current, h: fraction });
+    setNote('');
+  }
+
   const pixels = () => {
     const { w, h } = natural();
     const b = box();
@@ -241,42 +257,66 @@ export default function CropEditor(props: CropEditorProps) {
         onPointerCancel={end}
       >
         <Show when={preview()} fallback={<p class="crop-placeholder">Preview unavailable</p>}>
-          <img src={preview()} alt="Crop area" draggable={false} />
-          <span class="crop-shade" />
-          <div
-            class="crop-region"
-            style={{
-              left: `${box().x * 100}%`,
-              top: `${box().y * 100}%`,
-              width: `${box().w * 100}%`,
-              height: `${box().h * 100}%`,
-            }}
-            onPointerDown={(event) =>
-              // With the whole picture selected there is nothing to move; a drag
-              // inside starts a new region instead, as the reference does.
-              begin(event, box().w > 0.99 && box().h > 0.99 ? 'new' : 'move')
-            }
-            onPointerMove={move}
-            onPointerUp={end}
-            onPointerCancel={end}
-          >
-            {handles.map((handle) => (
-              <span
-                class={`crop-handle crop-handle-${handle.id}`}
-                style={handle.style}
-                onPointerDown={(event) => begin(event, handle.id)}
-                onPointerMove={move}
-                onPointerUp={end}
-                onPointerCancel={end}
-              />
-            ))}
+          {/* The frame is exactly the picture: a letterboxed preview would put the
+              region on the black bars, so a 1:1 box was not 1:1. */}
+          <div class="crop-frame" ref={frame}>
+            <img src={preview()} alt="Crop area" draggable={false} />
+            <span class="crop-shade" />
+            <div
+              class="crop-region"
+              style={{
+                left: `${box().x * 100}%`,
+                top: `${box().y * 100}%`,
+                width: `${box().w * 100}%`,
+                height: `${box().h * 100}%`,
+              }}
+              onPointerDown={(event) =>
+                // With the whole picture selected there is nothing to move; a drag
+                // inside starts a new region instead, as the reference does.
+                begin(event, box().w > 0.99 && box().h > 0.99 ? 'new' : 'move')
+              }
+              onPointerMove={move}
+              onPointerUp={end}
+              onPointerCancel={end}
+            >
+              {handles.map((handle) => (
+                <span
+                  class={`crop-handle crop-handle-${handle.id}`}
+                  style={handle.style}
+                  onPointerDown={(event) => begin(event, handle.id)}
+                  onPointerMove={move}
+                  onPointerUp={end}
+                  onPointerCancel={end}
+                />
+              ))}
+            </div>
           </div>
         </Show>
       </div>
       <div class="crop-readout">
-        <span>
-          {pixels().w} × {pixels().h} px
-        </span>
+        <label class="crop-pixel">
+          <span>Width</span>
+          <input
+            type="number"
+            aria-label="Width"
+            min="1"
+            step="1"
+            value={pixels().w}
+            onInput={(event) => setPixels('w', event.currentTarget.valueAsNumber)}
+          />
+        </label>
+        <label class="crop-pixel">
+          <span>Height</span>
+          <input
+            type="number"
+            aria-label="Height"
+            min="1"
+            step="1"
+            value={pixels().h}
+            onInput={(event) => setPixels('h', event.currentTarget.valueAsNumber)}
+          />
+        </label>
+        <span class="field-unit">px</span>
         <span class="crop-origin">
           at {pixels().x}, {pixels().y}
         </span>

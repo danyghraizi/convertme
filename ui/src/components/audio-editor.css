@@ -21,12 +21,6 @@
   color: var(--ink-2);
 }
 
-.audio-output {
-  width: 100%;
-  margin-top: 8px;
-  height: 34px;
-}
-
 .visualizer-frame {
   position: relative;
   width: 100%;

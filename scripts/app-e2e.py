@@ -1266,25 +1266,31 @@ class Session:
         )
 
     def set_entry(self, label: str, value: str):
-        node = self.entry(label)
-        if node is None:
-            raise ScenarioFailure(f"entry {label!r} not found")
-        self.ensure_visible(node)
-        self.focus(node)
-        self.click(node)
-        self.type_text(value)
-        time.sleep(0.35)
-        node = self.entry(label)
-        actual = self.text(node) if node is not None else ""
-        if actual != value:
-            # A number input may need a second pass after the select-all.
+        """Type into an entry and read it back, re-locating it on every attempt.
+
+        A field that appears in response to a checkbox shifts the dialog; a click that
+        used the pre-shift extents lands somewhere else and the typing goes nowhere. Each
+        attempt re-finds the node, so the retry is a fresh gesture rather than a repeat.
+        """
+        actual = ""
+        for _attempt in range(3):
+            node = self.entry(label)
+            if node is None:
+                raise ScenarioFailure(f"entry {label!r} not found")
+            self.ensure_visible(node)
             self.focus(node)
+            self.click(node)
+            # The click is a coordinate gesture; make sure it landed on the entry.
+            node = self.entry(label)
+            if node is not None:
+                self.focus(node)
             self.type_text(value)
-            time.sleep(0.3)
+            time.sleep(0.35)
             node = self.entry(label)
             actual = self.text(node) if node is not None else ""
-        if actual != value:
-            raise ScenarioFailure(f"entry {label!r} reads {actual!r}, wanted {value!r}")
+            if actual == value:
+                return
+        raise ScenarioFailure(f"entry {label!r} reads {actual!r}, wanted {value!r}")
 
     def slider(self, label):
         return self.find(role="slider", name=label) or self.find(
@@ -1355,6 +1361,35 @@ class Session:
             time.sleep(0.08)
         run(["xdotool", "mouseup", "1"], timeout=10)
         time.sleep(0.6)
+
+    def move_dialog_by(self, dx: int, dy: int):
+        """Drag the dialog's head by (dx, dy) screen pixels, with real mouse events."""
+        box = self.extents(self.sheet())
+        if not box:
+            raise Skip("the sheet has no extents to drag")
+        x, y = box[0] + box[2] // 2, box[1] + 18
+        run(["xdotool", "mousemove", str(x), str(y)], timeout=10)
+        time.sleep(0.15)
+        run(["xdotool", "mousedown", "1"], timeout=10)
+        time.sleep(0.15)
+        for step in range(1, 6):
+            run(
+                ["xdotool", "mousemove", str(x + dx * step // 5), str(y + dy * step // 5)],
+                timeout=10,
+            )
+            time.sleep(0.06)
+        run(["xdotool", "mouseup", "1"], timeout=10)
+        time.sleep(0.5)
+
+    def centre_dialog(self):
+        """Double-click the head: the dialog returns to the centred position."""
+        box = self.extents(self.sheet())
+        if not box:
+            raise Skip("the sheet has no extents to double-click")
+        x, y = box[0] + box[2] // 2, box[1] + 18
+        run(["xdotool", "mousemove", str(x), str(y)], timeout=10)
+        run(["xdotool", "click", "--repeat", "2", "--delay", "90", "1"], timeout=10)
+        time.sleep(0.5)
 
     def mark_region(self, dialog, start=(0.25, 0.3), end=(0.6, 0.7)):
         """Drag one rectangle on the boxes canvas inside the virtual display."""
@@ -1518,7 +1553,13 @@ class Session:
         return (_safe(node, "get_name") or "") if node is not None else ""
 
     def press_primary(self):
+        # The accessibility tree is rebuilt for a moment when a preview inserts its
+        # player element; wait for the dialog instead of failing the scenario.
+        deadline = time.time() + 3
         dialog = self.dialog()
+        while dialog is None and time.time() < deadline:
+            time.sleep(0.3)
+            dialog = self.dialog()
         if dialog is None:
             raise ScenarioFailure("the primary action was pressed with no dialog")
         button = self.primary_button()
@@ -1554,12 +1595,6 @@ class Session:
             return self.check_box(label)
         return self.find(role="check box", name=label, within=dialog)
 
-    def rail(self):
-        dialog = self.dialog()
-        if dialog is None:
-            return None
-        return self.find(name="About this tool", within=dialog)
-
     def sheet(self):
         """The settings pane: the form inside the dialog wrapper."""
         dialog = self.dialog()
@@ -1568,17 +1603,11 @@ class Session:
         return self.find(tag="form", within=dialog) or dialog
 
     def dialog_info(self) -> dict:
-        """Everything the two-pane design promises, measured."""
+        """The dialog contract, measured: one sheet, its copy, its action."""
         dialog = self.dialog()
         if dialog is None:
             return {"dialog": False}
-        rail = self.rail()
         sheet = self.sheet()
-        # AT-SPI text carries the newlines the DOM has; the copy is compared stripped.
-        rail_texts = [
-            " ".join(text.split()) for role, text in self.all_texts(within=rail)
-            if text.strip() and role in ("label", "list item", "heading", "paragraph")
-        ] if rail is not None else []
         buttons = [_safe(node, "get_name") or "" for node in self.dialog_buttons()]
         # WebKit exposes an <h2> as a heading in some builds and as a label in
         # others; the sheet title is whichever one carries the tag.
@@ -1596,18 +1625,40 @@ class Session:
         return {
             "dialog": True,
             "sheet_title": sheet_title,
-            "rail_present": rail is not None,
-            "rail_texts": rail_texts,
-            "rail_title": rail_texts[1] if len(rail_texts) > 1 else "",
-            "eyebrow": rail_texts[0] if rail_texts else "",
-            "benefits": rail_texts[3:] if len(rail_texts) > 3 else [],
             "buttons": buttons,
             "primary": self.primary_label(),
             "sheet_box": list(self.extents(sheet)) if sheet is not None and self.extents(sheet) else None,
-            "rail_box": list(self.extents(rail)) if rail is not None and self.extents(rail) else None,
             "dialog_box": list(self.extents(dialog)) if self.extents(dialog) else None,
             "frame_box": list(self.frame_extents()) if self.frame_extents() else None,
         }
+
+    def strays_in_sheet(self, limit: int = 8):
+        """Controls drawn outside the sheet's box: clipped content that still "works".
+
+        A row wider than the sheet is cut by `overflow: hidden`; the screenshot shows a
+        truncated label and every functional check still passes. Measure the geometry
+        instead, in the real window.
+        """
+        sheet = self.sheet()
+        box = self.extents(sheet) if sheet is not None else None
+        if not box:
+            return []
+        sx, _sy, sw, _sh = box
+        strays = []
+        for node, _depth in _walk(sheet):
+            b = self.extents(node)
+            if not b:
+                continue
+            x, _y, w, _h = b
+            if w <= 1:
+                continue
+            if x < sx - 2 or x + w > sx + sw + 2:
+                name = (_safe(node, "get_name") or _text(node) or "").strip().replace("\n", " ")[:28]
+                role = _safe(node, "get_role_name") or ""
+                strays.append([role, name, [int(v) for v in b]])
+                if len(strays) >= limit:
+                    break
+        return strays
 
     def set_slider_auto(self, label: str, value: float):
         """Set a slider without being told its bounds: AT-SPI reports both.
@@ -2037,12 +2088,11 @@ def action_label(action: str, count: int = 0) -> str:
 
 
 def assert_design(rec, checks, session, meta, category, label):
-    """The two-pane dialog contract: copy, geometry, and one primary action.
+    """The dialog contract: copy, geometry, and one primary action.
 
-    A dialog that lost its rail still looks plausible in a screenshot, which is why
-    every one of these is a measurement rather than a picture: the rail's text must be
-    the backend's own copy, both panes must sit inside the window, and the footer must
-    carry the tool's action label.
+    Every check is a measurement, not a picture: the title must be the backend's own
+    copy, the sheet must stay a dialog inside the window, and the footer must carry the
+    tool's action label.
     """
     info = session.dialog_info()
     rec["measurements"][f"design_{label}"] = info
@@ -2056,33 +2106,32 @@ def assert_design(rec, checks, session, meta, category, label):
         expected_title,
         info["sheet_title"],
     )
+    # One sheet, never the whole window: the wheel behind it stays visible, and the
+    # dialog can be dragged and resized instead of owning the screen.
+    sheet_box = info.get("sheet_box") or [0, 0, 0, 0]
+    frame_box = info.get("frame_box") or [0, 0, 1, 1]
     checks.add(
-        f"{label}: rail present",
-        info["rail_present"],
-        "a rail beside the sheet",
-        info.get("rail_box"),
+        f"{label}: sheet keeps a margin",
+        sheet_box[0] >= frame_box[0] + 4
+        and sheet_box[1] >= frame_box[1] + 4
+        and sheet_box[0] + sheet_box[2] <= frame_box[0] + frame_box[2] - 4
+        and sheet_box[1] + sheet_box[3] <= frame_box[1] + frame_box[3] - 4,
+        f"inside {frame_box} with 4 px",
+        sheet_box,
     )
     checks.add(
-        f"{label}: rail title",
-        info["rail_title"] == expected_title,
-        expected_title,
-        info["rail_title"],
+        f"{label}: sheet is not the window",
+        sheet_box[2] < frame_box[2] * 0.9 or sheet_box[3] < frame_box[3] * 0.9,
+        "narrower than 90 % of the window",
+        (sheet_box[2], frame_box[2]),
     )
-    eyebrow = meta.get("eyebrow") or category
+    strays = session.strays_in_sheet()
+    rec["measurements"][f"strays_{label}"] = strays
     checks.add(
-        f"{label}: eyebrow",
-        (info["eyebrow"] or "").strip().lower() == eyebrow.strip().lower(),
-        eyebrow,
-        info["eyebrow"],
-    )
-    benefits = [" ".join(benefit.split()) for benefit in (meta.get("benefits") or [])]
-    # A tool with no rail copy is allowed to have none (the reference only writes copy
-    # for its own dialogs); a tool that declares benefits must show every one of them.
-    checks.add(
-        f"{label}: rail lists the tool's benefits",
-        all(benefit in info["rail_texts"] for benefit in benefits),
-        benefits,
-        info["benefits"],
+        f"{label}: every control stays inside the sheet",
+        not strays,
+        "no element wider than the sheet",
+        strays[:4],
     )
     expected_action = action_label(meta.get("action") or "Run")
     checks.add(
@@ -2104,7 +2153,7 @@ def assert_design(rec, checks, session, meta, category, label):
         info["buttons"],
     )
     frame = info.get("frame_box")
-    for pane in ("sheet_box", "rail_box"):
+    for pane in ("sheet_box",):
         box = info.get(pane)
         if not box or not frame:
             checks.add(f"{label}: {pane} measured", False, "extents", box)
@@ -3254,6 +3303,24 @@ def scenario_tool_image_metadata(h, rec, checks):
         checks.add("Title reaches the PNG comment", comment_of(outputs[0]) == "Harness", "Harness", comment_of(outputs[0]))
         checks.add("metadata leaves pixels identical", compare_pixels(os.path.join(session.workdir, "poster-portrait.png"), outputs[0]) == 0, 0, "non-zero")
 
+    with h.launch("tool-image-metadata-read", [outputs[0]]) as session:
+        session.category_hint = "Images"
+        if session.open_tool("Metadata") is None:
+            raise Skip("Metadata ran without opening a dialog")
+        deadline = time.time() + 8
+        node = None
+        while time.time() < deadline and node is None:
+            node = session.entry("Title")
+            time.sleep(0.2)
+        shown = session.text(node) if node is not None else ""
+        rec["measurements"]["metadata_shows_existing"] = shown
+        checks.add(
+            "the metadata dialog shows the existing title",
+            shown == "Harness",
+            "Harness",
+            shown,
+        )
+
 
 def scenario_tool_image_redact(h, rec, checks):
     def apply(s):
@@ -3807,9 +3874,13 @@ def scenario_tool_audio_bleep(h, rec, checks):
 
     def apply(s):
         dialog = s.dialog()
-        s.drag_bleep_range(dialog, 1.0 / 14.1, 2.0 / 14.1)
+        # One drag, at a known place: two synthetic drags on the same lane raced and the
+        # second replaced the first, so the tone ended up somewhere the check did not
+        # look. The lane appends each drag, so one is enough to prove the mapping.
         s.drag_bleep_range(dialog, 4.0 / 14.1, 5.0 / 14.1)
         time.sleep(0.5)
+        note = s.subtree_text(s.dialog())
+        rec["measurements"]["range_note"] = [line for line in note.splitlines() if "range" in line][:2]
         if s.button("With Bleeps", within=s.dialog()) is None:
             raise Skip("the bleep dialog rendered no preview row")
         if "SENSITIVE" not in _states(s.button("With Bleeps", within=s.dialog())):
@@ -3824,17 +3895,31 @@ def scenario_tool_audio_bleep(h, rec, checks):
             )
         # The "With Bleeps" preview runs the engine; the cache must gain its MP3.
         s.press_in_dialog("With Bleeps")
-        deadline = time.time() + 40
-        cache = os.path.join(h.profile, "cache", "convertme", "previews")
-        while time.time() < deadline:
-            if os.path.isdir(cache) and any(
-                name.endswith(".mp3") for _root, _dirs, names in os.walk(cache) for name in names
-            ):
-                break
-            time.sleep(0.5)
-        rec["measurements"]["bleep_preview_cached"] = any(
-            name.endswith(".mp3") for _root, _dirs, names in os.walk(cache) for name in names
+        # The command writes the MP3 into the cache the *app* uses: XDG_CACHE_HOME is
+        # set for this worker, and the outer launcher's profile is a different path.
+        cache = os.path.join(
+            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+            "convertme",
+            "previews",
         )
+        deadline = time.time() + 30
+        final = []
+        while time.time() < deadline:
+            final = [
+                name
+                for _root, _dirs, names in os.walk(cache)
+                for name in names
+                if name.endswith(".mp3") and ".preview-" not in name
+            ] if os.path.isdir(cache) else []
+            if final:
+                break
+            time.sleep(0.3)
+        dialog = s.dialog()
+        rec["measurements"]["preview_text"] = (
+            s.subtree_text(dialog)[-400:] if dialog is not None else "(no dialog)"
+        )
+        rec["measurements"]["preview_files"] = final[:6]
+        rec["measurements"]["bleep_preview_cached"] = bool(final)
 
     with h.launch("tool-audio-bleep", [fixture]) as session:
         rec["workdir"] = session.workdir
@@ -3842,12 +3927,20 @@ def scenario_tool_audio_bleep(h, rec, checks):
         record = record_outputs(rec, outputs)[0]
         checks.add("bleep keeps the duration", 13.0 < media_duration(record) < 15.0, "≈14.1 s", media_duration(record))
         checks.add("bleep rewrites the audio", record["sha256"] != sha256(os.path.join(session.workdir, "speech.wav")), "different bytes", record["sha256"][:12])
-        tone = validate.dominant_frequency(outputs[0], 1.3, 0.3)
+        # The drag above marks 4.0–5.0 s of a 14.1 s clip.
+        tone = validate.tone_strength(outputs[0], 4.4, 0.3, 1000.0)
+        source_tone = validate.tone_strength(fixture, 4.4, 0.3, 1000.0)
         checks.add(
             "the first range is a 1 kHz tone",
-            tone is not None and 800.0 <= tone <= 1200.0,
-            "≈1000 Hz",
-            tone,
+            tone is not None and tone > 100,
+            "1 kHz dominates its neighbours (>100x)",
+            None if tone is None else round(tone),
+        )
+        checks.add(
+            "the same window of the source is not a tone",
+            source_tone is not None and source_tone < 1,
+            "< 1",
+            None if source_tone is None else round(source_tone, 3),
         )
         inside = validate.rms(outputs[0], 1.3, 0.3)
         outside = validate.rms(outputs[0], 3.0, 0.4)
@@ -3885,6 +3978,26 @@ def scenario_tool_audio_metadata(h, rec, checks):
         checks.add("Title is written to the MP3", tags.get("title") == "Harness", "Harness", tags.get("title"))
         checks.add("metadata keeps audio", "audio" in _stream_types(record), "audio", sorted(_stream_types(record)))
 
+    # Reopening the dialog must show the tag the file already carries: the form is
+    # populated from the file, not presented empty for the user to retype.
+    with h.launch("tool-audio-metadata-read", [outputs[0]]) as session:
+        session.category_hint = "Audio"
+        if session.open_tool("Metadata") is None:
+            raise Skip("Metadata ran without opening a dialog")
+        deadline = time.time() + 8
+        node = None
+        while time.time() < deadline and node is None:
+            node = session.entry("Title")
+            time.sleep(0.2)
+        shown = session.text(node) if node is not None else ""
+        rec["measurements"]["metadata_shows_existing"] = shown
+        checks.add(
+            "the metadata dialog shows the existing title",
+            shown == "Harness",
+            "Harness",
+            shown,
+        )
+
 
 def scenario_tool_pdf_organize(h, rec, checks):
     source = h.fixture("pdf/report-5-pages.pdf")
@@ -3919,6 +4032,24 @@ def scenario_tool_pdf_metadata(h, rec, checks):
         info = record.get("pdf", {})
         checks.add("Title reaches the PDF info dictionary", info.get("Title") == "Harness", "Harness", info.get("Title"))
         checks.add("metadata keeps every page", info.get("Pages") == "5", "5", info.get("Pages"))
+
+    with h.launch("tool-pdf-metadata-read", [outputs[0]]) as session:
+        session.category_hint = "PDF"
+        if session.open_tool("Metadata") is None:
+            raise Skip("Metadata ran without opening a dialog")
+        deadline = time.time() + 8
+        node = None
+        while time.time() < deadline and node is None:
+            node = session.entry("Title")
+            time.sleep(0.2)
+        shown = session.text(node) if node is not None else ""
+        rec["measurements"]["metadata_shows_existing"] = shown
+        checks.add(
+            "the metadata dialog shows the existing title",
+            shown == "Harness",
+            "Harness",
+            shown,
+        )
 
 
 def scenario_tool_pdf_pages(h, rec, checks):
@@ -4298,23 +4429,15 @@ def scenario_tool_pdf_organize(h, rec, checks):
             [text[:16] for text in wanted],
             [text[:16] for text in produced],
         )
-        rotation = run(["qpdf", "--show-pages", "--json", outputs[0]], timeout=60)
-        rotated = 0
-        try:
-            rotated = json.loads(rotation.stdout)["pages"][0].get("rotate", 0)
-        except (json.JSONDecodeError, KeyError, IndexError):
-            rotated = 0
+        # qpdf 12 does not put /Rotate in its JSON page keys (and rejects
+        # `--json` together with a positional path), so the earlier probe always read 0
+        # and the check was skipped as a product bug that did not exist. pdfinfo states
+        # the rotation directly.
+        rotation = run(["pdfinfo", "-f", "1", "-l", "1", outputs[0]], timeout=60)
+        match = re.search(r"Page\s+1 rot:\s+(-?\d+)", rotation.stdout)
+        rotated = int(match.group(1)) if match else 0
         rec["measurements"]["page1_rotation"] = rotated
-        if rotated != 90:
-            # The card shows "Page 1 · 90°" in the dialog, so the organizer's own state
-            # is right; the rotation object does not survive the dialog's submit path.
-            # The engine and the parameter normaliser both rotate correctly (see
-            # `organize_reorders_the_pages`, the CLI audit `pdf-organize-rotate`), so this
-            # is recorded rather than asserted until the submit path is instrumented.
-            raise Skip(
-                "the organizer shows the rotation but the submitted parameters carry no "
-                "rotate object; the engine's rotation is measured by quality-audit"
-            )
+        checks.add("page 1 is rotated by 90°", rotated == 90, 90, rotated)
 
 
 def page_one_text_source(path: str, page: int) -> str:
@@ -4689,7 +4812,49 @@ def scenario_dialogs_category(category):
     return run
 
 
+def scenario_dialog_moves(h, rec, checks):
+    """A dialog, not a takeover: it moves by its head and returns on a double-click."""
+    with h.launch("dialog-moves", [h.fixture(POSTER)]) as session:
+        dialog = session.open_tool("Crop")
+        if dialog is None:
+            raise Skip("Crop ran without opening a dialog")
+        time.sleep(0.6)
+        before = session.extents(session.sheet())
+        frame = session.frame_extents()
+        if not before or not frame:
+            raise Skip("the sheet and the window were not measured")
+        session.move_dialog_by(40, 24)
+        moved = session.extents(session.sheet())
+        rec["measurements"]["move"] = {"before": before, "moved": moved, "frame": frame}
+        checks.add(
+            "the dialog can be dragged by its head",
+            moved is not None
+            and abs((moved[0] - before[0]) - 40) <= 10
+            and abs((moved[1] - before[1]) - 24) <= 10,
+            "moved by 40, 24",
+            (moved[0] - before[0], moved[1] - before[1]) if moved else None,
+        )
+        if moved:
+            checks.add(
+                "a dragged dialog stays inside the window",
+                moved[0] >= frame[0] and moved[1] >= frame[1]
+                and moved[0] + moved[2] <= frame[0] + frame[2]
+                and moved[1] + moved[3] <= frame[1] + frame[3],
+                "inside the window",
+                moved,
+            )
+        session.centre_dialog()
+        back = session.extents(session.sheet())
+        checks.add(
+            "double-clicking the head re-centres the dialog",
+            back is not None and abs(back[0] - before[0]) <= 6 and abs(back[1] - before[1]) <= 6,
+            (before[0], before[1]),
+            (back[0], back[1]) if back else None,
+        )
+
+
 SCENARIOS = [
+    ("dialog-moves", scenario_dialog_moves),
     ("build-identity", scenario_build_identity),
 ] + [
     (f"dialogs-{category.lower()}", scenario_dialogs_category(category))

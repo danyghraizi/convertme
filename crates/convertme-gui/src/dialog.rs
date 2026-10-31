@@ -262,19 +262,19 @@ fn tool_params(params: Option<serde_json::Value>) -> ToolParams {
 /// This is the same dispatcher, the same engines and the same parameter validation
 /// as the job the dialog will queue, so a preview cannot disagree with the result.
 fn run_tool_preview(
-    state: &AppState,
+    tools: &convertme_engines::Toolset,
+    cache: &convertme_engines::preview::PreviewCache,
     source: &Path,
     category: Category,
     tool: ToolId,
     params: &ToolParams,
-) -> Result<PathBuf, convertme_core::error::JobError> {
+) -> Result<(PathBuf, WorkDir), convertme_core::error::JobError> {
     let work = WorkDir::create(
         std::env::temp_dir().join(format!("convertme-preview-{}", uuid::Uuid::new_v4())),
     )
     .map_err(|e| convertme_core::error::JobError::io("creating a preview work dir", &e))?;
-    let result = (|| {
-        let dispatcher =
-            convertme_engines::Dispatcher::with_preview(state.tools.clone(), state.cache.clone());
+    let artifact = (|| {
+        let dispatcher = convertme_engines::Dispatcher::with_preview(tools.clone(), cache.clone());
         let job = Job::new(
             source.to_path_buf(),
             Intent::Tool {
@@ -292,10 +292,11 @@ fn run_tool_preview(
                 "the preview produced nothing",
             )
         })
-    })();
-    // The rendered artifact is copied into the cache below; the work dir goes now.
-    work.cleanup();
-    result
+    })()?;
+    // The caller still needs the artifact (an audio result lives here until it is
+    // transcoded into the cache), so the work dir is cleaned up there. Deleting it
+    // here made every audio preview read a file that no longer existed.
+    Ok((artifact, work))
 }
 
 /// The key a rendered preview is cached under: source identity, tool, parameters and
@@ -310,8 +311,13 @@ fn preview_key_arg(tool: &str, params: &ToolParams, extra: &str) -> String {
 }
 
 /// An audio tool's result, transcoded to MP3 so WebKit can play it, cached by request.
-async fn audio_preview_blocking(
-    state: &AppState,
+///
+/// Blocking by nature (the engine and ffmpeg run to completion), so every caller hands
+/// it to `spawn_blocking`: a command that blocks the async runtime's worker never gets
+/// to send its reply, and the dialog sits on "Rendering…" forever.
+fn audio_preview_blocking(
+    tools: &convertme_engines::Toolset,
+    cache: &convertme_engines::preview::PreviewCache,
     path: String,
     tool: String,
     params: Option<serde_json::Value>,
@@ -319,7 +325,6 @@ async fn audio_preview_blocking(
     let parsed = ToolId::parse(&tool).ok_or_else(|| format!("unknown tool {tool:?}"))?;
     let source = PathBuf::from(path);
     let params = tool_params(params);
-    let cache = state.cache.clone();
 
     let key = cache
         .artifact_key(
@@ -333,16 +338,15 @@ async fn audio_preview_blocking(
         return Ok(key.to_string_lossy().into_owned());
     }
 
-    let produced = run_tool_preview(state, &source, Category::Audio, parsed, &params)
-        .map_err(|e| e.to_string())?;
-    convertme_engines::av::transcode_preview(
-        &state.tools,
-        &produced,
-        &key,
-        AUDIO_PREVIEW_MAX_BYTES,
-    )
-    .map(|_| state.cache.enforce_cap())
-    .map_err(|e| e.to_string())?;
+    let (produced, work) =
+        run_tool_preview(tools, cache, &source, Category::Audio, parsed, &params)
+            .map_err(|e| e.to_string())?;
+    let transcoded =
+        convertme_engines::av::transcode_preview(tools, &produced, &key, AUDIO_PREVIEW_MAX_BYTES);
+    // The artifact has been read; the work dir goes before the result is returned.
+    work.cleanup();
+    transcoded.map_err(|e| e.to_string())?;
+    cache.enforce_cap();
     Ok(key.to_string_lossy().into_owned())
 }
 
@@ -355,7 +359,44 @@ pub async fn audio_preview(
     tool: String,
     params: Option<serde_json::Value>,
 ) -> Result<String, String> {
-    audio_preview_blocking(&state, path, tool, params).await
+    let tools = state.tools.clone();
+    let cache = state.cache.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        audio_preview_blocking(&tools, &cache, path, tool, params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Hand a produced audio preview to the desktop's own player.
+///
+/// The window never decodes audio itself: WebKitGTK's media stack is what killed the
+/// process on Play, and a machine without an audio sink wedged the web process even
+/// when the element was created off-DOM. The system player is also where the user
+/// expects a "Play" to end up.
+#[tauri::command]
+pub async fn play_preview(path: String) -> Result<(), String> {
+    let source = PathBuf::from(path);
+    if !source.is_file() {
+        return Err("the preview file is gone".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(target_os = "windows")]
+        let opener = "explorer";
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let opener = "xdg-open";
+        let cmd = convertme_engines::proc::Cmd::new(opener)
+            .arg(&source)
+            .budget(convertme_engines::proc::Budget::Short);
+        let ctx = JobCtx::new();
+        convertme_engines::proc::run(cmd, &ctx)
+            .map(|_| ())
+            .map_err(|e| format!("could not open the preview: {}", e.message))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The bleeped audio, so the dialog can offer "Original" and "With Bleeps".
@@ -365,7 +406,13 @@ pub async fn bleep_preview(
     path: String,
     params: Option<serde_json::Value>,
 ) -> Result<String, String> {
-    audio_preview_blocking(&state, path, "bleep".to_string(), params).await
+    let tools = state.tools.clone();
+    let cache = state.cache.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        audio_preview_blocking(&tools, &cache, path, "bleep".to_string(), params)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The photo with its adjustments applied, at 1024 px on the long edge.

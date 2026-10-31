@@ -6,7 +6,7 @@ import CompressPreview from './compress-preview';
 import CropEditor from './crop-editor';
 import PhotoPreview from './photo-preview';
 import FieldEditor, { BoxesEditor } from './field-editor';
-import ToolInfo from './tool-info';
+import AnnotateEditor from './annotate-editor';
 import VideoEditor from './video-editor';
 import AudioEditor from './audio-editor';
 import { collectParams, initialValue, visibleIn } from '../fields';
@@ -143,10 +143,56 @@ export default function ToolModal(props: ToolModalProps) {
   const hasSurface = (): boolean =>
     (props.category === 'video' && VIDEO_SURFACES.includes(props.tool.id)) ||
     (props.category === 'audio' && AUDIO_SURFACES.includes(props.tool.id));
+  /**
+   * Image tools whose preview must stay in view while their settings scroll: the
+   * preview *is* the thing being changed, so scrolling it away is the bug.
+   */
+  const pinnedSurface = (): boolean =>
+    props.category === 'images' &&
+    ['compress', 'crop', 'redact', 'annotate', 'add-background', 'edit-photo', 'collage'].includes(
+      props.tool.id,
+    );
   /** Source pixels of the preview, for the crop dialog's W/H inputs. */
-  const [natural, setNatural] = createSignal({ w: 0, h: 0 });
   let dialog: HTMLDivElement | undefined;
   let sheet: HTMLFormElement | undefined;
+  /** How far the head has been dragged from the centred position. */
+  const offset = { x: 0, y: 0 };
+
+  /**
+   * The sheet is parented to the window, not to a fixed spot: dragging its head moves
+   * it, and it never leaves the window far enough to become unreachable.
+   */
+  function startMove(event: PointerEvent): void {
+    if (!sheet) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('button, input, select, textarea, a')) return;
+    const head = event.currentTarget as HTMLElement;
+    head.setPointerCapture(event.pointerId);
+    const start = { x: event.clientX, y: event.clientY, dx: offset.x, dy: offset.y };
+    const edgeX = Math.max(0, window.innerWidth / 2 - 120);
+    const edgeY = Math.max(0, window.innerHeight / 2 - 80);
+    const move = (e: PointerEvent): void => {
+      offset.x = Math.max(-edgeX, Math.min(edgeX, start.dx + e.clientX - start.x));
+      offset.y = Math.max(-edgeY, Math.min(edgeY, start.dy + e.clientY - start.y));
+      sheet?.style.setProperty('--sheet-dx', `${offset.x}px`);
+      sheet?.style.setProperty('--sheet-dy', `${offset.y}px`);
+    };
+    const up = (): void => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      head.removeEventListener('pointercancel', up);
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+    head.addEventListener('pointercancel', up);
+  }
+
+  function centre(): void {
+    offset.x = 0;
+    offset.y = 0;
+    sheet?.style.removeProperty('--sheet-dx');
+    sheet?.style.removeProperty('--sheet-dy');
+  }
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
@@ -228,39 +274,6 @@ export default function ToolModal(props: ToolModalProps) {
     return params;
   }
 
-  /** The kept rectangle in source pixels, as the crop dialog shows it. */
-  function cropPixels(): { w: number; h: number } {
-    const size = natural();
-    const box = Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null;
-    const w = box ? box.w : 1;
-    const h = box ? box.h : 1;
-    return {
-      w: size.w > 0 ? Math.round(w * size.w) : 0,
-      h: size.h > 0 ? Math.round(h * size.h) : 0,
-    };
-  }
-
-  /**
-   * Editing a dimension moves the matching edge and keeps the origin, in fractions of
-   * the source. The rectangle is clamped inside the picture and never collapses.
-   */
-  function setCropPixels(axis: 'w' | 'h', pixels: number): void {
-    const size = natural();
-    const total = axis === 'w' ? size.w : size.h;
-    if (total <= 0 || !Number.isFinite(pixels) || pixels <= 0) return;
-    const current = Array.isArray(values.boxes)
-      ? ((values.boxes as Box[])[0] ?? { x: 0, y: 0, w: 1, h: 1 })
-      : { x: 0, y: 0, w: 1, h: 1 };
-    const fraction = Math.min(axis === 'w' ? 1 - current.x : 1 - current.y, pixels / total);
-    if (fraction <= 0) return;
-    setValues(
-      'boxes',
-      axis === 'w'
-        ? [{ ...current, w: fraction }]
-        : [{ ...current, h: fraction }],
-    );
-  }
-
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (submitting()) return;
@@ -304,7 +317,7 @@ export default function ToolModal(props: ToolModalProps) {
         class="dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="rail-title"
+        aria-labelledby="sheet-title"
         tabindex="-1"
         ref={dialog}
       >
@@ -338,13 +351,18 @@ export default function ToolModal(props: ToolModalProps) {
             target.addEventListener('pointercancel', up);
           }}
         />
-        <header class="sheet-head">
-          <button type="button" class="sheet-close" aria-label="Close" onClick={() => props.onClose()}>
-            ×
-          </button>
+        <header
+          class="sheet-head"
+          onPointerDown={startMove}
+          onDblClick={centre}
+          title="Drag to move this dialog"
+        >
           <h2 id="sheet-title" class="sheet-title">
             {props.tool.title ?? props.tool.label}
           </h2>
+          <button type="button" class="sheet-close" aria-label="Close" onClick={() => props.onClose()}>
+            ×
+          </button>
         </header>
         <Show when={props.fileLabel}>
           <p class="modal-file">
@@ -377,7 +395,7 @@ export default function ToolModal(props: ToolModalProps) {
               </Show>
             </p>
           </Show>
-          <div class="modal-fields">
+          <div class="modal-preview" classList={{ 'is-empty': !pinnedSurface() }}>
             <Show when={props.tool.id === 'compress' && props.category === 'images'}>
               <CompressPreview
                 path={props.files?.[shown()]?.path ?? props.previewPath}
@@ -393,36 +411,9 @@ export default function ToolModal(props: ToolModalProps) {
                   previewPath={props.previewPath}
                   value={Array.isArray(values.boxes) ? ((values.boxes as Box[])[0] ?? null) : null}
                   aspect={String(values.aspect ?? 'free')}
-                  onSize={(size) => setNatural(size)}
                   onChange={(box) => setValues('boxes', [box])}
                 />
               </div>
-              <Show when={props.category === 'images'}>
-                <div class="field crop-size">
-                  <span class="field-label">Crop size</span>
-                  <span class="crop-size-row">
-                    <label for="crop-width">Width</label>
-                    <input
-                      id="crop-width"
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={cropPixels().w}
-                      onInput={(event) => setCropPixels('w', event.currentTarget.valueAsNumber)}
-                    />
-                    <label for="crop-height">Height</label>
-                    <input
-                      id="crop-height"
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={cropPixels().h}
-                      onInput={(event) => setCropPixels('h', event.currentTarget.valueAsNumber)}
-                    />
-                    <span class="field-unit">px</span>
-                  </span>
-                </div>
-              </Show>
             </Show>
             <Show when={props.tool.id === 'redact' && props.category === 'images'}>
               <div class="field">
@@ -434,32 +425,19 @@ export default function ToolModal(props: ToolModalProps) {
                 />
               </div>
             </Show>
-            <Show when={hasSurface()}>
-              <Show when={props.category === 'video'}>
-                <VideoEditor
-                  tool={props.tool.id}
-                  path={shownPath()}
-                  values={values}
-                  setValue={(key, value) => setValues(key, value)}
-                  onExtras={setExtras}
-                  onCount={setActionCount}
-                  onReady={setEditorReady}
-                  resetToken={resetToken()}
+            {/* The annotation canvas is the dialog; its toolbar carries the ink and the
+                shapes are the value the job burns in. */}
+            <Show when={props.tool.id === 'annotate' && props.category === 'images'}>
+              <div class="field is-block">
+                <span class="field-label">Photo</span>
+                <AnnotateEditor
+                  previewPath={props.previewPath}
+                  value={values.shapes ?? []}
+                  color={String(values.color ?? '#ff5a36')}
+                  onInk={(color) => setValues('color', color)}
+                  onChange={(next) => setValues('shapes', next)}
                 />
-              </Show>
-              <Show when={props.category === 'audio'}>
-                <AudioEditor
-                  tool={props.tool.id}
-                  path={shownPath()}
-                  values={values}
-                  setValue={(key, value) => setValues(key, value)}
-                  collect={collected}
-                  onExtras={setExtras}
-                  onCount={setActionCount}
-                  onReady={setEditorReady}
-                  resetToken={resetToken()}
-                />
-              </Show>
+              </div>
             </Show>
             <Show when={props.tool.id === 'add-background'}>
               <BackgroundPreview
@@ -541,19 +519,34 @@ export default function ToolModal(props: ToolModalProps) {
                 paths={fileList().map((file) => file.path)}
                 params={collected()}
               />
-              <Show when={props.fields.find((field) => field.key === 'order')}>
-                {(field) => (
-                  <details class="collage-order" open>
-                    <summary>Image order</summary>
-                    <FieldEditor
-                      field={field()}
-                      value={values.order ?? initialValue(field())}
-                      previewPath={shownPath()}
-                      files={fileList()}
-                      onChange={(value) => setValues('order', value)}
-                    />
-                  </details>
-                )}
+            </Show>
+          </div>
+          <div class="modal-fields">
+            <Show when={hasSurface()}>
+              <Show when={props.category === 'video'}>
+                <VideoEditor
+                  tool={props.tool.id}
+                  path={shownPath()}
+                  values={values}
+                  setValue={(key, value) => setValues(key, value)}
+                  onExtras={setExtras}
+                  onCount={setActionCount}
+                  onReady={setEditorReady}
+                  resetToken={resetToken()}
+                />
+              </Show>
+              <Show when={props.category === 'audio'}>
+                <AudioEditor
+                  tool={props.tool.id}
+                  path={shownPath()}
+                  values={values}
+                  setValue={(key, value) => setValues(key, value)}
+                  collect={collected}
+                  onExtras={setExtras}
+                  onCount={setActionCount}
+                  onReady={setEditorReady}
+                  resetToken={resetToken()}
+                />
               </Show>
             </Show>
             <For each={visibleFields()}>
@@ -609,7 +602,6 @@ export default function ToolModal(props: ToolModalProps) {
             </footer>
           </div>
         </form>
-        <ToolInfo tool={props.tool} category={props.category} />
       </div>
     </div>
   );

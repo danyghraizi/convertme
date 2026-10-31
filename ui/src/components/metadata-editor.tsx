@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
 import { asMeta } from '../fields';
 import type { FieldValue, MetaFields, MetaGroup } from '../types';
@@ -25,8 +25,11 @@ export default function MetadataEditor(props: MetadataEditorProps) {
   const [query, setQuery] = createSignal('');
   const [note, setNote] = createSignal('');
 
-  onMount(() => {
+  // The dialog can switch files; the table follows the path instead of loading once.
+  createEffect(() => {
     const path = props.path;
+    setGroups([]);
+    setNote('');
     if (!path) {
       setNote('Choose a file to see its metadata.');
       return;

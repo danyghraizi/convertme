@@ -87,7 +87,10 @@ export function BoxesEditor(props: BoxesEditorProps) {
     setPreview('');
     void ipc
       .previewThumb(path, 640)
-      .then((url) => setPreview(ipc.assetUrl(url)))
+      .then((url) => {
+        setNote('');
+        setPreview(ipc.assetUrl(url));
+      })
       .catch(() => setNote('Preview unavailable; regions can still be entered.'));
   });
 
@@ -277,71 +280,72 @@ export function BoxesEditor(props: BoxesEditorProps) {
         </button>
         <span class="boxes-count">{boxes().length} marked</span>
       </div>
-      <div
-        class="boxes-surface"
-        classList={{ 'is-empty': preview().length === 0 }}
-        ref={surface}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
+      <div class="boxes-surface" classList={{ 'is-empty': preview().length === 0 }}>
         <Show when={preview()} fallback={<p class="boxes-placeholder">Preview unavailable</p>}>
-          <img src={preview()} alt="Preview" draggable={false} />
-        </Show>
-        <For each={shown()}>
-          {(box, index) => (
-            <span
-              class="boxes-region"
-              classList={{ 'is-selected': selected() === index() }}
-              role="group"
-              aria-label={`Region ${index() + 1}`}
-              style={{
-                left: `${box.x * 100}%`,
-                top: `${box.y * 100}%`,
-                width: `${box.w * 100}%`,
-                height: `${box.h * 100}%`,
-              }}
-              onPointerDown={(event) => beginRegion(event, index())}
-            >
-              <button
-                type="button"
-                class="boxes-remove"
-                aria-label={`Remove region ${index() + 1}`}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  remove(index());
+          <div
+            class="boxes-frame"
+            ref={surface}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+          >
+            <img src={preview()} alt="Preview" draggable={false} />
+            <For each={shown()}>
+              {(box, index) => (
+                <span
+                  class="boxes-region"
+                  classList={{ 'is-selected': selected() === index() }}
+                  role="group"
+                  aria-label={`Region ${index() + 1}`}
+                  style={{
+                    left: `${box.x * 100}%`,
+                    top: `${box.y * 100}%`,
+                    width: `${box.w * 100}%`,
+                    height: `${box.h * 100}%`,
+                  }}
+                  onPointerDown={(event) => beginRegion(event, index())}
+                >
+                  <button
+                    type="button"
+                    class="boxes-remove"
+                    aria-label={`Remove region ${index() + 1}`}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      remove(index());
+                    }}
+                  >
+                    ×
+                  </button>
+                  <Show when={selected() === index()}>
+                    <For each={handles}>
+                      {(handle) => (
+                        <span
+                          class={`boxes-handle boxes-handle-${handle}`}
+                          aria-hidden="true"
+                          onPointerDown={(event) => beginHandle(event, index(), handle)}
+                        />
+                      )}
+                    </For>
+                  </Show>
+                </span>
+              )}
+            </For>
+          <Show when={draft()}>
+            {(box) => (
+              <span
+                class="boxes-region is-draft"
+                style={{
+                  left: `${box().x * 100}%`,
+                  top: `${box().y * 100}%`,
+                  width: `${box().w * 100}%`,
+                  height: `${box().h * 100}%`,
                 }}
-              >
-                ×
-              </button>
-              <Show when={selected() === index()}>
-                <For each={handles}>
-                  {(handle) => (
-                    <span
-                      class={`boxes-handle boxes-handle-${handle}`}
-                      aria-hidden="true"
-                      onPointerDown={(event) => beginHandle(event, index(), handle)}
-                    />
-                  )}
-                </For>
-              </Show>
-            </span>
-          )}
-        </For>
-        <Show when={draft()}>
-          {(box) => (
-            <span
-              class="boxes-region is-draft"
-              style={{
-                left: `${box().x * 100}%`,
-                top: `${box().y * 100}%`,
-                width: `${box().w * 100}%`,
-                height: `${box().h * 100}%`,
-              }}
-            />
-          )}
+              />
+            )}
+          </Show>
+          </div>
         </Show>
       </div>
       <p class="field-help">

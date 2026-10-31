@@ -42,6 +42,25 @@ export default function AudioEditor(props: AudioEditorProps) {
   const [previewLabel, setPreviewLabel] = createSignal('Output');
   const [previewBusy, setPreviewBusy] = createSignal(false);
   const [previewError, setPreviewError] = createSignal('');
+  // "Play Output" must play. The window never decodes audio itself: WebKitGTK's media
+  // stack crashed the process on Play, so the produced file is handed to the desktop's
+  // own player.
+  async function play(path: string, label: string): Promise<void> {
+    setPreviewSrc(path);
+    setPreviewLabel(label);
+    setPreviewError('');
+    try {
+      await ipc.playPreview(path);
+    } catch (cause) {
+      setPreviewError(
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === 'string'
+            ? cause
+            : 'The preview could not be opened',
+      );
+    }
+  }
 
   const duration = (): number => info()?.duration ?? 0;
   const start = (): number => asNumber(props.values.start ?? 0);
@@ -168,10 +187,17 @@ export default function AudioEditor(props: AudioEditorProps) {
     setPreviewError('');
     try {
       const produced = await ipc.audioPreview(path, tool, paramsFor());
-      setPreviewSrc(ipc.assetUrl(produced));
-      setPreviewLabel('Output');
+      await play(produced, 'Output');
     } catch (cause) {
-      setPreviewError(cause instanceof Error ? cause.message : 'The preview failed');
+      // The bridge rejects with a plain string; a generic "the preview failed" hides
+      // the one sentence that says what to change.
+      setPreviewError(
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === 'string'
+            ? cause.replace(/^unsupported: /, '')
+            : 'The preview failed',
+      );
     } finally {
       setPreviewBusy(false);
     }
@@ -184,10 +210,15 @@ export default function AudioEditor(props: AudioEditorProps) {
     setPreviewError('');
     try {
       const produced = await ipc.bleepPreview(path, paramsFor());
-      setPreviewSrc(ipc.assetUrl(produced));
-      setPreviewLabel('With Bleeps');
+      await play(produced, 'With Bleeps');
     } catch (cause) {
-      setPreviewError(cause instanceof Error ? cause.message : 'The preview failed');
+      setPreviewError(
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === 'string'
+            ? cause.replace(/^unsupported: /, '')
+            : 'The preview failed',
+      );
     } finally {
       setPreviewBusy(false);
     }
@@ -240,7 +271,9 @@ export default function AudioEditor(props: AudioEditorProps) {
             </span>
           </div>
           <Show when={previewSrc()}>
-            <audio class="audio-output" aria-label="Output" controls src={previewSrc()} />
+            <p class="field-help" role="status">
+              Preview ready.
+            </p>
           </Show>
           <Show when={previewError()}>
             <p class="field-help" role="status">
@@ -274,7 +307,9 @@ export default function AudioEditor(props: AudioEditorProps) {
               {previewBusy() ? 'Rendering…' : 'Play Output'}
             </button>
             <Show when={previewSrc()}>
-              <audio class="audio-output" aria-label="Output" controls src={previewSrc()} />
+              <p class="field-help" role="status">
+                Preview ready.
+              </p>
             </Show>
           </div>
           <Show when={previewError()}>
@@ -357,8 +392,7 @@ export default function AudioEditor(props: AudioEditorProps) {
               type="button"
               class="button button-quiet"
               onClick={() => {
-                setPreviewSrc(props.path ? ipc.assetUrl(props.path) : '');
-                setPreviewLabel('Original');
+                if (props.path) void play(props.path, 'Original');
               }}
             >
               Original
@@ -374,7 +408,9 @@ export default function AudioEditor(props: AudioEditorProps) {
             <span class="audio-measured">{previewLabel()}</span>
           </div>
           <Show when={previewSrc()}>
-            <audio class="audio-output" aria-label={previewLabel()} controls src={previewSrc()} />
+            <p class="field-help" role="status">
+              {previewLabel()} ready.
+            </p>
           </Show>
           <Show when={previewError()}>
             <p class="field-help" role="status">

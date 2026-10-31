@@ -95,19 +95,13 @@
   --sidebar: 232px;
   --activity: 46px;
 
-  /* The two-pane tool dialog: a settings sheet and the explanatory rail that
-     describes what the tool does. These are the reference's numbers, measured from
-     its dialog captures (600 + 52 gap + 336 = 988 px content width). */
+  /* The tool dialog: one settings sheet that can be dragged by its head and
+     resized from its corner. The reference's explanatory side panel was context,
+     not product: the tool's copy lives in the tool card that opened the dialog. */
   --dialog-sheet-w: 600px;
-  --dialog-rail-w: 336px;
-  --dialog-gap: 52px;
-  --dialog-radius: 28px;
+  --dialog-radius: 20px;
   --dialog-head-h: 56px;
   --dialog-row-h: 40px;
-  --rail-eyebrow-size: 12px;
-  --rail-title-size: 40px;
-  --rail-copy-size: 16px;
-  --rail-benefit-size: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1107,6 +1101,11 @@ textarea {
   min-height: var(--dialog-row-h);
   padding: 2px 0;
   min-width: 0;
+  /* A row must be as tall as what it holds. Stretched to the parent's track, a tall
+     control (a colour strip, the gradient editor, the crop readout) spilled out of a
+     40 px box and painted over the next row: the "overlapping controls" the dialog
+     showed. */
+  align-self: start;
 }
 
 .field > .field-label {
@@ -1318,18 +1317,36 @@ input[type='color'] {
 
 .boxes-surface {
   position: relative;
+  display: grid;
+  place-items: center;
   border-radius: var(--r-2);
   background: var(--sunken);
   overflow: hidden;
+  padding: 6px;
   touch-action: none;
   cursor: crosshair;
   box-shadow: inset 0 0 0 1px var(--rule);
 }
 
-.boxes-surface img {
+.boxes-surface.is-empty {
+  min-height: 120px;
+}
+
+/* Exactly the rendered picture: the regions' percentages belong to the photo. */
+.boxes-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.boxes-frame img {
   display: block;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: 30vh;
   -webkit-user-select: none;
   user-select: none;
   pointer-events: none;
@@ -1388,15 +1405,16 @@ input[type='color'] {
 
 /* ------------------------------------------------------------------ modal */
 
-/* The dialog is two panes: the sheet that holds the controls, and a rail that
-   says what the tool does. The rail is not decoration — it is where the tool's
-   own copy lives, so a tool with no copy reads as an unfinished product. */
+/* One sheet, centred, movable by its head and resizable from its corner. This is a
+   dialog inside the app window, not a window of its own: it must never take the
+   whole screen away from the wheel behind it. */
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(14px);
+  /* A plain dim, not a blurred backdrop: a full-window blur is a compositor effect
+     that buys nothing here and offsets the sheet's paint in some WebKit builds. */
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1405,12 +1423,12 @@ input[type='color'] {
 }
 
 .dialog {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--dialog-gap);
-  max-width: calc(var(--dialog-sheet-w) + var(--dialog-rail-w) + var(--dialog-gap));
   width: 100%;
+  height: 100%;
   max-height: 100%;
   min-height: 0;
 }
@@ -1422,21 +1440,34 @@ input[type='color'] {
   /* A resize grip overrides the width; the default is the reference's sheet. */
   width: var(--modal-w, var(--dialog-sheet-w));
   height: var(--modal-h, auto);
+  /* Dragging the head writes these; the sheet stays centred until it is moved.
+     `left/top` rather than the newer `translate` property: a relatively positioned
+     box moves its background and its children together on every engine. */
+  left: var(--sheet-dx, 0px);
+  top: var(--sheet-dy, 0px);
   min-width: 440px;
   min-height: 320px;
-  max-width: 100%;
-  max-height: min(760px, 92vh);
-  display: grid;
-  grid-template-rows: var(--dialog-head-h) auto minmax(0, 1fr) auto;
+  max-width: min(760px, 96vw);
+  max-height: min(780px, 90vh);
+  /* A column, not a fixed grid: the head, the file line, an optional preview band,
+     the scrolling fields and the footer come and go per tool, and a fixed row count
+     put the fields in the wrong row as soon as one of them was absent. */
+  display: flex;
+  flex-direction: column;
+  /* Own layer: a rounded, clipped scroll container that is composited with the rest
+     of the page painted its children offset from its background in WebKitGTK. */
+  transform: translateZ(0);
+  isolation: isolate;
   overflow: hidden;
   background: var(--surface);
   border-radius: var(--dialog-radius);
-  box-shadow: var(--shadow-lg), var(--shadow-inset);
+  box-shadow: var(--shadow-lg);
 }
 
 .dialog-sheet.modal-form,
 .modal-form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
 }
 
 .sheet-head {
@@ -1444,8 +1475,15 @@ input[type='color'] {
   align-items: center;
   justify-content: center;
   position: relative;
-  padding: 0 var(--s-5);
+  padding: 0 56px;
   min-height: var(--dialog-head-h);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.sheet-head:active {
+  cursor: grabbing;
 }
 
 .sheet-head h2,
@@ -1460,7 +1498,9 @@ input[type='color'] {
 .sheet-close {
   position: absolute;
   top: 50%;
-  left: 14px;
+  /* Linux and Windows put the close control at the top right; the reference's
+     left-hand × is a macOS habit, not a rule. */
+  right: 14px;
   transform: translateY(-50%);
   width: 32px;
   height: 32px;
@@ -1481,38 +1521,40 @@ input[type='color'] {
 }
 
 .modal-form {
-  /* file line, scrolling fields, footer */
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  padding: 0 20px 0;
+  padding: 0;
   min-height: 0;
+}
+
+.sheet-head {
+  flex: 0 0 auto;
+}
+
+/* The preview never scrolls away from the controls that change it; it is a band
+   above the scroller, not part of it. */
+.modal-preview {
+  flex: 0 0 auto;
+  display: grid;
+  gap: var(--s-2);
+  max-height: 46vh;
+  overflow: hidden;
+  padding: 0 20px 10px;
+}
+
+/* Tools without a preview (video, audio, PDF grids, plain field dialogs) draw no
+   band at all: an empty sticky strip would just push their fields down. */
+.modal-preview.is-empty {
+  display: none;
 }
 
 .modal-footer-gap {
   flex: 1;
 }
 
-.modal-head {
-  padding: var(--s-5) var(--s-5) var(--s-3);
-}
-
-.modal-head h2 {
-  margin: 0;
-  font-size: var(--t-xl);
-  font-weight: 650;
-  letter-spacing: -0.015em;
-}
-
-.modal-blurb {
-  margin: 2px 0 0;
-  color: var(--ink-2);
-  font-size: var(--t-sm);
-}
-
 .modal-fields {
-  display: grid;
-  /* A preview image's intrinsic width must never size this column: a 1280 px
-     frame would push the 600 px sheet off-screen. */
-  grid-template-columns: minmax(0, 1fr);
+  /* A column, not a grid: every entry is as tall as its own content, and a tall
+     control cannot be squeezed into a track sized before it existed. */
+  display: flex;
+  flex-direction: column;
   gap: var(--s-2);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1520,9 +1562,16 @@ input[type='color'] {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--rule-2) transparent;
-  padding: 0 8px var(--s-3) 0;
+  /* Clear of the lane: a control must never be clickable under the thumb. */
+  padding: 0 18px 12px 20px;
+  /* The only part that scrolls: a sheet's head, preview and footer stay put. */
+  flex: 1 1 auto;
   min-height: 0;
-  align-content: start;
+}
+
+.modal-fields > * {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .modal-fields::-webkit-scrollbar {
@@ -1542,6 +1591,7 @@ input[type='color'] {
 
 .sheet-foot {
   display: grid;
+  flex: 0 0 auto;
   gap: var(--s-2);
   padding-bottom: var(--s-3);
 }
@@ -1569,91 +1619,6 @@ input[type='color'] {
 .sheet-footer .button,
 .modal-footer .button {
   height: 34px;
-}
-
-/* ------------------------------------------------------------------- rail */
-
-.dialog-rail {
-  width: var(--dialog-rail-w);
-  align-self: center;
-  max-height: min(680px, 88vh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: none;
-  padding: 0;
-  color: var(--ink);
-}
-
-.dialog-rail::-webkit-scrollbar {
-  width: 0;
-}
-
-.rail-eyebrow {
-  margin: 0 0 10px;
-  font-size: var(--rail-eyebrow-size);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.rail-title {
-  margin: 0;
-  font-size: var(--rail-title-size);
-  line-height: 1.08;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-
-.rail-copy {
-  margin: 14px 0 0;
-  font-size: var(--rail-copy-size);
-  line-height: 1.5;
-  color: var(--ink-2);
-}
-
-.rail-rule {
-  margin: 22px 0 18px;
-  border: 0;
-  border-top: 1px solid var(--rule);
-}
-
-.rail-benefits {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 12px;
-}
-
-.rail-benefits li {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  font-size: var(--rail-benefit-size);
-  line-height: 1.45;
-  color: var(--ink-2);
-}
-
-.rail-benefits .rail-check {
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  color: var(--accent);
-}
-
-/* Below this width the two panes do not fit side by side; the sheet keeps the
-   controls and the rail's copy moves out of the way. */
-@media (max-width: 980px) {
-  .dialog-rail {
-    display: none;
-  }
-
-  .dialog {
-    gap: 0;
-  }
 }
 
 /* ------------------------------------------------------------------ status */
@@ -2109,12 +2074,25 @@ body.wheel-body {
   overflow: hidden;
   touch-action: none;
   min-height: 200px;
+  padding: 6px;
 }
 
-.crop-surface img {
-  display: block;
+/* Exactly the rendered picture: percentages on the region are percentages of the
+   photo, never of the letterbox around it. */
+.crop-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
   max-width: 100%;
-  max-height: 46vh;
+  max-height: 100%;
+}
+
+.crop-frame img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 30vh;
   user-select: none;
   pointer-events: none;
 }
@@ -2196,6 +2174,25 @@ body.wheel-body {
   gap: var(--s-3);
   font-size: 13px;
   color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+}
+
+.crop-readout .button {
+  margin-left: auto;
+}
+
+.crop-pixel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.crop-pixel input {
+  width: 76px;
+  min-height: 30px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2426,13 +2423,13 @@ body.wheel-body {
 /* Colour swatches, the gradient control and the ratio buttons. */
 .swatches {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .swatch {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border-radius: 5px;
   border: 1px solid var(--rule-2);
@@ -2455,13 +2452,6 @@ body.wheel-body {
   width: 44px;
   height: 30px;
   padding: 2px;
-}
-
-.gradient-chip {
-  flex: 1;
-  height: 20px;
-  border-radius: 6px;
-  box-shadow: inset 0 0 0 1px var(--rule-2);
 }
 
 .segmented {
@@ -2740,7 +2730,7 @@ body.wheel-body {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin: 0;
+  margin: 0 20px 10px;
   padding: 8px 10px;
   border-radius: var(--r-2);
   background: var(--surface-2);
@@ -2824,17 +2814,6 @@ select:focus {
 
 .fill-preset {
   border-radius: 8px;
-}
-
-.fill-separator {
-  width: 1px;
-  height: 18px;
-  background: var(--rule-2);
-  margin: 0 2px;
-}
-
-.fill-gap {
-  width: 8px;
 }
 
 .fill-preset-image {
@@ -2937,34 +2916,6 @@ select:focus {
   font-size: var(--t-2xs);
   color: var(--ink-2);
   cursor: pointer;
-}
-
-/* The crop dialog's pixel row: W and H in source pixels, beside the surface. */
-.crop-size-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: var(--t-sm, 13px);
-  color: var(--ink-2);
-}
-
-.crop-size-row input {
-  width: 82px;
-  min-height: 28px;
-}
-
-.collage-order {
-  border-top: 1px solid var(--rule);
-  padding-top: 8px;
-}
-
-.collage-order summary {
-  cursor: pointer;
-  font-size: var(--t-2xs, 11px);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-3);
 }
 
 .fill-preset-rows {

@@ -173,6 +173,93 @@ fn stem_of(path: &Path) -> String {
         .unwrap_or_else(|| "file".into())
 }
 
+/// The friendly key for an EXIF tag, matching `editable_tags`' names.
+fn friendly_exif(name: &str) -> Option<&'static str> {
+    match name {
+        "ImageDescription" => Some("Title"),
+        "Artist" => Some("Artist"),
+        "Copyright" => Some("Copyright"),
+        "Make" => Some("Make"),
+        "Model" => Some("Model"),
+        "LensModel" => Some("LensModel"),
+        "Orientation" => Some("Orientation"),
+        _ => None,
+    }
+}
+
+/// PNG text chunks (`tEXt`/`iTXt`): ImageMagick stores Title/Description as
+/// `Comment`, and Artist/Copyright under their own keyword.
+fn png_text_tags(path: &Path, tags: &mut BTreeMap<String, String>) {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    if !bytes.starts_with(SIGNATURE) {
+        return;
+    }
+    let mut at = SIGNATURE.len();
+    while at + 8 <= bytes.len() {
+        let len =
+            u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
+        let kind = &bytes[at + 4..at + 8];
+        let start = at + 8;
+        let end = start.saturating_add(len).min(bytes.len());
+        let data = &bytes[start..end];
+        match kind {
+            b"tEXt" => {
+                if let Some(nul) = data.iter().position(|b| *b == 0) {
+                    let key = String::from_utf8_lossy(&data[..nul]).into_owned();
+                    let value = String::from_utf8_lossy(&data[nul + 1..]).into_owned();
+                    insert_text(tags, &key, value);
+                }
+            }
+            b"iTXt" => {
+                // keyword\0 compression flag\0 compression method\0 language\0
+                // translated keyword\0 text (UTF-8).
+                let mut parts = data.split(|b| *b == 0);
+                let key = parts.next().unwrap_or_default();
+                let _flag = parts.next();
+                let _method = parts.next();
+                let _language = parts.next();
+                let _translated = parts.next();
+                if let Some(text) = parts.next() {
+                    insert_text(
+                        tags,
+                        &String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(text).into_owned(),
+                    );
+                }
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        at = end.saturating_add(4);
+    }
+}
+
+fn insert_text(tags: &mut BTreeMap<String, String>, key: &str, value: String) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    // ImageMagick writes its bookkeeping into the same chunks (`date:create`,
+    // `date:modify`, `Software`); those are not tags a user edits, and listing them
+    // would bury the four that matter.
+    let lower = key.to_ascii_lowercase();
+    if lower.contains(':') || lower.starts_with("date") || lower == "software" {
+        return;
+    }
+    // The keyword's case is the writer's business: ImageMagick writes `comment`.
+    let friendly = match lower.as_str() {
+        "comment" | "description" | "imagedescription" | "title" => "Title",
+        "artist" => "Artist",
+        "copyright" => "Copyright",
+        other => other,
+    };
+    tags.entry(friendly.to_string())
+        .or_insert_with(|| value.to_string());
+}
+
 /// Read the tags the UI shows in the edit form.
 pub fn read(path: &Path) -> BTreeMap<String, String> {
     let Some(format) = Registry::detect(path).map(|f| f.id) else {
@@ -185,10 +272,29 @@ pub fn read(path: &Path) -> BTreeMap<String, String> {
                 let mut buf = std::io::BufReader::new(file);
                 if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
                     for f in exif.fields() {
-                        tags.insert(
-                            f.tag.to_string(),
-                            f.display_value().with_unit(&exif).to_string(),
-                        );
+                        // The form's rows are the friendly names `editable_tags`
+                        // advertises; a raw `ImageDescription` row cannot be edited and
+                        // leaves the "Title" row looking empty on a file that has one.
+                        if let Some(key) = friendly_exif(&f.tag.to_string()) {
+                            tags.entry(key.to_string())
+                                .or_insert_with(|| f.display_value().with_unit(&exif).to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // ImageMagick writes the four writable image tags as PNG text chunks (Title
+        // and Description both as `Comment`), so the reader has to look there.
+        "PNG" => png_text_tags(path, &mut tags),
+        "WEBP" => {
+            if let Ok(file) = std::fs::File::open(path) {
+                let mut buf = std::io::BufReader::new(file);
+                if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
+                    for f in exif.fields() {
+                        if let Some(key) = friendly_exif(&f.tag.to_string()) {
+                            tags.entry(key.to_string())
+                                .or_insert_with(|| f.display_value().with_unit(&exif).to_string());
+                        }
                     }
                 }
             }
@@ -650,6 +756,36 @@ mod tests {
 
         pdf_info(&pdf, &BTreeMap::new(), &[], true).unwrap();
         assert!(!read(&pdf).contains_key("Title"));
+    }
+
+    #[test]
+    fn png_text_chunks_are_read_as_the_forms_own_keys() {
+        // A PNG whose only tag is the `Comment` chunk ImageMagick writes for Title:
+        // the form must show it under "Title", not as a raw "Comment" row.
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("tagged.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        let chunk = |kind: &[u8], data: &[u8]| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            out
+        };
+        // ImageMagick writes the keyword in lower case and adds bookkeeping chunks.
+        bytes.extend(chunk(b"tEXt", b"comment\0Hello"));
+        bytes.extend(chunk(b"tEXt", b"Artist\0Ada"));
+        bytes.extend(chunk(b"tEXt", b"date:create\x002026-10-31T16:20:16+00:00"));
+        bytes.extend(chunk(b"IEND", b""));
+        std::fs::write(&png, &bytes).unwrap();
+
+        let mut tags = BTreeMap::new();
+        png_text_tags(&png, &mut tags);
+        assert_eq!(tags.get("Title").map(String::as_str), Some("Hello"));
+        assert_eq!(tags.get("Artist").map(String::as_str), Some("Ada"));
+        assert!(!tags.contains_key("Comment"));
+        assert!(!tags.keys().any(|key| key.contains(':')));
     }
 
     #[test]

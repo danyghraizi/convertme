@@ -761,10 +761,6 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 field.kind = "segmented".into();
                 field
             },
-            // The surface owns the rectangle; these two mirror it in source pixels and
-            // are a control, never a job parameter.
-            num("w", "Width", 0.0, 0.0, 100_000.0, 1.0, "px").hidden().control(),
-            num("h", "Height", 0.0, 0.0, 100_000.0, 1.0, "px").hidden().control(),
         ],
         (Category::Images, ToolId::Annotate) => vec![
             // A plain caption burned into the corner, for the quick case where the
@@ -777,16 +773,28 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 kind: "shapes".into(),
                 default: serde_json::json!([]),
                 ..Default::default()
-            },
+            }
+            .hidden(),
+            // The canvas toolbar owns the ink and the shapes; the value still travels.
             Field {
                 key: "color".into(),
                 label: "Ink colour".into(),
                 kind: "color".into(),
                 default: serde_json::json!("#ff5a36"),
                 ..Default::default()
-            },
+            }
+            .hidden(),
         ],
         (Category::Images, ToolId::Collage) => vec![
+            // The order comes first: which image is the feature is a layout decision,
+            // not a spacing one. It is rendered by the file-order editor.
+            Field {
+                key: "order".into(),
+                label: "Image order".into(),
+                kind: "files".into(),
+                default: serde_json::json!([]),
+                ..Default::default()
+            },
             select(
                 "style",
                 "Style",
@@ -821,15 +829,6 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             },
             num("radius", "Corner radius", 0.0, 0.0, 64.0, 1.0, "px")
                 .group("Spacing & background"),
-            Field {
-                key: "order".into(),
-                label: "Image order".into(),
-                kind: "files".into(),
-                default: serde_json::json!([]),
-                group: Some("Spacing & background".into()),
-                ..Default::default()
-            }
-            .hidden(),
         ],
         (Category::Images, ToolId::AddBackground) => vec![
             select(

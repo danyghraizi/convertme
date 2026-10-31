@@ -34,11 +34,11 @@ const seg = (id: string, label: string, blurb: string): Segment => ({
 });
 
 /**
- * The reference dialog copy for a tool: sheet/rail title, primary action, the
- * rail's check lines and an eyebrow that replaces the category label. These mirror
- * `crates/convertme-core/src/formats.rs`; the wheel payload is the source of truth
- * at runtime, and this table is what the main window falls back to when
- * `wheels(category, null)` comes back empty.
+ * The dialog copy for a tool: sheet title, primary action, the benefit lines and an
+ * eyebrow naming the scope. These mirror `crates/convertme-core/src/formats.rs`, which
+ * is the source of truth at runtime; this table is what the main window falls back to
+ * when `wheels(category, null)` comes back empty. The dialog itself renders the title
+ * and the action; the benefits are catalog copy, not a panel beside the sheet.
  */
 const ref = (
   id: string,

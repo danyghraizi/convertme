@@ -243,40 +243,88 @@ def rms(path: str | Path, start: float = 0.0, length: float | None = None) -> fl
         return None
 
 
-def dominant_frequency(path: str | Path, start: float = 0.0, length: float = 0.4) -> float | None:
-    """The strongest frequency in a window — a 1 kHz bleep is 1 kHz, not speech."""
+def _pcm(path: str | Path, start: float, length: float, rate: int = 16000):
+    """Mono 16-bit samples of a window, decoded through ffmpeg into a temp WAV.
+
+    A WAV file rather than raw bytes on stdout: `_run` captures text, and a binary
+    stream is not text.
+    """
     if not _have("ffmpeg"):
-        return None
-    out = _run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostats",
-            "-ss",
-            f"{start}",
-            "-t",
-            f"{length}",
-            "-i",
-            str(path),
-            "-af",
-            "aspectralstats=measure=peak:win_size=8192,ametadata=print:file=-",
-            "-f",
-            "null",
-            "-",
-        ]
-    )
-    if out is None or out.returncode != 0:
-        return None
-    matches = re.findall(r"lavfi.aspectralstats.1.peak=\s*(\d+\.?\d*)", out.stdout)
-    if not matches:
-        return None
+        return None, rate
+    import array
+    import os
+    import tempfile
+    import wave
+
+    handle = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    handle.close()
     try:
-        return float(matches[-1])
-    except ValueError:
+        out = _run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                f"{start}",
+                "-t",
+                f"{length}",
+                "-i",
+                str(path),
+                "-ac",
+                "1",
+                "-ar",
+                str(rate),
+                "-f",
+                "wav",
+                handle.name,
+            ]
+        )
+        if out is None or out.returncode != 0:
+            return None, rate
+        with wave.open(handle.name, "rb") as decoded:
+            if decoded.getsampwidth() != 2:
+                return None, rate
+            frames = decoded.readframes(decoded.getnframes())
+        samples = array.array("h")
+        samples.frombytes(frames[: len(frames) // 2 * 2])
+        return samples, rate
+    finally:
+        os.unlink(handle.name)
+
+
+def tone_strength(
+    path: str | Path, start: float = 0.0, length: float = 0.4, freq: float = 1000.0
+) -> float | None:
+    """How much stronger `freq` is than its neighbouring bands in a window.
+
+    A bleep is a pure tone: its band towers over 0.7x and 1.4x the frequency, which
+    speech in the same window does not do. The earlier implementation asked ffmpeg's
+    `aspectralstats` for a "peak", a filter some builds do not carry, so it returned
+    nothing at all; this needs only a PCM decode and a Goertzel pass.
+    """
+    samples, rate = _pcm(path, start, length)
+    if not samples:
         return None
+    import math
 
+    def power(target: float) -> float:
+        if target >= rate / 2:
+            return 0.0
+        coeff = 2.0 * math.cos(2.0 * math.pi * target / rate)
+        s1 = 0.0
+        s2 = 0.0
+        for value in samples:
+            s0 = value + coeff * s1 - s2
+            s2 = s1
+            s1 = s0
+        return s1 * s1 + s2 * s2 - coeff * s1 * s2
 
-# ----------------------------------------------------------------------- pdf
+    peak = power(freq)
+    flank = max(power(freq * 0.7), power(freq * 1.4), 1e-9)
+    return peak / flank
+
 
 def pdf(path: str | Path) -> dict | None:
     """Page count and per-page size/rotation, from pdfinfo."""

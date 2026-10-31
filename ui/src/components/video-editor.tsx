@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Index, Show, createEffect, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
 import { asBoxes, asNumber } from '../fields';
 import { formatTimecode } from '../format';
@@ -27,14 +27,6 @@ interface VideoEditorProps {
   resetToken: number;
 }
 
-const PLAYABLE: Record<string, true> = {
-  mp4: true,
-  webm: true,
-  ogv: true,
-  mov: true,
-  m4v: true,
-};
-
 const round = (value: number): number => Math.round(value * 1000) / 1000;
 
 /** Speed ticks from the reference; the slider itself is a field row. */
@@ -62,10 +54,6 @@ export default function VideoEditor(props: VideoEditorProps) {
   const [equalClips, setEqualClips] = createSignal(4);
 
   const duration = (): number => info()?.duration ?? 0;
-  const playable = (): boolean => {
-    const format = info()?.format ?? '';
-    return PLAYABLE[format.toLowerCase()] === true;
-  };
   const start = (): number => asNumber(props.values.start ?? 0);
   const end = (): number => asNumber(props.values.end ?? 0);
   const boxes = (): TimedBox[] => asBoxes(props.values.boxes ?? []) as TimedBox[];
@@ -186,45 +174,6 @@ export default function VideoEditor(props: VideoEditorProps) {
     props.setValue('end', round(nextEnd));
   }
 
-  /** W/H in source pixels: the number typed is the size the file will have. */
-  const cropPixels = createMemo(() => {
-    const media = info();
-    const box = asBoxes(props.values.boxes ?? [])[0];
-    if (!media || !box) return { w: 0, h: 0 };
-    return { w: Math.round(box.w * media.width), h: Math.round(box.h * media.height) };
-  });
-
-  /** The rectangle to resize: the drawn one, or a centred full frame to start from. */
-  function cropBox(): { box: { x: number; y: number; w: number; h: number } } | null {
-    const media = info();
-    if (!media) return null;
-    const drawn = asBoxes(props.values.boxes ?? [])[0];
-    if (drawn) return { box: drawn };
-    return { box: { x: 0, y: 0, w: 1, h: 1 } };
-  }
-
-  // Typing a size must work before anything is drawn: the reference lets you enter the
-  // exact output dimensions first, and a control that needs a prior drag is dead.
-  function setCropWidth(width: number): void {
-    const media = info();
-    const current = cropBox();
-    if (!media || !current || media.width === 0 || width <= 0) return;
-    const fraction = Math.min(1, Math.max(0.02, width / media.width));
-    props.setValue('boxes', [
-      { ...current.box, w: fraction, x: Math.min(current.box.x, 1 - fraction) },
-    ] as FieldValue);
-  }
-
-  function setCropHeight(height: number): void {
-    const media = info();
-    const current = cropBox();
-    if (!media || !current || media.height === 0 || height <= 0) return;
-    const fraction = Math.min(1, Math.max(0.02, height / media.height));
-    props.setValue('boxes', [
-      { ...current.box, h: fraction, y: Math.min(current.box.y, 1 - fraction) },
-    ] as FieldValue);
-  }
-
   function setEqualSplits(): void {
     const count = Math.max(2, Math.min(20, Math.round(equalClips())));
     const media = info();
@@ -255,7 +204,6 @@ export default function VideoEditor(props: VideoEditorProps) {
                 duration={media().duration}
                 start={start()}
                 end={end()}
-                playable={playable()}
                 onRange={setRange}
                 onPlayhead={setPlayhead}
               />
@@ -273,37 +221,6 @@ export default function VideoEditor(props: VideoEditorProps) {
             aspect={String(props.values.aspect ?? 'free')}
             onChange={(box) => props.setValue('boxes', [box] as FieldValue)}
           />
-          <div class="crop-size-row">
-            <label class="crop-size">
-              <span>Width</span>
-              <input
-                type="number"
-                aria-label="Width"
-                min={1}
-                value={cropPixels().w}
-                onInput={(event) => setCropWidth(event.currentTarget.valueAsNumber)}
-              />
-              <span class="field-unit">px</span>
-            </label>
-            <label class="crop-size">
-              <span>Height</span>
-              <input
-                type="number"
-                aria-label="Height"
-                min={1}
-                value={cropPixels().h}
-                onInput={(event) => setCropHeight(event.currentTarget.valueAsNumber)}
-              />
-              <span class="field-unit">px</span>
-            </label>
-            <button
-              type="button"
-              class="button button-quiet"
-              onClick={() => props.setValue('boxes', [] as FieldValue)}
-            >
-              Reset crop
-            </button>
-          </div>
         </div>
         <Show when={info()}>
           {(media) => (
@@ -315,7 +232,6 @@ export default function VideoEditor(props: VideoEditorProps) {
                 start={0}
                 end={media().duration}
                 range={false}
-                playable={playable()}
                 onRange={() => undefined}
               />
             </div>
@@ -334,7 +250,6 @@ export default function VideoEditor(props: VideoEditorProps) {
                 start={0}
                 end={media().duration}
                 range={false}
-                playable={playable()}
                 onRange={() => undefined}
               />
             )}
@@ -367,7 +282,6 @@ export default function VideoEditor(props: VideoEditorProps) {
                 start={0}
                 end={media().duration}
                 range={false}
-                playable={playable()}
                 markers={markers()}
                 onMarkers={setMarkers}
                 onRange={() => undefined}
@@ -415,7 +329,6 @@ export default function VideoEditor(props: VideoEditorProps) {
                 start={0}
                 end={media().duration}
                 range={false}
-                playable={playable()}
                 onRange={() => undefined}
                 onPlayhead={setPlayhead}
               />
@@ -441,20 +354,25 @@ export default function VideoEditor(props: VideoEditorProps) {
             onChange={setRedactBoxes}
           />
           <ol class="redaction-list">
-            <For each={boxes()}>
+            {/* Indexed, not keyed by identity: a redaction row is edited in place, and
+                rebuilding the `<input>` on every keystroke lost the character being
+                typed (and the caret with it). */}
+            <Index each={boxes()}>
               {(box, index) => (
                 <li class="redaction-row">
-                  <span class="redaction-label">Region {index() + 1}</span>
+                  <span class="redaction-label">Region {index + 1}</span>
                   <label class="redaction-time">
                     <span>start</span>
                     <input
                       type="number"
-                      aria-label={`Region ${index() + 1} start`}
+                      aria-label={`Region ${index + 1} start`}
                       min={0}
                       step={0.1}
-                      value={box.start ?? 0}
-                      onInput={(event) =>
-                        updateBoxRange(index(), 'start', event.currentTarget.valueAsNumber)
+                      value={box().start ?? 0}
+                      /* Commit when the field is left: writing the parsed number back on
+                         every keystroke erases the "." in "0.5" before the 5 arrives. */
+                      onChange={(event) =>
+                        updateBoxRange(index, 'start', event.currentTarget.valueAsNumber)
                       }
                     />
                   </label>
@@ -462,22 +380,22 @@ export default function VideoEditor(props: VideoEditorProps) {
                     <span>end</span>
                     <input
                       type="number"
-                      aria-label={`Region ${index() + 1} end`}
+                      aria-label={`Region ${index + 1} end`}
                       min={0}
                       step={0.1}
-                      value={box.end ?? duration()}
-                      onInput={(event) =>
-                        updateBoxRange(index(), 'end', event.currentTarget.valueAsNumber)
+                      value={box().end ?? duration()}
+                      onChange={(event) =>
+                        updateBoxRange(index, 'end', event.currentTarget.valueAsNumber)
                       }
                     />
                   </label>
                   <button
                     type="button"
                     class="button button-quiet"
-                    aria-label={`Remove region ${index() + 1}`}
+                    aria-label={`Remove region ${index + 1}`}
                     onClick={() =>
                       setRedactBoxes(
-                        boxes().filter((_, position) => position !== index()) as FieldValue,
+                        boxes().filter((_, position) => position !== index) as FieldValue,
                       )
                     }
                   >
@@ -485,7 +403,7 @@ export default function VideoEditor(props: VideoEditorProps) {
                   </button>
                 </li>
               )}
-            </For>
+            </Index>
           </ol>
         </div>
       </Show>

@@ -801,3 +801,109 @@ number is only comparable if the reader can see what was removed.
 
 **Evidence.** `photo-preview-1024`: 907 → 201 ms with the probe removed and the JPEG
 decoder asked for a 2× image (`jpeg:size`), which is what a 1024 px preview can afford.
+
+## 57. A design reference is a reference, not a spec
+
+**Trap.** The Feedback_1 captures were read literally: a two-pane dialog with the tool's
+copy on the right, a close button at the top left, a fixed 600 px sheet. The rail ate a
+third of the screen, the dialog could no longer be moved, and the × sat where no Linux
+or Windows window puts it — the reference screenshots are macOS, and their side panel is
+annotation, not product.
+
+**Rule.** Take the *grammar* from a reference (rows, labels, one primary action) and the
+copy, but keep the platform's conventions and the product's own affordances: a dialog
+inside the window, draggable by its head, resizable from its corner, closing from the
+top right, with the tool's explanation left to the card that opened it.
+
+**Evidence.** The rail is gone (`About this tool` no longer in the accessibility tree);
+every dialog measures 600×h centred in the window, while the window itself stays visible.
+
+## 58. A tall control in a stretched grid row paints over the next row
+
+**Trap.** `.modal-fields` is a grid; each `.field` is an item, stretched to its track.
+A 40 px track with a 72 px control (the colour picker's swatches plus hex, the gradient
+editor, the crop readout) did not grow the row: the control overflowed and drew on top
+of the following field. The dialog looked like the screenshot was corrupted — and no
+screenshot test noticed, because both rows existed.
+
+**Rule.** A row must be as tall as what it holds: `align-self: start` on the item, so its
+own content decides the height. Measure *overlaps* between sibling controls, not just
+their presence, and treat an overlap as a layout failure.
+
+**Evidence.** The harness's overlap probe reported `#ffffff / 0` and `#101418 / 4`; with
+`align-self: start` the colour row measures 76 px with the control inside, and the images
+pass reports no overlaps.
+
+## 59. Percentages on a letterboxed preview are not percentages of the picture
+
+**Trap.** The crop box was positioned as a fraction of the *surface*, while the picture
+inside it was `object-fit`-letterboxed. A 1:1 preset therefore drew a box that was not
+square in the file, and 9:16 looked square on screen. The engine used fractions of the
+source, so preview and output could not agree.
+
+**Rule.** Put the overlay on a frame that is exactly the rendered picture (a shrink-to-
+fit wrapper around the `<img>`), and compute every fraction against that frame. Verify
+with numbers: the chosen ratio must match both the box on screen and the pixel dimensions
+the dialog will submit.
+
+**Evidence.** `crop-1:1` → screen ratio 1.000, 3024×3024 px; `crop-9:16` → 0.562,
+1701×3024 px. `ui-shots.py` asserts both every run.
+
+## 60. A reader and an editable-tag table must use the same names
+
+**Trap.** `editable_tags` advertised `Title`, `Description`, `Artist`, `Copyright` for
+images, but the reader inserted raw EXIF names, and PNG text chunks were not read at all.
+The metadata form showed empty rows for a file that had the value, so "does it fill what
+is already there?" had no answer.
+
+**Rule.** One vocabulary: the reader maps its container's keys onto the same names the
+writer accepts, and the harness proves it by writing a tag, reopening the dialog on the
+output and reading the field back.
+
+**Evidence.** `png_text_chunks_are_read_as_the_forms_own_keys` (a `Comment` chunk reads
+as `Title`), and the metadata scenarios now reopen the published file and check the
+`Title` entry reads `Harness`.
+
+## 61. Never mount a media element to find out whether it plays
+
+**Trap.** Pressing Play mounted `<video>` on the source clip. WebKitGTK's media stack
+(GStreamer without a working sink) took the whole process down, so a transport button
+could kill the app; the same class of failure made "Play Output" render an audio file and
+leave the user to press the native control.
+
+**Rule.** A preview must not depend on the platform decoder to stay alive. The video
+transport walks the filmstrip playhead (no decode); an audio preview starts playing when
+it is produced, and says so if the machine cannot play it.
+
+**Evidence.** The video dialogs keep the running process alive through Play/Step
+(`dialogs-video` passes); `Play Output` now plays the produced file on mount.
+
+## 62. A keyed list of inputs loses the character being typed
+
+**Trap.** The redaction rows were a `<For each={boxes()}>`. Every keystroke replaced the
+box object, so `<For>` (keyed by identity) re-created the row — including the `<input>`
+under the caret. Typing "0.5" left "0": the first character landed, the element was then
+destroyed and rebuilt from the old value.
+
+**Rule.** An editable list is keyed by *index* while it is being edited (`<Index>`), or
+its rows are mutated in place; rebuilding a focused control on input is how a form
+becomes impossible to fill. Test it the way a user types: enter a multi-character value
+and read it back.
+
+**Evidence.** `tool-video-redact`: `Region 1 start` read `0` after typing `0.5`; with
+`<Index>` the typed span reaches the job and the per-box frames change where expected.
+
+## 63. A preview work dir cannot be deleted before the artifact is used
+
+**Trap.** `run_tool_preview` rendered the tool into a temporary work dir and cleaned that
+dir up before returning the artifact path. The audio preview then asked ffmpeg to
+transcode a file that no longer existed, so `Play Output`/`With Bleeps` always failed —
+and the dialog showed "The preview failed", because the rejection is a string and the
+catch only understood `Error`.
+
+**Rule.** Ownership of a temporary directory ends when its last consumer is done: return
+the guard to the caller, clean up after the copy/transcode, and surface a rejected
+command's string. An error is the one message the user needs; never replace it.
+
+**Evidence.** `tool-audio-bleep` (`the bleep preview file was written`) failed before the
+fix and passes after it: the cache gains the MP3 and the dialog plays it.

@@ -114,6 +114,7 @@ pub fn run() -> i32 {
             dialog::measure_loudness,
             dialog::audio_preview,
             dialog::bleep_preview,
+            dialog::play_preview,
             dialog::photo_preview,
             dialog::collage_preview,
             dialog::file_metadata,

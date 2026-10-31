@@ -506,6 +506,11 @@ export async function audioPreview(
   return str(await invoke('audio_preview', { path, tool, params }));
 }
 
+export async function playPreview(path: string): Promise<void> {
+  if (isMock()) return;
+  await invoke('play_preview', { path });
+}
+
 export async function bleepPreview(
   path: string,
   params: Record<string, unknown>,

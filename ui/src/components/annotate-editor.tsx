@@ -47,6 +47,7 @@ function contains(shape: Shape, point: { x: number; y: number }): boolean {
 export default function AnnotateEditor(props: AnnotateEditorProps) {
   const [preview, setPreview] = createSignal('');
   const [note, setNote] = createSignal('');
+  const [natural, setNatural] = createSignal({ w: 1000, h: 1000 });
   const [tool, setTool] = createSignal<ToolName>('rect');
   const [selected, setSelected] = createSignal<number | null>(null);
   const [draft, setDraft] = createSignal<Shape | null>(null);
@@ -55,6 +56,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   const [undoCount, setUndoCount] = createSignal(0);
 
   let surface: HTMLDivElement | undefined;
+  let frame: HTMLDivElement | undefined;
   let rect: DOMRect | null = null;
   let origin: { x: number; y: number } | null = null;
   let drag: {
@@ -76,7 +78,19 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
     }
     void ipc
       .previewThumb(path, 1024)
-      .then((url) => setPreview(ipc.assetUrl(url)))
+      .then((url) => {
+        setNote('');
+        const image = new Image();
+        image.onload = () => setNatural({ w: image.naturalWidth, h: image.naturalHeight });
+        image.src = ipc.assetUrl(url);
+        setPreview(ipc.assetUrl(url));
+        void ipc
+          .imageSize(path)
+          .then((size) => {
+            if (size) setNatural(size);
+          })
+          .catch(() => undefined);
+      })
       .catch(() => setNote('Preview unavailable.'));
   });
 
@@ -109,7 +123,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   }
 
   function point(event: PointerEvent): { x: number; y: number } {
-    const bounds = rect ?? surface?.getBoundingClientRect();
+    const bounds = rect ?? frame?.getBoundingClientRect();
     if (!bounds || bounds.width === 0) return { x: 0, y: 0 };
     return {
       x: clamp01((event.clientX - bounds.left) / bounds.width),
@@ -137,8 +151,8 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   }
 
   function begin(event: PointerEvent): void {
-    if (!surface || !preview()) return;
-    rect = surface.getBoundingClientRect();
+    if (!surface || !frame || !preview()) return;
+    rect = frame.getBoundingClientRect();
     const p = point(event);
 
     if (tool() === 'select') {
@@ -280,6 +294,122 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
     setSelected(null);
   }
 
+  /**
+   * One shape as SVG in the picture's own pixel space: a 1 px line stays a line and an
+   * arrowhead stays an arrowhead at every size, instead of being distorted by the
+   * normalised box.
+   */
+  function drawShape(shape: Shape) {
+    const size = natural();
+    const w = size.w || 1000;
+    const h = size.h || 1000;
+    const stroke = Math.max(1.5, w / 400);
+    const colour = shape.color ?? props.color;
+    const left = Math.min(shape.x, shape.x + shape.w) * w;
+    const top = Math.min(shape.y, shape.y + shape.h) * h;
+    const width = Math.abs(shape.w) * w;
+    const height = Math.abs(shape.h) * h;
+
+    switch (shape.kind) {
+      case 'rect':
+        return (
+          <rect
+            x={left}
+            y={top}
+            width={width}
+            height={height}
+            fill="none"
+            stroke={colour}
+            stroke-width={stroke}
+          />
+        );
+      case 'ellipse':
+        return (
+          <ellipse
+            cx={left + width / 2}
+            cy={top + height / 2}
+            rx={width / 2}
+            ry={height / 2}
+            fill="none"
+            stroke={colour}
+            stroke-width={stroke}
+          />
+        );
+      case 'highlight':
+        return <rect x={left} y={top} width={width} height={height} fill={colour} opacity="0.32" />;
+      case 'number': {
+        const radius = Math.max(width, height) / 2;
+        return (
+          <>
+            <circle cx={left + width / 2} cy={top + height / 2} r={radius} fill={colour} />
+            <text
+              x={left + width / 2}
+              y={top + height / 2}
+              fill="#fff"
+              font-size={`${Math.max(10, radius * 1.1)}`}
+              font-weight="600"
+              text-anchor="middle"
+              dominant-baseline="central"
+            >
+              {shape.text ?? ''}
+            </text>
+          </>
+        );
+      }
+      case 'text':
+        return (
+          <text
+            x={shape.x * w}
+            y={shape.y * h}
+            fill={colour}
+            font-size={`${(shape.size ?? 28) * (w / 1000)}`}
+            dominant-baseline="hanging"
+          >
+            {shape.text ?? ''}
+          </text>
+        );
+      case 'line': {
+        const points =
+          shape.points && shape.points.length > 1
+            ? shape.points
+            : [
+                [shape.x, shape.y],
+                [shape.x + shape.w, shape.y + shape.h],
+              ];
+        return (
+          <polyline
+            points={points.map(([x, y]) => `${x * w},${y * h}`).join(' ')}
+            fill="none"
+            stroke={colour}
+            stroke-width={stroke}
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        );
+      }
+      default: {
+        const x1 = shape.x * w;
+        const y1 = shape.y * h;
+        const x2 = (shape.x + shape.w) * w;
+        const y2 = (shape.y + shape.h) * h;
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const length = Math.hypot(dx, dy) || 1;
+        const head = Math.max(stroke * 4, Math.min(length * 0.35, w * 0.03));
+        const bx = x2 - (dx / length) * head;
+        const by = y2 - (dy / length) * head;
+        const nx = (-dy / length) * head * 0.5;
+        const ny = (dx / length) * head * 0.5;
+        return (
+          <>
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={colour} stroke-width={stroke} stroke-linecap="round" />
+            <polygon points={`${x2},${y2} ${bx + nx},${by + ny} ${bx - nx},${by - ny}`} fill={colour} />
+          </>
+        );
+      }
+    }
+  }
+
   return (
     <div class="annotate-editor">
       <div class="annotate-toolbar" role="toolbar" aria-label="Annotation tools">
@@ -345,55 +475,53 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
         onPointerCancel={end}
       >
         <Show when={preview()} fallback={<p class="crop-placeholder">Preview unavailable</p>}>
-          <img src={preview()} alt="Annotation canvas" draggable={false} />
-          <For each={shown()}>
-            {(shape, index) => (
-              <span
-                class="annotate-shape"
-                classList={{ 'is-selected': selected() === index() }}
-                style={{
-                  left: `${Math.min(shape.x, shape.x + shape.w) * 100}%`,
-                  top: `${Math.min(shape.y, shape.y + shape.h) * 100}%`,
-                  width: `${Math.abs(shape.w) * 100}%`,
-                  height: `${Math.abs(shape.h) * 100}%`,
-                }}
-              >
-                <Show when={selected() === index() && tool() === 'select'}>
-                  <span
-                    class="annotate-handle"
-                    aria-hidden="true"
-                    onPointerDown={(event) => {
-                      if (!surface) return;
-                      rect = surface.getBoundingClientRect();
-                      drag = {
-                        index: index(),
-                        mode: 'resize',
-                        start: point(event),
-                        shape: { ...shape },
-                      };
-                      setLive(shown());
-                      surface.setPointerCapture(event.pointerId);
-                      event.stopPropagation();
-                      event.preventDefault();
-                    }}
-                  />
-                </Show>
-              </span>
-            )}
-          </For>
-          <Show when={draft()}>
-            {(shape) => (
-              <span
-                class="annotate-shape is-draft"
-                style={{
-                  left: `${Math.min(shape().x, shape().x + shape().w) * 100}%`,
-                  top: `${Math.min(shape().y, shape().y + shape().h) * 100}%`,
-                  width: `${Math.abs(shape().w) * 100}%`,
-                  height: `${Math.abs(shape().h) * 100}%`,
-                }}
-              />
-            )}
-          </Show>
+          <div class="annotate-frame" ref={frame}>
+            <img src={preview()} alt="Annotation canvas" draggable={false} />
+            <svg
+              class="annotate-shapes"
+              viewBox={`0 0 ${natural().w} ${natural().h}`}
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <For each={shown()}>{(shape) => drawShape(shape)}</For>
+              <Show when={draft()}>{(shape) => drawShape(shape())}</Show>
+            </svg>
+            <For each={shown()}>
+              {(shape, index) => (
+                <span
+                  class="annotate-hit"
+                  classList={{ 'is-selected': selected() === index() }}
+                  style={{
+                    left: `${Math.min(shape.x, shape.x + shape.w) * 100}%`,
+                    top: `${Math.min(shape.y, shape.y + shape.h) * 100}%`,
+                    width: `${Math.abs(shape.w) * 100}%`,
+                    height: `${Math.abs(shape.h) * 100}%`,
+                  }}
+                >
+                  <Show when={selected() === index() && tool() === 'select'}>
+                    <span
+                      class="annotate-handle"
+                      aria-hidden="true"
+                      onPointerDown={(event) => {
+                        if (!surface || !frame) return;
+                        rect = frame.getBoundingClientRect();
+                        drag = {
+                          index: index(),
+                          mode: 'resize',
+                          start: point(event),
+                          shape: { ...shape },
+                        };
+                        setLive(shown());
+                        surface.setPointerCapture(event.pointerId);
+                        event.stopPropagation();
+                        event.preventDefault();
+                      }}
+                    />
+                  </Show>
+                </span>
+              )}
+            </For>
+          </div>
         </Show>
       </div>
       <p class="field-help">

@@ -15,8 +15,6 @@ interface MediaTimelineProps {
   onMarkers?: (markers: number[]) => void;
   /** Draw the two end handles. The speed and split dialogs only scrub. */
   range?: boolean;
-  /** Container the browser can play; everything else is filmstrip-only. */
-  playable?: boolean;
   /** The playhead moved, so "Add frame"/"Add split" can read it. */
   onPlayhead?: (seconds: number) => void;
 }
@@ -39,24 +37,21 @@ export default function MediaTimeline(props: MediaTimelineProps) {
   const [frameError, setFrameError] = createSignal('');
   const [playhead, setPlayhead] = createSignal(0);
   const [playing, setPlaying] = createSignal(false);
-  const [failedPlayback, setFailedPlayback] = createSignal(false);
-  /** The media element is mounted by Play, not by opening the dialog. */
-  const [playback, setPlayback] = createSignal(false);
-  let video: HTMLVideoElement | undefined;
+  /** No <video> here: WebKitGTK's media stack crashed the app on Play. The strip is
+      the preview, and playing walks the playhead across it. */
+  let timer: number | undefined;
 
   // Keyed by path: switching files in a multi-file dialog reloads only the strip.
   createEffect(() => {
     const path = props.path;
     if (!path) return;
     setFrames([]);
-    setPlayback(false);
     void ipc
       .filmstrip(path, 12)
       .then((paths) => setFrames(paths.map((p) => ipc.assetUrl(p))))
       .catch((error) => setFrameError(error instanceof Error ? error.message : 'No filmstrip'));
   });
 
-  const canPlay = (): boolean => Boolean(props.playable && props.path && !failedPlayback());
   const percent = (seconds: number): number =>
     props.duration > 0 ? clamp((seconds / props.duration) * 100, 0, 100) : 0;
 
@@ -64,33 +59,34 @@ export default function MediaTimeline(props: MediaTimelineProps) {
     const next = clamp(seconds, 0, props.duration);
     setPlayhead(next);
     props.onPlayhead?.(next);
-    if (video) video.currentTime = next;
   }
 
   function step(direction: number): void {
     seek(playhead() + direction * FRAME);
   }
 
+  function stop(): void {
+    window.clearInterval(timer);
+    setPlaying(false);
+  }
+
+  /** Playing walks the playhead over the strip; it never decodes the file. */
   function togglePlay(): void {
-    if (!canPlay()) return;
-    if (!playback()) {
-      // WebKit initialises GStreamer as soon as a <video> exists; on a machine
-      // without an audio sink that stalls the web process for seconds. Mount it on
-      // Play, when the user asked for playback, and show the filmstrip until then.
-      setPlayback(true);
-      requestAnimationFrame(() => {
-        if (!video) return;
-        video.currentTime = playhead();
-        void video.play().catch(() => setFailedPlayback(true));
-      });
+    if (playing()) {
+      stop();
       return;
     }
-    if (!video) return;
-    if (playing()) {
-      video.pause();
-    } else {
-      void video.play().catch(() => setFailedPlayback(true));
-    }
+    if (props.duration <= 0) return;
+    setPlaying(true);
+    timer = window.setInterval(() => {
+      const next = playhead() + 0.1;
+      if (next >= props.duration) {
+        seek(props.duration);
+        stop();
+        return;
+      }
+      seek(next);
+    }, 100);
   }
 
   function setStart(value: number): void {
@@ -151,43 +147,21 @@ export default function MediaTimeline(props: MediaTimelineProps) {
     markerDrag = null;
   }
 
-  onCleanup(() => {
-    video?.pause();
-  });
+  onCleanup(() => window.clearInterval(timer));
 
   return (
     <div class="media-timeline">
       <div class="timeline-stage">
-        <Show
-          when={canPlay() && playback()}
-          fallback={
-            <div class="timeline-strip" aria-hidden="true">
-              <Show
-                when={frames().length > 0}
-                fallback={<div class="timeline-blank">{frameError() || 'Loading frames…'}</div>}
-              >
-                <For each={frames()}>
-                  {(frame) => <img class="timeline-frame" src={frame} alt="" draggable={false} />}
-                </For>
-              </Show>
-            </div>
-          }
-        >
-          <video
-            ref={video}
-            class="timeline-video"
-            src={props.path ? ipc.assetUrl(props.path) : undefined}
-            preload="metadata"
-            onTimeUpdate={(event) => {
-              setPlayhead(event.currentTarget.currentTime);
-              props.onPlayhead?.(event.currentTarget.currentTime);
-            }}
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
-            onEnded={() => setPlaying(false)}
-            onError={() => setFailedPlayback(true)}
-          />
-        </Show>
+        <div class="timeline-strip" aria-hidden="true">
+          <Show
+            when={frames().length > 0}
+            fallback={<div class="timeline-blank">{frameError() || 'Loading frames…'}</div>}
+          >
+            <For each={frames()}>
+              {(frame) => <img class="timeline-frame" src={frame} alt="" draggable={false} />}
+            </For>
+          </Show>
+        </div>
 
         <div class="timeline-track">
           <Show when={props.range !== false}>
@@ -283,7 +257,7 @@ export default function MediaTimeline(props: MediaTimelineProps) {
           type="button"
           class="timeline-button"
           aria-label={playing() ? 'Pause' : 'Play'}
-          disabled={!canPlay()}
+          disabled={props.duration <= 0}
           onClick={togglePlay}
         >
           {playing() ? '❚❚' : '▶'}
@@ -311,12 +285,6 @@ export default function MediaTimeline(props: MediaTimelineProps) {
           </span>
         </Show>
       </div>
-
-      <Show when={props.playable && failedPlayback()}>
-        <p class="field-help">
-          This container cannot be played in the window; step through the frames instead.
-        </p>
-      </Show>
     </div>
   );
 }
