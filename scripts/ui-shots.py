@@ -507,6 +507,46 @@ def run_category(
                     failures.append(f"video/crop: typing 640 as the width left {after!r}")
                 close_dialog(m)
 
+        if key == "pdf":
+            # The organizer's own controls: rotating a card must leave a rotation on that
+            # card, and the value is what the dialog submits.
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files={key}"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "PDF")
+            m.js(
+                "const card = [...document.querySelectorAll('.tool-card')]"
+                ".find((c) => c.innerText.trim().startsWith('Organize'));"
+                "if (card) card.click(); return !!card;"
+            )
+            if m.wait_for("document.querySelector('.page-card')", 6):
+                time.sleep(0.8)
+                rotated = m.js(
+                    """
+                    const button = [...document.querySelectorAll('.page-card button')]
+                      .find((b) => b.getAttribute('aria-label') === 'Rotate page 1');
+                    if (!button) return { found: false };
+                    button.click();
+                    return { found: true };
+                    """
+                )
+                time.sleep(0.5)
+                state = m.js(
+                    """
+                    const card = document.querySelector('.page-card');
+                    const meta = card ? card.innerText : '';
+                    return { meta, rotated: /90°/.test(meta) };
+                    """
+                )
+                report.append(
+                    {"category": key, "tool": "organize-rotate", "dialog": True,
+                     "rotated": state.get("rotated"), "meta": state.get("meta")}
+                )
+                if not rotated.get("found") or not state.get("rotated"):
+                    failures.append(
+                        f"pdf/organize: rotating page 1 left {state.get('meta')!r}"
+                    )
+                close_dialog(m)
+
         for index, tool in enumerate(tools):
             m.js(
                 "document.querySelectorAll('.tool-card')[%d].click(); return true;" % index

@@ -73,6 +73,12 @@ pub fn normalize(
                     );
                 }
             }
+            // The page organizer sends the object it already holds; only the CLI's
+            // prose form ("1:90,2:180") needs parsing. Turning an object into an empty
+            // map is how rotation was silently dropped.
+            "rotate" if value.is_object() => {
+                out.insert("rotate".into(), value);
+            }
             "rotate" => {
                 let text = value.as_str().unwrap_or_default();
                 let mut map = serde_json::Map::new();
@@ -197,5 +203,10 @@ mod tests {
         let out = normalize(Category::Pdf, ToolId::Organize, map).unwrap();
         assert_eq!(out.get("order").unwrap(), &serde_json::json!([3, 1, 2]));
         assert_eq!(out.get("rotate").unwrap()["1"], 90);
+        // The dialog sends the object it holds; normalising it must not empty it.
+        let mut structured = serde_json::Map::new();
+        structured.insert("rotate".into(), serde_json::json!({"2": 270}));
+        let out = normalize(Category::Pdf, ToolId::Organize, structured).unwrap();
+        assert_eq!(out.get("rotate").unwrap()["2"], 270);
     }
 }

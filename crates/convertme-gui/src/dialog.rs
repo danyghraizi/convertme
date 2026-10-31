@@ -78,9 +78,12 @@ pub async fn filmstrip(
         .begin(&format!("filmstrip:{path}:{frames}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        cache
-            .filmstrip(&file, frames, &ctx)
-            .map(|frames| frames.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+        cache.filmstrip(&file, frames, &ctx).map(|frames| {
+            frames
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -98,7 +101,10 @@ pub struct WaveformOut {
 /// Peaks for the waveform editor. The bucket count is capped so a ten-minute
 /// recording does not serialise a megabyte of JSON into the window.
 #[tauri::command]
-pub async fn waveform_data(state: State<'_, AppState>, path: String) -> Result<WaveformOut, String> {
+pub async fn waveform_data(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<WaveformOut, String> {
     let cache = state.cache.clone();
     let ctx = state.preview_guard.begin(&format!("waveform:{path}"));
     let file = PathBuf::from(path);
@@ -133,18 +139,20 @@ pub async fn channel_waveforms(
     let ctx = state.preview_guard.begin(&format!("channels:{path}"));
     let file = PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || {
-        cache.waveform_channels(&file, &ctx).map(|(left, right)| ChannelsOut {
-            left: WaveformOut {
-                duration_ms: left.duration_ms,
-                truncated: left.truncated,
-                peaks: downsample_peaks(&left.peaks, 4000),
-            },
-            right: WaveformOut {
-                duration_ms: right.duration_ms,
-                truncated: right.truncated,
-                peaks: downsample_peaks(&right.peaks, 4000),
-            },
-        })
+        cache
+            .waveform_channels(&file, &ctx)
+            .map(|(left, right)| ChannelsOut {
+                left: WaveformOut {
+                    duration_ms: left.duration_ms,
+                    truncated: left.truncated,
+                    peaks: downsample_peaks(&left.peaks, 4000),
+                },
+                right: WaveformOut {
+                    duration_ms: right.duration_ms,
+                    truncated: right.truncated,
+                    peaks: downsample_peaks(&right.peaks, 4000),
+                },
+            })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -260,16 +268,13 @@ fn run_tool_preview(
     tool: ToolId,
     params: &ToolParams,
 ) -> Result<PathBuf, convertme_core::error::JobError> {
-    let work = WorkDir::create(std::env::temp_dir().join(format!(
-        "convertme-preview-{}",
-        uuid::Uuid::new_v4()
-    )))
+    let work = WorkDir::create(
+        std::env::temp_dir().join(format!("convertme-preview-{}", uuid::Uuid::new_v4())),
+    )
     .map_err(|e| convertme_core::error::JobError::io("creating a preview work dir", &e))?;
     let result = (|| {
-        let dispatcher = convertme_engines::Dispatcher::with_preview(
-            state.tools.clone(),
-            state.cache.clone(),
-        );
+        let dispatcher =
+            convertme_engines::Dispatcher::with_preview(state.tools.clone(), state.cache.clone());
         let job = Job::new(
             source.to_path_buf(),
             Intent::Tool {
@@ -281,15 +286,12 @@ fn run_tool_preview(
         let _ = category;
         let ctx = JobCtx::new();
         let artifacts = dispatcher.run(&job, &work, &ctx)?;
-        artifacts
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                convertme_core::error::JobError::new(
-                    convertme_core::error::ErrorCode::EngineFailed,
-                    "the preview produced nothing",
-                )
-            })
+        artifacts.into_iter().next().ok_or_else(|| {
+            convertme_core::error::JobError::new(
+                convertme_core::error::ErrorCode::EngineFailed,
+                "the preview produced nothing",
+            )
+        })
     })();
     // The rendered artifact is copied into the cache below; the work dir goes now.
     work.cleanup();
@@ -333,12 +335,14 @@ async fn audio_preview_blocking(
 
     let produced = run_tool_preview(state, &source, Category::Audio, parsed, &params)
         .map_err(|e| e.to_string())?;
-    convertme_engines::av::transcode_preview(&state.tools, &produced, &key, AUDIO_PREVIEW_MAX_BYTES)
-        .and_then(|_| {
-            state.cache.enforce_cap();
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
+    convertme_engines::av::transcode_preview(
+        &state.tools,
+        &produced,
+        &key,
+        AUDIO_PREVIEW_MAX_BYTES,
+    )
+    .map(|_| state.cache.enforce_cap())
+    .map_err(|e| e.to_string())?;
     Ok(key.to_string_lossy().into_owned())
 }
 
@@ -413,7 +417,9 @@ pub async fn collage_preview(
     if inputs.is_empty() {
         return Err("a collage needs at least one image".to_string());
     }
-    let raw = params.and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    let raw = params
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
     let params = convertme_core::params::normalize(Category::Images, ToolId::Collage, raw)?;
     let cache = state.cache.clone();
     let tools = state.tools.clone();
@@ -509,7 +515,10 @@ fn metadata_groups(
     use convertme_core::error::{ErrorCode, JobError};
 
     let format = Registry::detect(source).ok_or_else(|| {
-        JobError::new(ErrorCode::Unsupported, "the file's format is not registered")
+        JobError::new(
+            ErrorCode::Unsupported,
+            "the file's format is not registered",
+        )
     })?;
     let facts = convertme_engines::av::media_info(tools, source).ok();
     let existing = convertme_engines::metadata::read(source);
@@ -577,10 +586,7 @@ fn metadata_groups(
         Category::Video => "Video",
         _ => "Document",
     };
-    let writable: Vec<&'static str> = convertme_engines::metadata::editable_tags(format.id)
-        .iter()
-        .copied()
-        .collect();
+    let writable: &[&'static str] = convertme_engines::metadata::editable_tags(format.id);
     // A writer without a delete API cannot remove one tag; the row then has no minus
     // button and `remove` refuses it.
     let removable = convertme_engines::metadata::supports_remove(format.id);

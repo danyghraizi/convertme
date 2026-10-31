@@ -220,10 +220,7 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
         // One cap for both caches: the dispatcher's and the app state's. They used to
         // be two literals (256 MB and the setting), so "clear the cache" and "shrink
         // the cache" were talking about different objects.
-        cache: convertme_engines::preview::PreviewCache::new(
-            paths::previews_dir(),
-            preview_cap,
-        ),
+        cache: convertme_engines::preview::PreviewCache::new(paths::previews_dir(), preview_cap),
         backend,
         background: false,
         pending: Mutex::new(initial_paths),

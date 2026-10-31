@@ -233,12 +233,7 @@ impl PreviewCache {
     }
 
     /// Thumbnail path, generating it at `size` px on the longest edge if missing.
-    pub fn thumbnail(
-        &self,
-        source: &Path,
-        size: u32,
-        ctx: &JobCtx,
-    ) -> Result<PathBuf, JobError> {
+    pub fn thumbnail(&self, source: &Path, size: u32, ctx: &JobCtx) -> Result<PathBuf, JobError> {
         let size = size.min(512);
         let path = self
             .key(source, "thumb", &size.to_string())
@@ -524,9 +519,8 @@ impl PreviewCache {
 /// page it never rendered.
 fn pdf_page_sizes(path: &Path) -> Result<Vec<(u32, u32)>, JobError> {
     use lopdf::Object;
-    let doc = lopdf::Document::load(path).map_err(|e| {
-        JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}"))
-    })?;
+    let doc = lopdf::Document::load(path)
+        .map_err(|e| JobError::new(ErrorCode::EngineFailed, format!("reading the PDF: {e}")))?;
 
     fn resolve<'a>(doc: &'a lopdf::Document, object: &'a Object) -> &'a Object {
         let mut current = object;
@@ -556,7 +550,9 @@ fn pdf_page_sizes(path: &Path) -> Result<Vec<(u32, u32)>, JobError> {
             .get_object(id)
             .ok()
             .and_then(|o| o.as_dict().ok())
-            .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "a PDF page is not a dictionary"))?;
+            .ok_or_else(|| {
+                JobError::new(ErrorCode::EngineFailed, "a PDF page is not a dictionary")
+            })?;
         let media = page
             .get(b"MediaBox")
             .ok()
@@ -584,7 +580,10 @@ fn pdf_page_sizes(path: &Path) -> Result<Vec<(u32, u32)>, JobError> {
         } else {
             (width, height)
         };
-        sizes.push((width.round().max(1.0) as u32, height.round().max(1.0) as u32));
+        sizes.push((
+            width.round().max(1.0) as u32,
+            height.round().max(1.0) as u32,
+        ));
     }
     if sizes.is_empty() {
         return Err(JobError::new(
@@ -637,8 +636,7 @@ fn render_pdf_pages(
     if wanted == 0 {
         return Ok(Vec::new());
     }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| JobError::io("creating the page cache", &e))?;
+    std::fs::create_dir_all(dir).map_err(|e| JobError::io("creating the page cache", &e))?;
     let pdftoppm = crate::probe::which("pdftoppm")
         .ok_or_else(|| JobError::missing_tool("Poppler (pdftoppm)"))?;
     let prefix = dir.join("page");
@@ -654,7 +652,7 @@ fn render_pdf_pages(
             .arg(source)
             .arg(&prefix)
             .budget(proc::Budget::Long),
-        &ctx,
+        ctx,
     )?
     .ok()?;
     Ok(read_frames(dir).unwrap_or_default())
@@ -892,10 +890,16 @@ mod tests {
         let first = guard.begin("filmstrip:/a.mp4");
         assert!(!first.is_cancelled());
         let second = guard.begin("filmstrip:/a.mp4");
-        assert!(first.is_cancelled(), "the superseded request must be cancelled");
+        assert!(
+            first.is_cancelled(),
+            "the superseded request must be cancelled"
+        );
         assert!(!second.is_cancelled());
         guard.finish("filmstrip:/a.mp4");
-        assert!(second.is_cancelled(), "closing the dialog cancels the request");
+        assert!(
+            second.is_cancelled(),
+            "closing the dialog cancels the request"
+        );
     }
 
     /// Two different previews of the same file must not cancel each other: the video
@@ -905,7 +909,10 @@ mod tests {
         let guard = PreviewGuard::default();
         let film = guard.begin("filmstrip:/a.mp4");
         let wave = guard.begin("waveform:/a.mp4");
-        assert!(!film.is_cancelled(), "an unrelated preview killed the filmstrip");
+        assert!(
+            !film.is_cancelled(),
+            "an unrelated preview killed the filmstrip"
+        );
         assert!(!wave.is_cancelled());
         guard.finish_all();
         assert!(film.is_cancelled() && wave.is_cancelled());

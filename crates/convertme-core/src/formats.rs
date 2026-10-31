@@ -676,7 +676,10 @@ pub static TOOLS: &[Tool] = &[
         "Save Redacted Copy",
         "Detect faces and text, then fill the boxes you keep.",
         ImageMagick,
-        ["Detect faces and text locally", "Layer several movable redaction areas"],
+        [
+            "Detect faces and text locally",
+            "Layer several movable redaction areas"
+        ],
         None
     ),
     // Video
@@ -756,7 +759,10 @@ pub static TOOLS: &[Tool] = &[
         "Save Redacted Copy",
         "Blur a region for a time range and re-encode a clean copy.",
         Ffmpeg,
-        ["Give each redaction its own time range", "Use solid colors or blur"],
+        [
+            "Give each redaction its own time range",
+            "Use solid colors or blur"
+        ],
         None
     ),
     tool!(
@@ -767,7 +773,10 @@ pub static TOOLS: &[Tool] = &[
         "Join Videos",
         "Arrange clips in playback order and save one file.",
         Ffmpeg,
-        ["Mix MP4, MOV, and MKV clips", "Use the first clip as the output canvas"],
+        [
+            "Mix MP4, MOV, and MKV clips",
+            "Use the first clip as the output canvas"
+        ],
         None
     ),
     tool!(
@@ -1269,7 +1278,12 @@ mod tests {
     fn cross_format_editors_are_labelled_any_file() {
         // Compress and Metadata exist per category but read the same in each: the
         // eyebrow replaces the category word the rail would otherwise show.
-        for category in [Category::Images, Category::Video, Category::Audio, Category::Pdf] {
+        for category in [
+            Category::Images,
+            Category::Video,
+            Category::Audio,
+            Category::Pdf,
+        ] {
             let tool = Registry::tool(category, ToolId::Compress).unwrap();
             assert_eq!(tool.eyebrow, Some("Any file"));
         }

@@ -337,6 +337,16 @@ fn preview(args: &[String]) -> i32 {
     let Some(source) = parsed.files.first().cloned() else {
         return usage_error("preview needs a file");
     };
+    // The dialogs never re-probe the host: the capability cache is written at startup
+    // and reused. Probing here would add ten process launches to every measurement and
+    // report a number the app never sees.
+    let tools = {
+        let caps = convertme_core::capability::Capabilities::load(&paths::capabilities_json());
+        convertme_engines::Toolset::new(
+            std::sync::Arc::new(parking_lot::RwLock::new(caps)),
+            convertme_engines::probe::ProbeOptions::from_env(),
+        )
+    };
     let settings = paths::settings_json();
     let cap = convertme_core::settings::Settings::load(&settings).preview_cache_bytes;
     let cache = convertme_engines::preview::PreviewCache::new(paths::previews_dir(), cap);
@@ -350,7 +360,10 @@ fn preview(args: &[String]) -> i32 {
         },
         None => Default::default(),
     };
-    let size: u32 = parsed.value("--size").and_then(|v| v.parse().ok()).unwrap_or(512);
+    let size: u32 = parsed
+        .value("--size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(512);
     let frames: usize = parsed
         .value("--frames")
         .and_then(|v| v.parse().ok())
@@ -430,7 +443,6 @@ fn preview(args: &[String]) -> i32 {
             Err(e) => return engine_error(e),
         },
         "photo" => {
-            let tools = convertme_engines::Toolset::probe_now();
             let key = match cache.artifact_key(&source, "photo", "cli", "jpg") {
                 Some(key) => key,
                 None => {
@@ -450,7 +462,6 @@ fn preview(args: &[String]) -> i32 {
         }
         "compress" => {
             // The dialog's own function: normalize → encode → cache → numbers.
-            let tools = convertme_engines::Toolset::probe_now();
             let params = serde_json::Value::Object(params);
             match crate::commands::preview_compress_blocking(
                 &tools,

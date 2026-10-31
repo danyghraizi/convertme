@@ -713,7 +713,10 @@ fn match_pages_to_narrowest(path: &Path) -> Result<(), JobError> {
         }
         let scale = narrowest / width;
         let height = (box_[3] - box_[1]).abs() * scale;
-        let open = Stream::new(Dictionary::new(), format!("q {scale:.6} 0 0 {scale:.6} 0 0 cm\n").into_bytes());
+        let open = Stream::new(
+            Dictionary::new(),
+            format!("q {scale:.6} 0 0 {scale:.6} 0 0 cm\n").into_bytes(),
+        );
         let close = Stream::new(Dictionary::new(), b"Q\n".to_vec());
         let open_id = doc.add_object(Object::Stream(open));
         let close_id = doc.add_object(Object::Stream(close));
@@ -1335,7 +1338,10 @@ mod tests {
         let mut heights: Vec<f32> = Vec::new();
         for (_, id) in doc.get_pages() {
             let page = doc.get_object(id).and_then(|o| o.as_dict()).expect("page");
-            let box_ = page.get(b"MediaBox").and_then(|o| o.as_array()).expect("MediaBox");
+            let box_ = page
+                .get(b"MediaBox")
+                .and_then(|o| o.as_array())
+                .expect("MediaBox");
             let values: Vec<f32> = box_
                 .iter()
                 .map(|item| match item {

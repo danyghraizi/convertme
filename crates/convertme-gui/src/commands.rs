@@ -394,7 +394,7 @@ fn convert_segments(
             Segment {
                 disabled,
                 hint,
-                ..Segment::plain(&f.id.0, f.label, Some(&format!("Convert to {}", f.label)))
+                ..Segment::plain(f.id.0, f.label, Some(&format!("Convert to {}", f.label)))
             }
         })
         .collect()
@@ -473,6 +473,14 @@ pub async fn run(
         IntentIn::Tool { tool, params } => {
             let tool = ToolId::parse(&tool).ok_or_else(|| format!("unknown tool {tool:?}"))?;
             let params = convertme_core::params::normalize(category, tool, params)?;
+            // What the dialog actually submitted, on one line: the one record that
+            // answers "did the control reach the engine?" without a debugger.
+            logln!(
+                "queued {} in {}: {}",
+                tool,
+                category,
+                serde_json::Value::Object(params.clone())
+            );
             Intent::Tool { tool, params }
         }
     };
@@ -1833,8 +1841,7 @@ mod generated_fields {
         let on_disk: serde_json::Value =
             serde_json::from_str(&text).expect("parse the generated file");
         assert_eq!(
-            on_disk,
-            current,
+            on_disk, current,
             "the mock's field tables are stale: run `UPDATE_FIELDS=1 cargo test -p convertme-gui \
              generated_fields`, then `npm --prefix ui run build`"
         );
@@ -1880,7 +1887,12 @@ mod wheels_payload {
     #[test]
     fn cross_format_editors_say_any_file() {
         let caps = Capabilities::assume_all();
-        for category in [Category::Images, Category::Video, Category::Audio, Category::Pdf] {
+        for category in [
+            Category::Images,
+            Category::Video,
+            Category::Audio,
+            Category::Pdf,
+        ] {
             let segments = super::tool_segments(category, &caps);
             let compress = segments.iter().find(|s| s.id == "compress").unwrap();
             assert_eq!(compress.title.as_deref(), Some("Compress"));

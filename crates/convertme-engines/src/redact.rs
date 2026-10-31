@@ -355,10 +355,11 @@ fn enable_expr(windows: &[(f64, f64)]) -> Option<String> {
 /// comment in some filter parsers).
 fn filter_color(value: &str) -> String {
     let trimmed = value.trim();
-    if let Some(hex) = trimmed.strip_prefix('#') {
-        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return format!("0x{hex}");
-        }
+    if let Some(hex) = trimmed.strip_prefix('#')
+        && hex.len() == 6
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return format!("0x{hex}");
     }
     trimmed.to_string()
 }

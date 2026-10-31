@@ -140,7 +140,10 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         let key = &remove[0];
         return Err(JobError::new(
             ErrorCode::Unsupported,
-            format!("{key} cannot be removed from {}; strip every tag instead", format.0),
+            format!(
+                "{key} cannot be removed from {}; strip every tag instead",
+                format.0
+            ),
         ));
     }
 

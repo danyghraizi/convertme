@@ -702,3 +702,73 @@ waiting. A harness that cannot fail fast is a harness that lies.
 
 **Evidence.** The hung job showed `convertme /tmp/…/photo.jpg --kind thumb --size 512`
 as its child; with the verb and a timeout the whole suite finishes in about a minute.
+
+## 50. "Can set" and "can delete" are different capabilities
+
+**Trap.** The metadata browser asked the writer one question — `supports_remove` — and
+used the answer for both editing and deleting. PNG and WEBP are written through
+ImageMagick, which sets a tag but can only clear whole profiles, so the answer was no and
+every row rendered as read-only text: setting a title on a PNG became impossible, and the
+dialog showed no text fields at all.
+
+**Rule.** A capability is per operation. `editable` (the writer can set this tag) and
+`removable` (the writer can delete this tag alone) are separate fields; the input is
+shown whenever the first holds, the minus button only when the second does. A field that
+says `editable: false` must mean "the writer refuses this", not "we were not sure".
+
+**Evidence.** The a11y tree of the Images metadata dialog had `list item` + `label` and no
+`entry` at all when the rows were read-only. After the split: `tool-image-metadata`
+passes (Title written to a PNG, read back, pixels identical).
+
+## 51. A preview cache key must cover the whole request
+
+**Trap.** The preview guard cancelled requests by file alone, so the crop canvas (one
+filmstrip frame) and the timeline (twelve frames) cancelled each other: the canvas showed
+no preview, and the timeline showed frames. Both were "the same file".
+
+**Rule.** Supersede-by-key, and let the key be the request: file *and* kind *and* the
+parameters that change the output (frame count, size, params, version). Two previews of
+one file are normal — the audio dialogs ask for a waveform and a channel split at once.
+
+**Evidence.** The video crop canvas was empty with a single-slot guard; with
+`filmstrip:<path>:<frames>` it renders, and the audio dialogs keep both waveforms.
+
+## 52. A dynamic loudness pass is not a target
+
+**Trap.** `loudnorm` ran once for files under twenty seconds and twice for longer ones.
+The single pass is dynamic: it landed at −17.07 LUFS for a −16 target, and the acceptance
+is ±1 LUFS — the approximation ate the entire tolerance.
+
+**Rule.** Measure, then apply: always two passes, feeding `measured_I/TP/LRA` into the
+second. The cost is one extra decode of a file the user explicitly asked to re-encode.
+
+**Evidence.** `tool-audio-normalize`: −17.07 LUFS before, within −16 ±1 after, with the
+same duration and the true peak under −1.5 dBTP.
+
+## 53. A control that needs a prior gesture is a dead control
+
+**Trap.** The video crop dialog's Width/Height inputs returned early when no rectangle
+existed yet, so they displayed `0` and typing did nothing. The reference dialog's whole
+point is "enter exact output dimensions" — first.
+
+**Rule.** Seed the thing the control edits. Typing a width with no box creates a centred
+full-frame box and then applies the width; the control works on the first keystroke.
+
+**Evidence.** The inputs now change the rectangle without a drag; the engine's free-crop
+path is measured by `quality-audit.py --only video-crop` (640 × 360 from 0.25/0.25/0.5/0.5).
+
+## 54. The accessibility tree is only what is on screen
+
+**Trap.** A dialog's text was reported missing by the real-app harness even though a
+screenshot showed it: WebKit prunes elements scrolled out of the sheet from the
+accessibility tree, so "not in the tree" meant "not scrolled into view". The same trap hit
+every synthetic drag on a surface below the fold.
+
+**Rule.** Scroll with the wheel over the sheet before reading content that may be below
+the fold, and scroll a drag surface into view before dragging it. When a canvas still
+refuses synthetic pointer motion, say so in the scenario and measure that behaviour at
+the engine layer (`quality-audit.py`) instead of pretending the dialog was verified.
+
+**Evidence.** `scroll_dialog` plus `ensure_visible` turned the normalize readout and the
+video crop canvas from "absent" into present; `tool-audio-normalize` and
+`tool-video-crop` pass, and `audio-bleep`/`video-redact` name the part the audit covers.

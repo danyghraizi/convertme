@@ -145,9 +145,7 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             )?;
             let style = string(params, "style")?.unwrap_or("grid");
             if !["grid", "row", "column", "featured"].contains(&style) {
-                return Err(unsupported(
-                    "`style` must be grid, row, column or featured",
-                ));
+                return Err(unsupported("`style` must be grid, row, column or featured"));
             }
             if let Some(columns) = unsigned(params, "columns")?
                 && !(1..=6).contains(&columns)
@@ -769,6 +767,56 @@ struct TargetSearch<'a> {
 }
 
 impl TargetSearch<'_> {
+    /// The smallest artifact this format can produce for this source: two 85 % downscales
+    /// and the smallest palette (or the lowest quality, for a lossy format).
+    fn floor_candidate(&self, cx: &Context<'_>) -> Result<Option<PathBuf>, JobError> {
+        let Self {
+            magick,
+            source,
+            ext,
+            lossy,
+            colours,
+            ..
+        } = *self;
+        // The floor is a *bound*, not a result the user asked for: the ladder it replaces
+        // walks down to two colours whatever palette was requested, so the bound has to be
+        // the same artifact. A requested palette only seeds where the ladder starts.
+        let _ = colours;
+        let palette = 2u32;
+        let small = cx.scratch(&format!("compress-floor-small.{ext}"));
+        run_magick(
+            magick,
+            vec![
+                os(source),
+                os("-resize"),
+                os("85%"),
+                os("-resize"),
+                os("85%"),
+                os(&small),
+            ],
+            cx,
+            Budget::Short,
+        )?;
+        let produced = if lossy {
+            let out = cx.scratch(&format!("compress-floor.{ext}"));
+            run_magick(
+                magick,
+                vec![os(&small), os("-quality"), os("1"), os(&out)],
+                cx,
+                Budget::Short,
+            )?;
+            out
+        } else if ext == "png" {
+            let path = cx.scratch("compress-floor.png");
+            quantize_png(&small, palette, 0.0, &path, cx)?;
+            path
+        } else {
+            small
+        };
+        let optimized = optimize_png(produced, ext, cx)?;
+        Ok(Some(optimized))
+    }
+
     fn run(&self, cx: &Context<'_>) -> Result<PathBuf, JobError> {
         let Self {
             magick,
@@ -796,6 +844,18 @@ impl TargetSearch<'_> {
             )?;
             current = resized;
         }
+        // Floor first. The ladder below walks palette 256 → 2 across three downscales to
+        // find the smallest image the format can make, which took thirteen seconds on a
+        // poster to prove that a 1,000-byte target is unreachable. One pass at the floor
+        // answers the same question: if even that is above the target, nothing in the
+        // ladder can be below it, and the floor is the result.
+        if let Some(floor) = self.floor_candidate(cx)? {
+            let floor_len = file_len(&floor)?;
+            if floor_len > target {
+                return Ok(floor);
+            }
+        }
+
         let mut smallest: Option<PathBuf> = None;
         let mut smallest_len = u64::MAX;
         let mut probe = 0usize;
@@ -1115,10 +1175,10 @@ fn compose_collage(
     let height = height - height % 2;
 
     let (cols, rows, cells) = collage_cells(style, columns, order.len());
-    let cell_w = ((i64::from(width) - i64::from(spacing) * (cols as i64 + 1)) / cols as i64)
-        .max(1) as u32;
-    let cell_h = ((i64::from(height) - i64::from(spacing) * (rows as i64 + 1)) / rows as i64)
-        .max(1) as u32;
+    let cell_w =
+        ((i64::from(width) - i64::from(spacing) * (cols as i64 + 1)) / cols as i64).max(1) as u32;
+    let cell_h =
+        ((i64::from(height) - i64::from(spacing) * (rows as i64 + 1)) / rows as i64).max(1) as u32;
 
     let mut args: Vec<OsString> = vec![
         os("-size"),
@@ -1199,10 +1259,7 @@ fn compose_collage(
     args.push(os("90"));
     args.push(os(out));
 
-    let output = proc::run(
-        Cmd::new(magick).args(args).budget(Budget::Long),
-        ctx,
-    )?;
+    let output = proc::run(Cmd::new(magick).args(args).budget(Budget::Long), ctx)?;
     output.ok()?;
     ensure_file(out, "the collage composer")?;
     ctx.set_progress(1.0);
@@ -1535,9 +1592,7 @@ fn shape_from_object(
     match kind {
         ShapeKind::Rect | ShapeKind::Ellipse | ShapeKind::Highlight | ShapeKind::Number => {
             if w <= 0.0 || h <= 0.0 {
-                return Err(unsupported(format!(
-                    "{kind:?} `w`/`h` must be > 0"
-                )));
+                return Err(unsupported(format!("{kind:?} `w`/`h` must be > 0")));
             }
             if !inside(x + w) || !inside(y + h) {
                 return Err(unsupported("shape must lie inside the image"));
@@ -1610,9 +1665,9 @@ fn draw_command(shape: &DrawShape, width: u32, height: u32, default: &str) -> St
                 "fill none stroke {colour} stroke-width {stroke:.1} ellipse {cx:.2},{cy:.2} {rx:.2},{ry:.2} 0,360"
             )
         }
-        ShapeKind::Highlight => format!(
-            "fill {colour}80 stroke none rectangle {x1:.2},{y1:.2} {x2:.2},{y2:.2}"
-        ),
+        ShapeKind::Highlight => {
+            format!("fill {colour}80 stroke none rectangle {x1:.2},{y1:.2} {x2:.2},{y2:.2}")
+        }
         ShapeKind::Arrow => {
             let angle = (y2 - y1).atan2(x2 - x1);
             let head = (0.03 * width.min(height) as f32).clamp(8.0, 48.0);
@@ -2120,21 +2175,29 @@ pub fn photo_preview(
 ) -> Result<(), JobError> {
     let magick = tools.path(ToolKey::Magick)?;
     let ctx = JobCtx::new();
-    let mut args: Vec<OsString> = vec![
-        os(source),
-        os("-auto-orient"),
-        os("-thumbnail"),
-        os(format!("{size}x{size}>")),
-    ];
+    let mut args: Vec<OsString> = Vec::new();
+    // A JPEG can be decoded at a fraction of its size: `jpeg:size` asks the decoder for
+    // a DCT-scaled version, which is the difference between decoding twelve megapixels
+    // and decoding two. The full job never does this — its output is the real file.
+    let jpeg = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
+        .unwrap_or(false);
+    if jpeg {
+        args.push(os("-define"));
+        args.push(os(format!("jpeg:size={}x{}", size * 2, size * 2)));
+    }
+    args.push(os(source));
+    args.push(os("-auto-orient"));
+    args.push(os("-thumbnail"));
+    args.push(os(format!("{size}x{size}>")));
     args.extend(photo_filter_args(params)?);
     args.push(os("-quality"));
     args.push(os("86"));
     args.push(os(out));
     let _permit = cache.preview_permit();
-    let output = proc::run(
-        Cmd::new(magick).args(args).budget(Budget::Short),
-        &ctx,
-    )?;
+    let output = proc::run(Cmd::new(magick).args(args).budget(Budget::Short), &ctx)?;
     output.ok()?;
     ensure_file(out, "the photo preview")?;
     Ok(())
@@ -3003,7 +3066,10 @@ mod tests {
         assert_eq!(png_dims(&artifacts[0]), (600, 400));
         // The rectangle's left border is blue; its interior and the corner are not.
         let border = pixel(&f, &artifacts[0], 60, 100);
-        assert!(border.2 > 150 && border.0 < 120, "rect border was {border:?}");
+        assert!(
+            border.2 > 150 && border.0 < 120,
+            "rect border was {border:?}"
+        );
         let inside = pixel(&f, &artifacts[0], 200, 100);
         assert_eq!(inside, (255, 0, 0), "the rectangle has no fill");
         assert_eq!(pixel(&f, &artifacts[0], 2, 2), (255, 0, 0));
@@ -3426,7 +3492,11 @@ mod tests {
         let artifacts = run_engine(&f, &job).expect("compress");
         let (width, height) =
             crate::image_dimensions(&artifacts[0]).expect("the artifact is an image");
-        assert_eq!((width, height), (800, 500), "scale 50 halves the dimensions");
+        assert_eq!(
+            (width, height),
+            (800, 500),
+            "scale 50 halves the dimensions"
+        );
     }
 
     /// q100 asks for more fidelity than the source has; the re-encode is larger, so the

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -234,6 +235,31 @@ def pdf_check(pages=None, at_least_one_page=True):
         if at_least_one_page:
             checks.append({"name": "has pages", "ok": facts["pages"] >= 1, "actual": facts["pages"]})
         return checks
+
+    return check
+
+
+def pdf_rotation_check(page: int, degrees: int):
+    """A page's /Rotate value, read back with pdfinfo."""
+
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        result = subprocess.run(
+            ["pdfinfo", "-f", str(page), "-l", str(page), str(produced[0])],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        found = re.search(rf"Page\s+{page} rot:\s+(-?\d+)", result.stdout)
+        actual = int(found.group(1)) if found else None
+        return [
+            {
+                "name": f"page {page} is rotated {degrees}°",
+                "ok": actual == degrees,
+                "actual": actual,
+            }
+        ]
 
     return check
 
@@ -523,6 +549,14 @@ CASES: list[Case] = [
     convert("pdf-to-docx", "pdf/Jake_s_Resume__Anonymous_.pdf", "DOCX",
            docx_check(headings=1)),
     convert("pdf-to-pptx", "pdf/report-5-pages.pdf", "PPTX", package_check("PPTX")),
+    tool_case(
+        "pdf-organize-rotate",
+        "pdf/report-5-pages.pdf",
+        "organize",
+        "pdf",
+        {"order": [1, 2, 3, 4, 5], "rotate": {"1": 90}},
+        pdf_rotation_check(1, 90),
+    ),
     tool_case("pdf-organize", "pdf/report-5-pages.pdf", "organize", "pdf",
               {"order": [1, 2, 3, 4, 5]}, pdf_check(pages=5)),
     # Merge needs the whole selection: the CLI takes every input as one job.

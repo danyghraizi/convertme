@@ -672,8 +672,8 @@ fn trim(job: &Job, category: Category, cx: &Context<'_>) -> Result<Vec<PathBuf>,
     // the filter in some ffmpeg builds and would publish the silence back.
     if is_cut_friendly(&ext) && !trim_silence {
         // `-avoid_negative_ts make_zero` grows a seeked copy on this muxer (2→5 s
-    // produced 5.09 s): the default keeps the output at the requested length.
-    cmd = cmd.args(["-c", "copy"]);
+        // produced 5.09 s): the default keeps the output at the requested length.
+        cmd = cmd.args(["-c", "copy"]);
     } else {
         if matches!(category, Category::Video) {
             for arg in video_encode_args(cx, &ext)? {
@@ -969,20 +969,16 @@ fn join_reencode(
     }
     let width = even(first.width.max(2));
     let height = even(first.height.max(2));
-    let all_video = inputs.iter().all(|input| {
-        probe(cx, input)
-            .map(|info| info.has_video)
-            .unwrap_or(false)
-    });
+    let all_video = inputs
+        .iter()
+        .all(|input| probe(cx, input).map(|info| info.has_video).unwrap_or(false));
     if !all_video {
         return Err(invalid("every clip needs a video track to be joined"));
     }
     let audio_all = first.has_audio
-        && inputs.iter().all(|input| {
-            probe(cx, input)
-                .map(|info| info.has_audio)
-                .unwrap_or(false)
-        });
+        && inputs
+            .iter()
+            .all(|input| probe(cx, input).map(|info| info.has_audio).unwrap_or(false));
     let rate = if first.audio_rate > 0 {
         first.audio_rate
     } else {
@@ -1030,9 +1026,7 @@ fn join_reencode(
     for arg in video_encode_args(cx, ext)? {
         cmd = cmd.arg(arg);
     }
-    if audio_all
-        && let Some(args) = audio_encode_args(cx, ext)?
-    {
+    if audio_all && let Some(args) = audio_encode_args(cx, ext)? {
         for arg in args {
             cmd = cmd.arg(arg);
         }
@@ -1323,15 +1317,16 @@ fn channels(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             right / 100.0
         ),
         (_, 1) => format!("pan=mono|c0={:.4}*c0", left / 100.0),
-        _ => format!(
-            "pan=mono|c0={:.4}*c0+{:.4}*c1",
-            left / 100.0,
-            right / 100.0
-        ),
+        _ => format!("pan=mono|c0={:.4}*c0+{:.4}*c1", left / 100.0, right / 100.0),
     };
 
     let mut cmd = ffmpeg_cmd(&ffmpeg);
-    cmd = cmd.arg("-i").arg(&job.source).arg("-af").arg(pan).arg("-vn");
+    cmd = cmd
+        .arg("-i")
+        .arg(&job.source)
+        .arg("-af")
+        .arg(pan)
+        .arg("-vn");
     if let Some(args) = audio_encode_args(cx, &ext)? {
         for arg in args {
             cmd = cmd.arg(arg);
@@ -1361,11 +1356,7 @@ fn channels_params(job: &Job) -> Result<(u32, f64, f64), JobError> {
     if count != 1.0 && count != 2.0 {
         return Err(invalid("channels must be 1 (mono) or 2 (stereo)"));
     }
-    let gain = |key: &str| {
-        num_param(p, key)
-            .unwrap_or(100.0)
-            .clamp(0.0, 200.0)
-    };
+    let gain = |key: &str| num_param(p, key).unwrap_or(100.0).clamp(0.0, 200.0);
     Ok((count as u32, gain("left_volume"), gain("right_volume")))
 }
 
@@ -1449,9 +1440,7 @@ fn visualize(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             .arg(format!("color=c={color}:s={width}x{height}:r=25"));
     }
 
-    let wave = format!(
-        "[0:a]showwaves=s={width}x{height}:mode={mode}:rate=25,format=yuva420p[w]"
-    );
+    let wave = format!("[0:a]showwaves=s={width}x{height}:mode={mode}:rate=25,format=yuva420p[w]");
     let backdrop = format!(
         "[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,\
          pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[bg]"
@@ -1741,10 +1730,7 @@ pub struct MediaFacts {
 /// An image has no duration and its size comes from its own headers, so it never
 /// needs an FFprobe run; everything else is one shared argv (see `probe`) so a
 /// dialog and a job can never disagree about a clip's length.
-pub fn media_info(
-    tools: &crate::Toolset,
-    path: &Path,
-) -> Result<MediaFacts, JobError> {
+pub fn media_info(tools: &crate::Toolset, path: &Path) -> Result<MediaFacts, JobError> {
     if let Some(facts) = image_facts(path) {
         return Ok(facts);
     }
@@ -1827,8 +1813,12 @@ pub fn measure_loudness(tools: &crate::Toolset, path: &Path) -> Result<Loudness,
         .arg(null_sink());
     let output = proc::run(cmd.budget(Budget::Short).stdout_piped(), &ctx)?;
     let output = output.ok()?;
-    let block = json_block(&output.stderr_tail)
-        .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "ffmpeg printed no loudness measurement"))?;
+    let block = json_block(&output.stderr_tail).ok_or_else(|| {
+        JobError::new(
+            ErrorCode::EngineFailed,
+            "ffmpeg printed no loudness measurement",
+        )
+    })?;
     let number = |key: &str| match block.get(key) {
         Some(Value::String(s)) => s.parse::<f64>().ok(),
         Some(Value::Number(n)) => n.as_f64(),
@@ -2581,21 +2571,16 @@ mod tests {
 
         /// A solid-colour clip with a tone, for join order checks.
         fn colored_clip(&self, color: &str, width: u32, height: u32) -> PathBuf {
-            let path = self.dir.path().join(format!("{color}-{width}x{height}.mp4"));
+            let path = self
+                .dir
+                .path()
+                .join(format!("{color}-{width}x{height}.mp4"));
             if !path.exists() {
                 let output = Command::new(self.ffmpeg())
                     .args(["-hide_banner", "-y", "-f", "lavfi", "-i"])
                     .arg(format!("color=c={color}:s={width}x{height}:r=25:d=1"))
                     .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
-                    .args([
-                        "-c:v",
-                        "mpeg4",
-                        "-q:v",
-                        "4",
-                        "-c:a",
-                        "aac",
-                        "-shortest",
-                    ])
+                    .args(["-c:v", "mpeg4", "-q:v", "4", "-c:a", "aac", "-shortest"])
                     .arg(&path)
                     .output()
                     .expect("building a coloured clip");
@@ -2991,7 +2976,11 @@ mod tests {
     #[test]
     fn visualize_shapes_set_the_canvas() {
         let Some(env) = Env::new() else { return };
-        for (shape, width, height) in [("16:9", 1280u64, 720u64), ("9:16", 720, 1280), ("1:1", 1080, 1080)] {
+        for (shape, width, height) in [
+            ("16:9", 1280u64, 720u64),
+            ("9:16", 720, 1280),
+            ("1:1", 1080, 1080),
+        ] {
             let job = tool_job(
                 &env.wav(),
                 ToolId::Visualize,
@@ -3008,11 +2997,7 @@ mod tests {
             assert_eq!(video["width"].as_u64(), Some(width), "{shape} width");
             assert_eq!(video["height"].as_u64(), Some(height), "{shape} height");
         }
-        let job = tool_job(
-            &env.wav(),
-            ToolId::Visualize,
-            json!({ "style": "noise" }),
-        );
+        let job = tool_job(&env.wav(), ToolId::Visualize, json!({ "style": "noise" }));
         assert!(validate(&job, Category::Audio).is_err());
     }
 
@@ -3030,7 +3015,10 @@ mod tests {
         );
         let artifacts = run_job(&env, &job);
         let forward = env.first_frame_rgb(&artifacts[0], 320, 240);
-        assert!(forward[0] > forward[2] + 60, "first frame is {forward:?}, not red");
+        assert!(
+            forward[0] > forward[2] + 60,
+            "first frame is {forward:?}, not red"
+        );
 
         let reversed = Job::with_inputs(
             vec![red, blue],
@@ -3050,7 +3038,10 @@ mod tests {
         assert_eq!(video["width"].as_u64(), Some(240));
         assert_eq!(video["height"].as_u64(), Some(320));
         let first = env.first_frame_rgb(&artifacts[0], 240, 320);
-        assert!(first[2] > first[0] + 60, "reversed first frame is {first:?}, not blue");
+        assert!(
+            first[2] > first[0] + 60,
+            "reversed first frame is {first:?}, not blue"
+        );
     }
 
     #[test]
