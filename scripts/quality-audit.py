@@ -590,8 +590,9 @@ def hint_for(stderr: str) -> str | None:
         "unable to load module",
         "is not supported",
         # A property of the input, not a conversion bug: a silent clip has no audio
-        # to put in an MP3.
+        # to put in an MP3, and GZIP cannot hold a folder.
         "the input has no audio track",
+        "holds one file",
     ):
         if marker in lowered:
             return stderr.strip().splitlines()[0][:160]
