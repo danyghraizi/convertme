@@ -846,15 +846,30 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 &["grid", "row", "column", "featured"],
             )
             .labelled(&["Grid", "Row", "Column", "Featured"]),
+            num("rows", "Rows (0 = auto)", 0.0, 0.0, 6.0, 1.0, ""),
             num("columns", "Columns", 2.0, 1.0, 6.0, 1.0, ""),
             select(
                 "aspect",
                 "Canvas ratio",
                 "1:1",
-                &["auto", "1:1", "16:9", "4:3", "3:2"],
+                &["auto", "1:1", "16:9", "4:3", "3:2", "2:3", "9:16", "3:4", "4:5"],
             )
-            .labelled(&["Auto", "1:1", "16:9", "4:3", "3:2"]),
-            num("width", "Width", 2048.0, 512.0, 8192.0, 2.0, "px"),
+            .labelled(&[
+                "Auto", "1:1", "16:9", "4:3", "3:2", "2:3", "9:16", "3:4", "4:5",
+            ]),
+            // A select, not free text: the output size is a choice, and a typo there
+            // silently changed resolution instead of failing.
+            select(
+                "width",
+                "Output size",
+                "2048",
+                &["1024", "2048", "4096"],
+            )
+            .labelled(&[
+                "Small (1024 px)",
+                "Medium (2048 px)",
+                "Large (4096 px)",
+            ]),
             select(
                 "fit",
                 "Fit",
@@ -862,7 +877,8 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 &["crop", "contain"],
             )
             .labelled(&["Fill cells (crop edges)", "Fit inside cells"]),
-            num("spacing", "Spacing", 0.0, 0.0, 64.0, 1.0, "px").group("Spacing & background"),
+            ranged("spacing_pct", "Spacing", 0.0, 0.0, 100.0, 1.0, "%")
+                .group("Spacing & background"),
             Field {
                 key: "background".into(),
                 label: "Background".into(),
@@ -871,8 +887,16 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 group: Some("Spacing & background".into()),
                 ..Default::default()
             },
-            num("radius", "Corner radius", 0.0, 0.0, 64.0, 1.0, "px")
-                .group("Spacing & background"),
+            ranged(
+                "radius_pct",
+                "Corner radius",
+                0.0,
+                0.0,
+                100.0,
+                1.0,
+                "%",
+            )
+            .group("Spacing & background"),
         ],
         (Category::Images, ToolId::AddBackground) => vec![
             select(
@@ -944,7 +968,9 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                     key: "mode".into(),
                     equals: "image".into(),
                 });
-                field
+                // The engine blurs the picture at its own resolution, before stretching
+                // the crop to the canvas: the same value is softer on a large picture.
+                field.help("Pixels on the background picture itself, before it is scaled to the canvas, so a large picture needs more for the same softness.")
             },
             ranged("padding_pct", "Padding", 4.0, 0.0, 100.0, 1.0, "%"),
             ranged("radius_pct", "Corner radius", 4.0, 0.0, 100.0, 1.0, "%"),
@@ -1021,6 +1047,17 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                     .labelled(&["Solid", "Blur"])
                     .control();
                 field.kind = "segmented".into();
+                field
+            },
+            {
+                // How strong the blur is: 0 still hides the region (the engine keeps a
+                // floor), 100 is the maximum. A solid fill has no blur, so the field is
+                // hidden and — because it is a parameter, not a control — not sent.
+                let mut field = ranged("strength", "Blur strength", 50.0, 0.0, 100.0, 1.0, "%");
+                field.show_if = Some(ShowIf {
+                    key: "style".into(),
+                    equals: "blur".into(),
+                });
                 field
             },
             {
@@ -1150,6 +1187,17 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 }
                 .hidden(),
                 style,
+                {
+                    // The same control as the still image's: a blur has a strength,
+                    // 0..100, and the video engine maps it to the boxblur radius.
+                    let mut field =
+                        ranged("strength", "Blur strength", 50.0, 0.0, 100.0, 1.0, "%");
+                    field.show_if = Some(ShowIf {
+                        key: "style".into(),
+                        equals: "blur".into(),
+                    });
+                    field
+                },
                 Field {
                     key: "color".into(),
                     label: "Colour".into(),
@@ -1596,6 +1644,49 @@ mod field_payload {
                     .map(String::from)
                     .as_slice()
             )
+        );
+    }
+
+    /// The collage controls: rows/columns are real numbers, the output width is a
+    /// choice, and spacing/radius are percentages of the cell, not pixel counts.
+    #[test]
+    fn collage_describes_its_controls() {
+        let fields = super::tool_fields("images".into(), "collage".into());
+        let field = |key: &str| fields.iter().find(|f| f.key == key).unwrap();
+        assert_eq!(field("rows").kind, "number");
+        assert_eq!(
+            (field("rows").min, field("rows").max),
+            (Some(0.0), Some(6.0))
+        );
+        assert_eq!(
+            (field("columns").min, field("columns").max),
+            (Some(1.0), Some(6.0))
+        );
+        assert_eq!(field("spacing_pct").kind, "range");
+        assert_eq!(field("spacing_pct").max, Some(100.0));
+        assert_eq!(field("radius_pct").kind, "range");
+        assert_eq!(field("radius_pct").max, Some(100.0));
+        assert_eq!(field("width").kind, "select");
+        assert_eq!(
+            field("width").options.as_deref(),
+            Some(["1024", "2048", "4096"].map(String::from).as_slice())
+        );
+        assert_eq!(
+            field("width").option_labels.as_deref(),
+            Some(
+                ["Small (1024 px)", "Medium (2048 px)", "Large (4096 px)"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        let aspect = field("aspect").options.clone().unwrap_or_default();
+        assert!(aspect.contains(&"3:2".to_string()));
+        assert!(aspect.contains(&"2:3".to_string()));
+        // The pixel fields are gone: a value in pixels was invisible at other sizes.
+        assert!(
+            fields
+                .iter()
+                .all(|f| f.key.as_str() != "spacing" && f.key.as_str() != "radius")
         );
     }
 

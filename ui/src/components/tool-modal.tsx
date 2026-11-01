@@ -459,9 +459,16 @@ export default function ToolModal(props: ToolModalProps) {
             <Show when={props.tool.id === 'redact' && props.category === 'images'}>
               <div class="field is-block">
                 <span class="field-label">Areas to fill</span>
+                {/* The surface shows the engine's own redaction, so the style, the
+                    colour and the blur strength are visible before saving. */}
                 <BoxesEditor
                   value={Array.isArray(values.boxes) ? (values.boxes as FieldValue) : []}
                   previewPath={props.previewPath}
+                  effect={{
+                    style: String(values.style ?? 'solid'),
+                    color: String(values.color ?? '#000000'),
+                    strength: Number(values.strength ?? 50),
+                  }}
                   onChange={(next) => setValues('boxes', next)}
                 />
               </div>
@@ -472,7 +479,7 @@ export default function ToolModal(props: ToolModalProps) {
               <div class="field is-block">
                 <span class="field-label">Photo</span>
                 <AnnotateEditor
-                  previewPath={props.previewPath}
+                  previewPath={shownPath()}
                   value={values.shapes ?? []}
                   color={String(values.color ?? '#ff5a36')}
                   onInk={(color) => setValues('color', color)}
@@ -559,6 +566,10 @@ export default function ToolModal(props: ToolModalProps) {
               <CollagePreview
                 paths={fileList().map((file) => file.path)}
                 params={collected()}
+                onCells={(cells) =>
+                  setExtras((previous) => ({ ...previous, cells }))
+                }
+                resetToken={resetToken()}
               />
             </Show>
           </div>

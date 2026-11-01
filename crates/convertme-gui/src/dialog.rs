@@ -501,6 +501,42 @@ pub async fn photo_preview(
     .map_err(|e| e.to_string())?
 }
 
+/// The still with its redactions, at 1024 px on the long edge, drawn by the redactor.
+///
+/// The dialog toggles this against the plain thumbnail, so the blur (and its strength)
+/// can be judged before saving: the same geometry and the same treatment as the job,
+/// not a CSS approximation of a blur.
+#[tauri::command]
+pub async fn redact_preview(
+    state: State<'_, AppState>,
+    path: String,
+    params: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let source = PathBuf::from(path);
+    let params = tool_params(params);
+    let cache = state.cache.clone();
+    let key = cache
+        .artifact_key(
+            &source,
+            "redact",
+            &preview_key_arg("redact", &params, "1024"),
+            "png",
+        )
+        .ok_or_else(|| "cannot stat the source for a preview".to_string())?;
+    if key.exists() {
+        return Ok(key.to_string_lossy().into_owned());
+    }
+    let tools = state.tools.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        convertme_engines::redact::image_preview(&tools, &cache, &source, &params, &key, 1024)
+            .map_err(|e| e.to_string())?;
+        cache.enforce_cap();
+        Ok::<String, String>(key.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The collage at 512 px, rendered by the real engine into the cache.
 ///
 /// The preview is the same composer as the job, so changing the layout in the dialog
@@ -558,6 +594,41 @@ pub async fn collage_preview(
             .map_err(|e| e.to_string())?;
         cache.enforce_cap();
         Ok::<String, String>(key.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The cell arrangement the composer will use, in output pixels.
+///
+/// The dialog overlays its hit areas on this: one layout implementation, shared with
+/// the composer and the 512 px preview, so a drag cannot land on a different picture
+/// than the one that gets cropped.
+#[tauri::command]
+pub async fn collage_layout(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let inputs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    if inputs.is_empty() {
+        return Err("a collage needs at least one image".to_string());
+    }
+    let raw = params
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let params = convertme_core::params::normalize(Category::Images, ToolId::Collage, raw)?;
+    let width = params
+        .get("width")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(2048.0)
+        .round()
+        .max(16.0) as u32;
+    let tools = state.tools.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let layout = convertme_engines::image::collage_layout(&tools, &inputs, &params, width)
+            .map_err(|e| e.to_string())?;
+        serde_json::to_value(layout).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

@@ -8,7 +8,7 @@ use crate::proc::{self, Budget, Cmd};
 use crate::{Context, ensure_file};
 use convertme_core::capability::ToolKey;
 use convertme_core::error::{ErrorCode, JobError};
-use convertme_core::job::Job;
+use convertme_core::job::{Job, JobCtx, ToolParams};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -135,27 +135,7 @@ pub fn detect_text(path: &Path, cx: &Context<'_>) -> Result<Vec<Detected>, JobEr
 
 fn image_size(path: &Path, cx: &Context<'_>) -> Result<(u32, u32), JobError> {
     let magick = cx.tools.path(ToolKey::Magick)?;
-    let out = proc::run(
-        Cmd::new(&magick)
-            .arg("identify")
-            .arg("-format")
-            .arg("%w %h")
-            .arg(path)
-            .stdout_piped(),
-        cx.ctx,
-    )?;
-    let out = out.ok()?;
-    let text = out.stdout.trim();
-    let mut parts = text.split_whitespace();
-    let w: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let h: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    if w == 0 || h == 0 {
-        return Err(JobError::new(
-            ErrorCode::EngineFailed,
-            "could not read the image size",
-        ));
-    }
-    Ok((w, h))
+    identify_dims(&magick, path, cx.ctx)
 }
 
 fn video_size(path: &Path, cx: &Context<'_>) -> Result<(u32, u32), JobError> {
@@ -195,39 +175,141 @@ fn video_size(path: &Path, cx: &Context<'_>) -> Result<(u32, u32), JobError> {
     Ok((w, h))
 }
 
+/// The strength a request that does not carry one gets. A blur has to hide the region
+/// even at the smallest strength, so the range starts at a visible amount rather than
+/// at "do nothing".
+const DEFAULT_STRENGTH: f64 = 50.0;
+
+/// A redaction request, parsed once for the job and for the preview, so the two can
+/// never disagree about what the boxes get.
+#[derive(Debug, Clone)]
+struct Settings {
+    boxes: Vec<Rect>,
+    color: String,
+    /// `solid` | `blur`
+    style: String,
+    /// 0..100, only meaningful when the style is `blur`.
+    strength: f64,
+}
+
+impl Settings {
+    fn from_params(params: &serde_json::Map<String, serde_json::Value>) -> Result<Self, JobError> {
+        let boxes: Vec<Rect> = params
+            .get("boxes")
+            .cloned()
+            .map(|v| serde_json::from_value(v).unwrap_or_default())
+            .unwrap_or_default();
+        let color = params
+            .get("color")
+            .and_then(|v| v.as_str())
+            .unwrap_or("#000000")
+            .to_string();
+        if color.trim().is_empty() {
+            return Err(JobError::new(
+                ErrorCode::Unsupported,
+                "`color` cannot be empty",
+            ));
+        }
+        let style = params
+            .get("style")
+            .and_then(|v| v.as_str())
+            .unwrap_or("solid")
+            .to_string();
+        if style != "solid" && style != "blur" {
+            return Err(JobError::new(
+                ErrorCode::Unsupported,
+                "`style` must be solid or blur",
+            ));
+        }
+        Ok(Self {
+            boxes,
+            color,
+            style,
+            strength: strength_of(params)?,
+        })
+    }
+}
+
+/// `strength` as a percentage of the maximum blur, 0..100. A value that is absent (or
+/// null) is the default; anything outside the range or not finite is rejected rather
+/// than clamped, so a broken dialog shows an error instead of a blur of the wrong size.
+fn strength_of(params: &serde_json::Map<String, serde_json::Value>) -> Result<f64, JobError> {
+    match params.get("strength") {
+        None | Some(serde_json::Value::Null) => Ok(DEFAULT_STRENGTH),
+        Some(value) => match value.as_f64() {
+            Some(raw) if raw.is_finite() && (0.0..=100.0).contains(&raw) => Ok(raw),
+            _ => Err(JobError::new(
+                ErrorCode::Unsupported,
+                "`strength` must be a number from 0 to 100",
+            )),
+        },
+    }
+}
+
+/// The Gaussian sigma for a region of `width`×`height` pixels. It grows with the box
+/// so a large face and a small word are equally unreadable, and with the strength so
+/// the dialog's slider is honest: at 0 the region is still hidden, at 100 it is gone.
+fn image_sigma(width: u32, height: u32, strength: f64) -> f64 {
+    let scaled = f64::from(width.min(height)) * (0.06 + 0.30 * strength.clamp(0.0, 100.0) / 100.0);
+    scaled.max(2.0)
+}
+
+/// The `boxblur` luma radius for a region of `width`×`height` pixels. Same idea as the
+/// still image, but ffmpeg's radius is a whole number of pixels with a hard limit.
+fn video_luma_radius(width: u32, height: u32, strength: f64) -> u32 {
+    let scaled = f64::from(width.min(height)) * (0.05 + 0.30 * strength.clamp(0.0, 100.0) / 100.0);
+    scaled.round().clamp(2.0, 64.0) as u32
+}
+
+/// The treatment for every kept box, as ImageMagick arguments. Geometry is in pixels of
+/// the image the arguments run on, so the job passes the source size and the preview
+/// passes the thumbnail's: the same function draws both.
+fn treatment_args(
+    boxes: &[Rect],
+    color: &str,
+    style: &str,
+    strength: f64,
+    width: u32,
+    height: u32,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if style == "blur" {
+        // Blur the marked region only: `-region` scopes the next operation. The sigma
+        // grows with the region and with the strength.
+        for b in boxes {
+            let (x, y, bw, bh) = b.pixels(width, height);
+            let sigma = image_sigma(bw, bh, strength);
+            args.push("-region".into());
+            args.push(format!("{bw}x{bh}+{x}+{y}"));
+            args.push("-blur".into());
+            args.push(format!("0x{sigma:.2}"));
+            args.push("+region".into());
+        }
+    } else {
+        let mut draw = String::new();
+        for b in boxes {
+            let (x, y, bw, bh) = b.pixels(width, height);
+            draw.push_str(&format!("rectangle {x},{y} {},{}\n", x + bw, y + bh));
+        }
+        args.push("-fill".into());
+        args.push(color.to_string());
+        args.push("-stroke".into());
+        args.push("none".into());
+        args.push("-draw".into());
+        args.push(draw.trim_end().to_string());
+    }
+    args
+}
+
 /// Run a redaction job. `params.boxes` is an array of `Rect`; `params.color`
-/// (default `#000000`), `params.style` (`solid` | `blur`) for video, `params.ranges`
-/// for video (array of `{start,end}`) when the boxes carry no range of their own.
+/// (default `#000000`), `params.style` (`solid` | `blur`), `params.strength`
+/// (0..100, default 50, the blur radius), `params.ranges` for video (array of
+/// `{start,end}`) when the boxes carry no range of their own.
 pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let params = job.intent.params().cloned().unwrap_or_default();
-    let boxes: Vec<Rect> = params
-        .get("boxes")
-        .cloned()
-        .map(|v| serde_json::from_value(v).unwrap_or_default())
-        .unwrap_or_default();
-    if boxes.is_empty() {
+    let settings = Settings::from_params(&params)?;
+    if settings.boxes.is_empty() {
         return Err(JobError::new(ErrorCode::Unsupported, "no boxes to redact"));
-    }
-    let color = params
-        .get("color")
-        .and_then(|v| v.as_str())
-        .unwrap_or("#000000")
-        .to_string();
-    if color.trim().is_empty() {
-        return Err(JobError::new(
-            ErrorCode::Unsupported,
-            "`color` cannot be empty",
-        ));
-    }
-    let style = params
-        .get("style")
-        .and_then(|v| v.as_str())
-        .unwrap_or("solid");
-    if !["solid", "blur"].contains(&style) {
-        return Err(JobError::new(
-            ErrorCode::Unsupported,
-            "`style` must be solid or blur",
-        ));
     }
 
     let is_video = matches!(
@@ -242,9 +324,9 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     );
 
     let allowed: &[&str] = if is_video {
-        &["boxes", "color", "ranges", "style"]
+        &["boxes", "color", "ranges", "style", "strength"]
     } else {
-        &["boxes", "color", "style"]
+        &["boxes", "color", "style", "strength"]
     };
     for key in params.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -256,18 +338,16 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     }
 
     if is_video {
-        redact_video(job, cx, &params)
+        redact_video(job, cx, &params, settings.strength)
     } else {
-        redact_image(job, cx, &boxes, &color, style)
+        redact_image(job, cx, &settings)
     }
 }
 
 fn redact_image(
     job: &Job,
     cx: &Context<'_>,
-    boxes: &[Rect],
-    color: &str,
-    style: &str,
+    settings: &Settings,
 ) -> Result<Vec<PathBuf>, JobError> {
     let magick = cx.tools.path(ToolKey::Magick)?;
     let ext = job
@@ -279,36 +359,99 @@ fn redact_image(
     let (w, h) = image_size(&job.source, cx)?;
 
     let mut cmd = Cmd::new(&magick).arg(&job.source);
-    if style == "blur" {
-        // Blur the marked region only: `-region` scopes the next operation. The radius
-        // grows with the region so a small box is still unreadable.
-        for b in boxes {
-            let (x, y, bw, bh) = b.pixels(w, h);
-            let radius = (f64::from(bw.min(bh)) * 0.15).max(8.0);
-            cmd = cmd
-                .arg("-region")
-                .arg(format!("{bw}x{bh}+{x}+{y}"))
-                .arg("-blur")
-                .arg(format!("0x{radius:.1}"))
-                .arg("+region");
-        }
-    } else {
-        let mut draw = String::new();
-        for b in boxes {
-            let (x, y, bw, bh) = b.pixels(w, h);
-            draw.push_str(&format!("rectangle {x},{y} {},{}\n", x + bw, y + bh));
-        }
-        cmd = cmd
-            .arg("-fill")
-            .arg(color)
-            .arg("-stroke")
-            .arg("none")
-            .arg("-draw")
-            .arg(draw.trim_end());
-    }
+    cmd = cmd.args(treatment_args(
+        &settings.boxes,
+        &settings.color,
+        &settings.style,
+        settings.strength,
+        w,
+        h,
+    ));
     proc::run(cmd.arg(&out), cx.ctx)?.ok()?;
     ensure_file(&out, "the redactor")?;
     Ok(vec![out])
+}
+
+/// The still with its redactions, at `size` on the long edge, drawn by the same
+/// geometry and the same treatment as the job.
+///
+/// The dialog toggles this against the plain thumbnail, so what the user inspects is
+/// the engine's output rather than a CSS approximation of a blur. The thumbnail is
+/// written first and then measured: the treatment runs at the thumbnail's own pixel
+/// size (boxes are normalised), so a 63 MP photo is never decoded twice to be
+/// previewed.
+pub fn image_preview(
+    tools: &crate::Toolset,
+    cache: &crate::preview::PreviewCache,
+    source: &Path,
+    params: &ToolParams,
+    out: &Path,
+    size: u32,
+) -> Result<(), JobError> {
+    let magick = tools.path(ToolKey::Magick)?;
+    let ctx = JobCtx::new();
+    let settings = Settings::from_params(params)?;
+    let thumb = out.with_extension("thumb.png");
+    // One preview at a time: the permit is held across both magick runs, and the
+    // intermediate file is unique to this render's cache key.
+    let _permit = cache.preview_permit();
+    let result = (|| -> Result<(), JobError> {
+        proc::run(
+            Cmd::new(&magick)
+                .arg(source)
+                .arg("-auto-orient")
+                .arg("-thumbnail")
+                .arg(format!("{size}x{size}>"))
+                .arg(&thumb)
+                .budget(Budget::Short),
+            &ctx,
+        )?
+        .ok()?;
+        let (tw, th) = identify_dims(&magick, &thumb, &ctx)?;
+        let mut cmd = Cmd::new(&magick).arg(&thumb);
+        // An empty box list is the plain thumbnail, which is what the dialog shows
+        // before any region is marked.
+        if !settings.boxes.is_empty() {
+            cmd = cmd.args(treatment_args(
+                &settings.boxes,
+                &settings.color,
+                &settings.style,
+                settings.strength,
+                tw,
+                th,
+            ));
+        }
+        proc::run(cmd.arg(out).budget(Budget::Short), &ctx)?.ok()?;
+        ensure_file(out, "the redaction preview")?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&thumb);
+    result
+}
+
+/// The pixel size of an image, read from its header.
+fn identify_dims(magick: &Path, path: &Path, ctx: &JobCtx) -> Result<(u32, u32), JobError> {
+    let out = proc::run(
+        Cmd::new(magick)
+            .arg("identify")
+            .arg("-format")
+            .arg("%w %h")
+            .arg(path)
+            .stdout_piped(),
+        ctx,
+    )?;
+    let out = out.ok()?;
+    let text = out.stdout.trim().to_string();
+    let mut parts = text.split_whitespace();
+    let w: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let h: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    if w == 0 || h == 0 {
+        return Err(JobError::new(
+            ErrorCode::EngineFailed,
+            "could not read the image size",
+        ));
+    }
+    Ok((w, h))
 }
 
 /// A box with its own time range. The dialog writes `start`/`end` on each box; the
@@ -368,6 +511,7 @@ fn redact_video(
     job: &Job,
     cx: &Context<'_>,
     params: &serde_json::Map<String, serde_json::Value>,
+    strength: f64,
 ) -> Result<Vec<PathBuf>, JobError> {
     let ffmpeg = cx.tools.path(ToolKey::Ffmpeg)?;
     let ext = job
@@ -454,9 +598,13 @@ fn redact_video(
                 "{current}drawbox=x={x}:y={y}:w={bw}:h={bh}:color={color}:t=fill{enable}[v{i}];"
             ));
         } else {
+            // The radius follows the region and the strength: a small face still
+            // disappears, and the dialog's slider changes the result the job produces.
+            let radius = video_luma_radius(bw, bh, strength);
             chain.push_str(&format!(
                 "{current}split[base{i}][crop{i}];\
-                 [crop{i}]crop={bw}:{bh}:{x}:{y},boxblur=luma_radius=24:luma_power=2[blur{i}];\
+                 [crop{i}]crop={bw}:{bh}:{x}:{y},\
+                 boxblur=luma_radius={radius}:luma_power=2[blur{i}];\
                  [base{i}][blur{i}]overlay={x}:{y}{enable}[v{i}];"
             ));
         }
@@ -560,6 +708,7 @@ mod detect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     #[test]
     fn rects_are_clamped_and_scaled() {
@@ -629,5 +778,300 @@ mod tests {
         let plain: TimedRect =
             serde_json::from_str(r#"{"x":0.1,"y":0.2,"w":0.3,"h":0.4}"#).unwrap();
         assert!(plain.start.is_none() && plain.end.is_none());
+    }
+
+    // ------------------------------------------------------- blur strength
+
+    /// The slider is honest only if the numbers it feeds are bounded and monotonic:
+    /// 0 is still a blur (never "no redaction"), 100 is the maximum, tiny regions get
+    /// a usable floor, and a value outside 0..100 is an error rather than a clamp.
+    #[test]
+    fn strength_maps_to_a_bounded_blur() {
+        let near = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
+        assert!(
+            near(image_sigma(100, 100, 0.0), 6.0),
+            "{}",
+            image_sigma(100, 100, 0.0)
+        );
+        assert!(near(image_sigma(100, 100, 50.0), 21.0));
+        assert!(near(image_sigma(100, 100, 100.0), 36.0));
+        // A 10 px box would get 0.6 px of sigma at strength 0: the floor keeps it hidden.
+        assert!(near(image_sigma(10, 10, 0.0), 2.0));
+        assert!(image_sigma(400, 400, 100.0) > image_sigma(400, 400, 0.0));
+
+        assert_eq!(video_luma_radius(100, 100, 0.0), 5);
+        assert_eq!(video_luma_radius(100, 100, 50.0), 20);
+        assert_eq!(video_luma_radius(100, 100, 100.0), 35);
+        // ffmpeg's boxblur takes whole pixels within 2..64.
+        assert_eq!(video_luma_radius(4, 4, 0.0), 2);
+        assert_eq!(video_luma_radius(4000, 4000, 100.0), 64);
+
+        let params = |value: serde_json::Value| -> serde_json::Map<String, serde_json::Value> {
+            serde_json::json!({ "strength": value })
+                .as_object()
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(strength_of(&Default::default()).unwrap(), DEFAULT_STRENGTH);
+        assert_eq!(strength_of(&params(serde_json::Value::Null)).unwrap(), 50.0);
+        assert_eq!(strength_of(&params(serde_json::json!(0))).unwrap(), 0.0);
+        assert_eq!(strength_of(&params(serde_json::json!(100))).unwrap(), 100.0);
+        for bad in [
+            serde_json::json!(101),
+            serde_json::json!(-1),
+            serde_json::json!(1e300),
+            serde_json::json!("blurry"),
+            serde_json::json!(true),
+        ] {
+            assert_eq!(
+                strength_of(&params(bad.clone())).unwrap_err().code,
+                ErrorCode::Unsupported,
+                "strength {bad} must be rejected"
+            );
+        }
+    }
+
+    // ----------------------------------------------------- the real engine
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        tools: crate::Toolset,
+        magick: PathBuf,
+    }
+
+    /// The tests below exercise the installed ImageMagick, as the job does; a machine
+    /// without it skips them instead of failing for the wrong reason.
+    fn fixture() -> Option<Fixture> {
+        let tools = crate::Toolset::probe_now();
+        let magick = tools.path(ToolKey::Magick).ok()?;
+        let dir = tempfile::tempdir().ok()?;
+        Some(Fixture { dir, tools, magick })
+    }
+
+    fn make_image(f: &Fixture, name: &str, args: Vec<OsString>) -> PathBuf {
+        let path = f.dir.path().join(name);
+        let mut cmd = Cmd::new(&f.magick);
+        for arg in args {
+            cmd = cmd.arg(arg);
+        }
+        let output = proc::run(cmd.arg(&path), &JobCtx::new()).expect("run magick");
+        assert!(output.success, "magick failed: {}", output.stderr_tail);
+        path
+    }
+
+    /// Run a still redaction and return the file it wrote. Each run gets its own work
+    /// dir, so two strengths cannot overwrite each other's output.
+    fn redact_file(f: &Fixture, source: &Path, name: &str, params: serde_json::Value) -> PathBuf {
+        let work = convertme_core::job::WorkDir::create(f.dir.path().join(format!("work-{name}")))
+            .expect("a work dir");
+        let jc = JobCtx::new();
+        let cx = Context {
+            tools: &f.tools,
+            work: &work,
+            ctx: &jc,
+            preview: None,
+        };
+        let job = Job::new(
+            source.to_path_buf(),
+            convertme_core::job::Intent::Tool {
+                tool: convertme_core::formats::ToolId::Redact,
+                params: params.as_object().cloned().unwrap_or_default(),
+            },
+        );
+        run(&job, &cx)
+            .expect("the redactor")
+            .into_iter()
+            .next()
+            .expect("an output")
+    }
+
+    fn pixels(path: &Path) -> ::image::RgbImage {
+        ::image::open(path).expect("decode the image").to_rgb8()
+    }
+
+    /// The pixels of a normalised box, clamped to the image.
+    fn region(image: &::image::RgbImage, rect: Rect) -> Vec<(u32, u32)> {
+        let (w, h) = image.dimensions();
+        let (x, y, bw, bh) = rect.pixels(w, h);
+        let mut out = Vec::new();
+        for py in y..(y + bh).min(h) {
+            for px in x..(x + bw).min(w) {
+                out.push((px, py));
+            }
+        }
+        out
+    }
+
+    /// Mean absolute difference per channel inside the box: how far a blur moved the
+    /// region away from the photo.
+    fn region_diff(a: &::image::RgbImage, b: &::image::RgbImage, rect: Rect) -> f64 {
+        let points = region(a, rect);
+        assert!(!points.is_empty());
+        let total: f64 = points
+            .iter()
+            .map(|&(x, y)| {
+                let pa = a.get_pixel(x, y);
+                let pb = b.get_pixel(x, y);
+                (0..3)
+                    .map(|c| f64::from(pa[c].abs_diff(pb[c])))
+                    .sum::<f64>()
+                    / 3.0
+            })
+            .sum();
+        total / points.len() as f64
+    }
+
+    /// Luminance variance inside the box: the smaller it is, the flatter the region.
+    fn region_variance(image: &::image::RgbImage, rect: Rect) -> f64 {
+        let points = region(image, rect);
+        let values: Vec<f64> = points
+            .iter()
+            .map(|&(x, y)| {
+                let p = image.get_pixel(x, y);
+                0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
+            })
+            .collect();
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / values.len() as f64
+    }
+
+    /// The control exists because a blur has a strength: the same box on the same
+    /// photo must be flatter and further from the source at 90 than at 10, and a solid
+    /// fill must ignore the number entirely.
+    #[test]
+    fn redaction_blur_strength_changes_the_result() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "noise.png",
+            vec![
+                // Coarse noise: 16 px blocks. Pixel-level noise is destroyed by either
+                // strength, so it could not tell them apart; structure at the scale
+                // between the two sigmas can.
+                OsString::from("-size"),
+                OsString::from("20x15"),
+                OsString::from("xc:gray"),
+                OsString::from("+noise"),
+                OsString::from("Random"),
+                OsString::from("-scale"),
+                OsString::from("320x240!"),
+            ],
+        );
+        let boxed = serde_json::json!([{ "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 }]);
+        let blurred = |strength: i64, name: &str| {
+            redact_file(
+                &f,
+                &source,
+                name,
+                serde_json::json!({ "boxes": boxed, "style": "blur", "strength": strength }),
+            )
+        };
+        let low = pixels(&blurred(10, "low"));
+        let high = pixels(&blurred(90, "high"));
+        let original = pixels(&source);
+        let rect = Rect {
+            x: 0.25,
+            y: 0.25,
+            w: 0.5,
+            h: 0.5,
+        };
+
+        assert!(
+            region_diff(&original, &low, rect) > 1.0,
+            "strength 10 did nothing"
+        );
+        assert!(
+            region_diff(&original, &high, rect) > 1.0,
+            "strength 90 did nothing"
+        );
+        // Measured inside the box, away from its edge: pasting a blurred region back
+        // leaves a seam at the border, and the seam would hide the smoothing.
+        let inner = Rect {
+            x: rect.x + rect.w * 0.2,
+            y: rect.y + rect.h * 0.2,
+            w: rect.w * 0.6,
+            h: rect.h * 0.6,
+        };
+        let low_variance = region_variance(&low, inner);
+        let high_variance = region_variance(&high, inner);
+        assert!(
+            high_variance < low_variance,
+            "strength 90 (variance {high_variance:.1}) is not smoother than 10 ({low_variance:.1})"
+        );
+        assert!(
+            region_diff(&original, &high, rect) > region_diff(&original, &low, rect),
+            "strength 90 is not further from the source than 10"
+        );
+
+        // A solid fill is a rectangle of one colour: the strength cannot show in it.
+        let solid = |strength: i64, name: &str| {
+            pixels(&redact_file(
+                &f,
+                &source,
+                name,
+                serde_json::json!({
+                    "boxes": boxed,
+                    "style": "solid",
+                    "color": "#000000",
+                    "strength": strength,
+                }),
+            ))
+        };
+        let solid_low = solid(10, "solid-low");
+        let solid_high = solid(90, "solid-high");
+        assert!(
+            solid_low.as_raw() == solid_high.as_raw(),
+            "solid fills must ignore the blur strength"
+        );
+    }
+
+    /// The preview is the engine's own treatment: a solid box on a solid photo must
+    /// show the fill colour inside the box and the source colour outside, at the
+    /// requested preview size.
+    #[test]
+    fn redaction_preview_uses_the_same_treatment() {
+        let Some(f) = fixture() else { return };
+        let source = make_image(
+            &f,
+            "solid.png",
+            vec![
+                OsString::from("-size"),
+                OsString::from("400x400"),
+                OsString::from("xc:#2244aa"),
+            ],
+        );
+        let out = f.dir.path().join("preview.png");
+        let cache = crate::preview::PreviewCache::new(f.dir.path().join("cache"), 64 * 1024 * 1024);
+        let params = serde_json::json!({
+            "boxes": [{ "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 }],
+            "style": "solid",
+            "color": "#00ff00",
+        });
+        image_preview(
+            &f.tools,
+            &cache,
+            &source,
+            params.as_object().expect("an object"),
+            &out,
+            200,
+        )
+        .expect("the preview");
+
+        let preview = pixels(&out);
+        assert_eq!(
+            preview.dimensions(),
+            (200, 200),
+            "the long edge is the preview size"
+        );
+        let inside = preview.get_pixel(100, 100);
+        assert!(
+            inside[0] < 16 && inside[1] > 240 && inside[2] < 16,
+            "the box is not the fill colour: {inside:?}"
+        );
+        let outside = preview.get_pixel(10, 10);
+        assert!(
+            outside[0] < 80 && outside[2] > 150,
+            "outside the box is not the source colour: {outside:?}"
+        );
     }
 }

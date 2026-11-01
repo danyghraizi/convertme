@@ -10,6 +10,7 @@ export { readFields, readSegmentPayload, readSegments };
 import type {
   AnalyzeResult,
   BootInfo,
+  CollageLayout,
   CompressPreview,
   DetectedBox,
   DragSignal,
@@ -191,6 +192,28 @@ function readCompressPreview(raw: unknown): CompressPreview {
     source_bytes: num(o.source_bytes),
     width: num(o.width),
     height: num(o.height),
+  };
+}
+
+function readCollageLayout(raw: unknown): CollageLayout {
+  const o = record(raw, 'collage layout');
+  return {
+    width: num(o.width),
+    height: num(o.height),
+    cols: num(o.cols),
+    rows: num(o.rows),
+    spacing: num(o.spacing),
+    cells: records(o.cells).map((cell) => ({
+      input: num(cell.input),
+      row: num(cell.row),
+      col: num(cell.col),
+      row_span: num(cell.row_span, 1),
+      col_span: num(cell.col_span, 1),
+      x: num(cell.x),
+      y: num(cell.y),
+      w: num(cell.w),
+      h: num(cell.h),
+    })),
   };
 }
 
@@ -544,6 +567,31 @@ export async function collagePreview(
 ): Promise<string> {
   if (isMock()) return mock.mockCollagePreview(paths, params);
   return str(await invoke('collage_preview', { paths, params }));
+}
+
+/**
+ * The cell arrangement the collage composer will use, in output pixels. The preview
+ * overlays these rectangles so a drag moves the picture where the file will place it;
+ * computing the layout here instead would be a second implementation of the grid.
+ */
+export async function collageLayout(
+  paths: string[],
+  params: Record<string, unknown>,
+): Promise<CollageLayout> {
+  if (isMock()) return mock.mockCollageLayout(paths, params);
+  return readCollageLayout(await invoke('collage_layout', { paths, params }));
+}
+
+/**
+ * A redacted still, produced by the real redaction engine at preview size. The dialog
+ * shows it beside the editable boxes so the treatment can be inspected before saving.
+ */
+export async function redactPreview(
+  path: string,
+  params: Record<string, unknown>,
+): Promise<string> {
+  if (isMock()) return mock.mockRedactPreview(path, params);
+  return str(await invoke('redact_preview', { path, params }));
 }
 
 export async function fileMetadata(path: string): Promise<MetaGroup[]> {

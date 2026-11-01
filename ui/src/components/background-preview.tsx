@@ -1,11 +1,18 @@
 import { Show, createEffect, createMemo, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
+import './background-preview.css';
 
 /**
  * The composition preview: the photo on its new canvas, with the padding, the corner
  * radius, the ratio and the fill it will be saved with. Every size is computed from the
  * numbers the engine gets, then scaled once to fit the panel, so the preview and the
  * file agree on proportions.
+ *
+ * The background picture is drawn from the same geometry the engine crops with: a cover
+ * window of the picture at the canvas aspect, zoomed by `bg_zoom`, slid by `bg_x`/`bg_y`
+ * and stretched to the canvas. CSS `background-size: cover` alone could not do that: it
+ * fits the picture to the *element*, which is the canvas, and the zoom/placement then
+ * drift as soon as the two aspects differ.
  */
 interface BackgroundPreviewProps {
   path: string | null;
@@ -21,7 +28,7 @@ interface BackgroundPreviewProps {
   radiusPct: number;
   shadowPct: number;
   shadowAngle: number;
-  /** Blur applied to the chosen background picture, in pixels. */
+  /** Blur of the chosen background picture, in that picture's own pixels. */
   bgBlur: number;
   aspect: string;
   /** Drag on the canvas moves the chosen picture; the zoom slider sits under it. */
@@ -40,6 +47,21 @@ const RATIOS: Record<string, number> = {
 
 const MAX_WIDTH = 430;
 const MAX_HEIGHT = 200;
+/**
+ * The engine blurs the background picture in its own pixels, and a 6000 px picture
+ * scaled down to a 400 px preview turns slider 50 into a fraction of a pixel. The
+ * other way round, a tiny picture stretched to fill the panel would ask the
+ * compositor for a 150 px blur on every mouse move. Cap what reaches CSS.
+ */
+const MAX_BLUR_PX = 32;
+
+function finite(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(high, Math.max(low, finite(value, low)));
+}
 
 export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [src, setSrc] = createSignal('');
@@ -47,11 +69,19 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const [natural, setNatural] = createSignal({ w: 4, h: 3 });
   const [real, setReal] = createSignal<{ w: number; h: number } | null>(null);
   const [backdrop, setBackdrop] = createSignal('');
+  const [backdropSize, setBackdropSize] = createSignal<{ w: number; h: number } | null>(null);
+
+  // Every load is tagged: a slow thumbnail for the previous file must not paint over
+  // the current one after the arrows or the background changed.
+  let photoTicket = 0;
+  let backdropTicket = 0;
 
   // Reloads when the dialog switches file: the preview must follow the arrows.
   createEffect(() => {
     const path = props.path;
+    const ticket = ++photoTicket;
     setReal(null);
+    setSrc('');
     if (!path) {
       setNote('Preview unavailable; the settings still apply to the saved file.');
       return;
@@ -59,24 +89,49 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     setNote('');
     void ipc
       .previewThumb(path, 1024)
-      .then((url) => setSrc(ipc.assetUrl(url)))
-      .catch(() => setNote('Preview unavailable.'));
+      .then((url) => {
+        if (ticket === photoTicket) setSrc(ipc.assetUrl(url));
+      })
+      .catch(() => {
+        if (ticket === photoTicket) setNote('Preview unavailable.');
+      });
     // The drawn bitmap is a thumbnail; the numbers must be the file's own pixels.
-    void ipc.imageSize(path).then((size) => {
-      if (size) setReal(size);
-    });
+    void ipc
+      .imageSize(path)
+      .then((size) => {
+        if (ticket === photoTicket && size) setReal(size);
+      })
+      .catch(() => {
+        // The thumbnail's own size keeps the layout sane; nothing to report.
+      });
   });
 
-  // The chosen background image is shown too: choosing it and seeing nothing was the
-  // whole complaint about that mode.
   const chosenImage = createMemo(() => props.image?.trim() ?? '');
-  createMemo(() => {
+
+  // The chosen background picture: its bitmap for the stage and its own pixel size for
+  // the crop geometry. Both are keyed on the path; a stale answer is dropped.
+  createEffect(() => {
     const path = chosenImage();
-    if (!path) {
-      setBackdrop('');
-      return;
-    }
-    setBackdrop(ipc.assetUrl(path));
+    const ticket = ++backdropTicket;
+    setBackdrop('');
+    setBackdropSize(null);
+    if (!path) return;
+    void ipc
+      .previewThumb(path, 1024)
+      .then((url) => {
+        if (ticket === backdropTicket) setBackdrop(ipc.assetUrl(url));
+      })
+      .catch(() => {
+        // Not a readable picture: the engine falls back to the solid colour too.
+      });
+    void ipc
+      .imageSize(path)
+      .then((size) => {
+        if (ticket === backdropTicket) setBackdropSize(size);
+      })
+      .catch(() => {
+        // Unknown size: the plain cover fallback draws instead of the exact fit.
+      });
   });
 
   const fill = (): string => {
@@ -99,20 +154,23 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
         ? `linear-gradient(${Math.round(angle)}deg, ${stops})`
         : `radial-gradient(circle at 50% 50%, ${stops})`;
     }
-    return props.mode === 'colour' ? props.color || '#101418' : 'transparent';
+    // The engine falls back to this colour when `mode` is image but no readable file
+    // made it into the parameters, so the preview shows the same thing.
+    return props.mode === 'colour' ? props.color || '#101418' : '#101418';
   };
 
-  /** The canvas in source pixels: what the file will be. */
+  /** The canvas in source pixels: what the file will be. Mirrors `add_background`. */
   const canvasSize = createMemo(() => {
     const source = real() ?? natural();
-    const { w, h } = source;
-    const pad = Math.round((Math.max(0, props.paddingPct) / 100) * Math.min(w, h));
+    const w = Math.max(1, Math.round(finite(source.w, 4)));
+    const h = Math.max(1, Math.round(finite(source.h, 3)));
+    const pad = Math.round((clamp(props.paddingPct, 0, 100) / 100) * Math.min(w, h));
     let canvasW = w + 2 * pad;
     let canvasH = h + 2 * pad;
     const ratio = RATIOS[props.aspect];
     if (ratio) {
-      if (canvasW / canvasH > ratio) canvasH = canvasW / ratio;
-      else canvasW = canvasH * ratio;
+      if (canvasW / canvasH > ratio) canvasH = Math.max(1, Math.round(canvasW / ratio));
+      else canvasW = Math.max(1, Math.round(canvasH * ratio));
     }
     return { w: canvasW, h: canvasH };
   });
@@ -122,22 +180,14 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     // Draw with the thumbnail's shape, but place the photo by the real proportions.
     const realSize = real();
     const { w, h } = realSize ?? natural();
-    const pad = (Math.max(0, props.paddingPct) / 100) * Math.min(w, h);
-    const ratio = RATIOS[props.aspect];
-    // The canvas always holds the photo plus its padding; a ratio only extends the
-    // narrower axis, exactly what the engine does.
-    let canvasW = w + 2 * pad;
-    let canvasH = h + 2 * pad;
-    if (ratio) {
-      if (canvasW / canvasH > ratio) canvasH = canvasW / ratio;
-      else canvasW = canvasH * ratio;
-    }
-    const scale = Math.min(MAX_WIDTH / canvasW, MAX_HEIGHT / canvasH);
+    const pad = (clamp(props.paddingPct, 0, 100) / 100) * Math.min(w, h);
+    const canvas = canvasSize();
+    const scale = Math.min(MAX_WIDTH / canvas.w, MAX_HEIGHT / canvas.h);
     const photoW = w * scale;
     const photoH = h * scale;
     return {
-      canvasW: canvasW * scale,
-      canvasH: canvasH * scale,
+      canvasW: canvas.w * scale,
+      canvasH: canvas.h * scale,
       photoW,
       photoH,
       padPx: pad * scale,
@@ -154,74 +204,178 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
     };
   });
 
+  /**
+   * The engine's window on the background picture, in that picture's own pixels.
+   *
+   * `base` is the cover crop: the largest window with the canvas's aspect. The zoom
+   * takes a centred `vis` window out of it, the placement slides that window, and the
+   * result is stretched to the canvas. Every step here is copied from `add_background`
+   * on purpose: the preview is only useful if it fails wherever the engine fails.
+   */
+  const backgroundWindow = createMemo(() => {
+    const size = backdropSize();
+    if (!size || !(size.w > 0) || !(size.h > 0)) return null;
+    const canvas = canvasSize();
+    if (!(canvas.w > 0) || !(canvas.h > 0)) return null;
+    const zoom = clamp(props.imageZoom, 1, 3);
+    const target = canvas.w / canvas.h;
+    const source = size.w / size.h;
+    const baseW = source > target ? size.h * target : size.w;
+    const baseH = source > target ? size.h : size.w / target;
+    const visW = Math.min(size.w, Math.max(1, Math.round(baseW / zoom)));
+    const visH = Math.min(size.h, Math.max(1, Math.round(baseH / zoom)));
+    const freeX = Math.max(0, baseW - visW);
+    const freeY = Math.max(0, baseH - visH);
+    const shiftX = (clamp(finite(props.imageX, 0), -100, 100) / 100) * (freeX / 2);
+    const shiftY = (clamp(finite(props.imageY, 0), -100, 100) / 100) * (freeY / 2);
+    const cropX = Math.min(freeX, Math.max(0, Math.round(freeX / 2 - shiftX)));
+    const cropY = Math.min(freeY, Math.max(0, Math.round(freeY / 2 - shiftY)));
+    return { baseW, baseH, visW, cropX, cropY };
+  });
+
+  /**
+   * Where the background `<img>` sits, in display pixels.
+   *
+   * The engine stretches the `vis` crop to the canvas, so one source pixel of the
+   * picture is `s = canvasDisplayWidth / visW` display pixels wide. The whole `base`
+   * window is drawn at that scale and the crop offset is subtracted, then the canvas
+   * clips it: the visible region is exactly the engine's crop, at the engine's scale.
+   */
+  const fillGeometry = createMemo(() => {
+    const win = backgroundWindow();
+    const display = layout();
+    if (!win || !(display.canvasW > 0) || !(win.visW > 0)) {
+      // Without the picture's own size only a cover fit is honest; the file is still
+      // composed by the engine, so the dialog must not stall on this.
+      return { width: '100%', height: '100%', left: '0', top: '0' };
+    }
+    const s = display.canvasW / win.visW;
+    return {
+      width: `${(win.baseW * s).toFixed(2)}px`,
+      height: `${(win.baseH * s).toFixed(2)}px`,
+      left: `${(-win.cropX * s).toFixed(2)}px`,
+      top: `${(-win.cropY * s).toFixed(2)}px`,
+    };
+  });
+
+  /**
+   * The blur in display pixels: the engine's sigma lives in the picture's own pixels,
+   * and `s` is how far one of those is stretched here. Capped so no slider position
+   * makes the compositor crawl.
+   */
+  const fillBlur = createMemo(() => {
+    const source = clamp(props.bgBlur, 0, 50);
+    const win = backgroundWindow();
+    const display = layout();
+    const scale = win && win.visW > 0 && display.canvasW > 0 ? display.canvasW / win.visW : 1;
+    return Math.min(MAX_BLUR_PX, source * scale);
+  });
+
+  /**
+   * One drag handler owns the canvas.
+   *
+   * Every child of the canvas refuses the pointer (`pointer-events: none` in CSS), the
+   * press is captured, and the move/up listeners live exactly as long as the gesture:
+   * a listener that leaked past `pointerup` kept moving whichever slider the pointer
+   * drifted onto, with the cursor stuck in the drag state.
+   */
+  function startDrag(event: PointerEvent & { currentTarget: HTMLDivElement }): void {
+    if (props.mode !== 'image' || !backdrop() || !props.onPlace) return;
+    event.preventDefault();
+    const target = event.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const width = Math.max(1, rect.width);
+    const height = Math.max(1, rect.height);
+    const start = {
+      x: event.clientX,
+      y: event.clientY,
+      bx: finite(props.imageX, 0),
+      by: finite(props.imageY, 0),
+    };
+    try {
+      target.setPointerCapture(event.pointerId);
+    } catch {
+      // The pointer was already released; the listeners below still clean up.
+    }
+    const move = (e: PointerEvent): void => {
+      // A full canvas width drag walks the whole free range, which is 200 units of
+      // `bg_x`. The picture follows the pointer: pulling right shows what was left of
+      // it, so the value grows instead of fighting the hand.
+      const dx = ((e.clientX - start.x) / width) * 200;
+      const dy = ((e.clientY - start.y) / height) * 200;
+      // The field is a 1-step percentage in -100..100.
+      props.onPlace?.(
+        Math.min(100, Math.max(-100, Math.round(start.bx + dx))),
+        Math.min(100, Math.max(-100, Math.round(start.by + dy))),
+      );
+    };
+    const stop = (): void => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', stop);
+      target.removeEventListener('pointercancel', stop);
+      target.removeEventListener('lostpointercapture', stop);
+      try {
+        if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+      } catch {
+        // Already released by the platform.
+      }
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', stop);
+    target.addEventListener('pointercancel', stop);
+    target.addEventListener('lostpointercapture', stop);
+  }
+
   return (
     <div class="photo-preview">
       <div class="background-stage">
-        <Show when={src()} fallback={<p class="crop-placeholder">{note() || 'Loading…'}</p>}>
-          <div
-            class="background-canvas"
-            classList={{ 'can-move': props.mode === 'image' && Boolean(backdrop()) }}
-            onPointerDown={(event) => {
-              if (props.mode !== 'image' || !backdrop() || !props.onPlace) return;
-              const target = event.currentTarget;
-              target.setPointerCapture(event.pointerId);
-              const start = { x: event.clientX, y: event.clientY, bx: props.imageX, by: props.imageY };
-              const rect = target.getBoundingClientRect();
-              const move = (e: PointerEvent): void => {
-                // The pointer drags the *frame*, so the picture moves the other way: pull
-                // right and the picture follows to the right.
-                const dx = ((e.clientX - start.x) / Math.max(1, rect.width)) * 200;
-                const dy = ((e.clientY - start.y) / Math.max(1, rect.height)) * 200;
-                const clamp = (v: number): number => Math.min(100, Math.max(-100, Math.round(v)));
-                props.onPlace?.(clamp(start.bx - dx), clamp(start.by - dy));
-              };
-              const up = (): void => {
-                target.removeEventListener('pointermove', move);
-                target.removeEventListener('pointerup', up);
-                target.removeEventListener('pointercancel', up);
-              };
-              target.addEventListener('pointermove', move);
-              target.addEventListener('pointerup', up);
-              target.addEventListener('pointercancel', up);
-            }}
-            style={{
-              width: `${layout().canvasW}px`,
-              height: `${layout().canvasH}px`,
-              // The fill belongs to the saved canvas, not to this window. Zoom and
-              // placement of a chosen picture match the engine's crop window.
-              background:
-                props.mode === 'image' && backdrop()
-                  ? `url(${backdrop()}) center / cover`
-                  : fill(),
-              'background-size':
-                props.mode === 'image' && backdrop()
-                  ? `${Math.max(100, props.imageZoom * 100)}% auto`
-                  : undefined,
-              'background-position':
-                props.mode === 'image' && backdrop()
-                  ? `calc(50% + ${props.imageX / 2}%) calc(50% + ${props.imageY / 2}%)`
-                  : undefined,
-            }}
-          >
-            <Show when={props.mode === 'image' && backdrop() && props.bgBlur > 0}>
-              <span
-                aria-hidden="true"
-                style={{
-                  position: 'absolute',
-                  inset: '0',
-                  background: `url(${backdrop()}) center / ${Math.max(100, props.imageZoom * 100)}% auto no-repeat`,
-                  'background-position': `calc(50% + ${props.imageX / 2}%) calc(50% + ${props.imageY / 2}%)`,
-                  filter: `blur(${props.bgBlur}px)`,
-                  transform: 'scale(1.06)',
-                }}
-              />
-            </Show>
+        <div
+          class="background-canvas"
+          classList={{
+            'can-move': props.mode === 'image' && Boolean(backdrop()) && Boolean(props.onPlace),
+          }}
+          onPointerDown={startDrag}
+          style={{
+            width: `${layout().canvasW}px`,
+            height: `${layout().canvasH}px`,
+            // Only the fill lives on the canvas. The picture is an <img>, so the
+            // shorthand cannot compete with it.
+            background: fill(),
+          }}
+        >
+          <Show when={props.mode === 'image' && backdrop()}>
+            {/* CSS blur fades to transparent past the element's own edge; the engine
+                keeps the picture's edge colour there. The untouched copy underneath
+                fills that bleed, so a heavy blur does not darken the canvas border. */}
             <img
+              class="background-image background-bleed"
+              src={backdrop()}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              style={fillGeometry()}
+            />
+            <img
+              class="background-image background-fill-image"
+              src={backdrop()}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              style={{
+                ...fillGeometry(),
+                // One property changes as the slider moves: no covering layer is ever
+                // inserted or removed, which is what froze the dialog.
+                filter: fillBlur() > 0 ? `blur(${fillBlur().toFixed(2)}px)` : 'none',
+              }}
+            />
+          </Show>
+          <Show when={src()}>
+            <img
+              class="background-photo"
               src={src()}
               alt=""
               draggable={false}
               style={{
-                position: 'relative',
                 width: `${layout().photoW}px`,
                 height: `${layout().photoH}px`,
                 'border-radius': `${layout().radiusPx}px`,
@@ -237,7 +391,11 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
                 }
               }}
             />
-          </div>
+          </Show>
+        </div>
+        {/* Overlaid, never in flow: a line of status text must not push the controls. */}
+        <Show when={!src()}>
+          <p class="crop-placeholder background-note">{note() || 'Loading…'}</p>
         </Show>
       </div>
       <p class="preview-caption">

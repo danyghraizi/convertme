@@ -318,6 +318,7 @@
       },
       {
         "default": 0.0,
+        "help": "Pixels on the background picture itself, before it is scaled to the canvas, so a large picture needs more for the same softness.",
         "key": "bg_blur",
         "kind": "range",
         "label": "Background blur",
@@ -443,6 +444,16 @@
         ]
       },
       {
+        "default": 0.0,
+        "key": "rows",
+        "kind": "number",
+        "label": "Rows (0 = auto)",
+        "max": 6.0,
+        "min": 0.0,
+        "step": 1.0,
+        "unit": ""
+      },
+      {
         "default": 2.0,
         "key": "columns",
         "kind": "number",
@@ -462,25 +473,39 @@
           "1:1",
           "16:9",
           "4:3",
-          "3:2"
+          "3:2",
+          "2:3",
+          "9:16",
+          "3:4",
+          "4:5"
         ],
         "options": [
           "auto",
           "1:1",
           "16:9",
           "4:3",
-          "3:2"
+          "3:2",
+          "2:3",
+          "9:16",
+          "3:4",
+          "4:5"
         ]
       },
       {
-        "default": 2048.0,
+        "default": "2048",
         "key": "width",
-        "kind": "number",
-        "label": "Width",
-        "max": 8192.0,
-        "min": 512.0,
-        "step": 2.0,
-        "unit": "px"
+        "kind": "select",
+        "label": "Output size",
+        "option_labels": [
+          "Small (1024 px)",
+          "Medium (2048 px)",
+          "Large (4096 px)"
+        ],
+        "options": [
+          "1024",
+          "2048",
+          "4096"
+        ]
       },
       {
         "default": "crop",
@@ -499,13 +524,13 @@
       {
         "default": 0.0,
         "group": "Spacing & background",
-        "key": "spacing",
-        "kind": "number",
+        "key": "spacing_pct",
+        "kind": "range",
         "label": "Spacing",
-        "max": 64.0,
+        "max": 100.0,
         "min": 0.0,
         "step": 1.0,
-        "unit": "px"
+        "unit": "%"
       },
       {
         "default": "#ffffff",
@@ -517,13 +542,13 @@
       {
         "default": 0.0,
         "group": "Spacing & background",
-        "key": "radius",
-        "kind": "number",
+        "key": "radius_pct",
+        "kind": "range",
         "label": "Corner radius",
-        "max": 64.0,
+        "max": 100.0,
         "min": 0.0,
         "step": 1.0,
-        "unit": "px"
+        "unit": "%"
       }
     ],
     "compress": [
@@ -877,6 +902,20 @@
         ]
       },
       {
+        "default": 50.0,
+        "key": "strength",
+        "kind": "range",
+        "label": "Blur strength",
+        "max": 100.0,
+        "min": 0.0,
+        "show_if": {
+          "equals": "blur",
+          "key": "style"
+        },
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
         "default": "#000000",
         "key": "color",
         "kind": "color",
@@ -1064,6 +1103,20 @@
           "solid",
           "blur"
         ]
+      },
+      {
+        "default": 50.0,
+        "key": "strength",
+        "kind": "range",
+        "label": "Blur strength",
+        "max": 100.0,
+        "min": 0.0,
+        "show_if": {
+          "equals": "blur",
+          "key": "style"
+        },
+        "step": 1.0,
+        "unit": "%"
       },
       {
         "default": "#000000",

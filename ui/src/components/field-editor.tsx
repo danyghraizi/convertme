@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createSignal } from 'solid-js';
+import { For, Match, Show, Switch, createEffect, createSignal, onCleanup } from 'solid-js';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import * as ipc from '../ipc';
 import ColourPicker from './colour-picker';
@@ -53,13 +53,25 @@ interface BoxesEditorProps {
   value: FieldValue;
   previewPath: string | null;
   onChange: (value: FieldValue) => void;
+  /**
+   * The redaction the dialog has chosen. Present only for the redaction tool, which
+   * then previews the engine's own treatment; every other box editor (the video
+   * timeline) has no effect and never asks the engine for one.
+   */
+  effect?: { style: string; color: string; strength: number };
 }
 
 type BoxHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 const BOX_MIN = 0.01;
+/** Long enough that dragging a box asks for one render, not one per pointer move. */
+const RENDER_DELAY = 180;
 
 export function BoxesEditor(props: BoxesEditorProps) {
   const [preview, setPreview] = createSignal('');
+  const [redacted, setRedacted] = createSignal('');
+  const [withRedaction, setWithRedaction] = createSignal(true);
+  const [rendering, setRendering] = createSignal(false);
+  const [renderNote, setRenderNote] = createSignal('');
   const [draft, setDraft] = createSignal<Box | null>(null);
   const [detecting, setDetecting] = createSignal(false);
   const [note, setNote] = createSignal('');
@@ -92,6 +104,60 @@ export function BoxesEditor(props: BoxesEditorProps) {
         setPreview(ipc.assetUrl(url));
       })
       .catch(() => setNote('Preview unavailable; regions can still be entered.'));
+  });
+
+  // The surface shows the engine's own redaction, so the treatment and its strength
+  // are judged before saving. The request is debounced (a drag asks once, when the
+  // motion pauses) and token-guarded (a reply for older boxes is dropped).
+  let timer: number | undefined;
+  let token = 0;
+
+  createEffect(() => {
+    const path = props.previewPath;
+    const effect = props.effect;
+    const marked = shown();
+    const wanted = withRedaction();
+    window.clearTimeout(timer);
+    // Invalidate whatever is in flight the moment the boxes or the treatment change.
+    const mine = ++token;
+    if (!path || !effect || !wanted || marked.length === 0) {
+      setRedacted('');
+      setRendering(false);
+      setRenderNote('');
+      return;
+    }
+    timer = window.setTimeout(() => {
+      setRendering(true);
+      void ipc
+        .redactPreview(path, {
+          boxes: marked,
+          style: effect.style,
+          color: effect.color,
+          strength: effect.strength,
+        })
+        .then((produced) => {
+          if (mine !== token) return;
+          setRedacted(ipc.assetUrl(produced));
+          setRenderNote('');
+          setRendering(false);
+        })
+        .catch((error) => {
+          if (mine !== token) return;
+          // The plain thumbnail stays: an unavailable preview must not empty the box.
+          setRedacted('');
+          setRenderNote(
+            error instanceof Error
+              ? `Redacted preview failed: ${error.message}`
+              : 'The redacted preview could not be rendered.',
+          );
+          setRendering(false);
+        });
+    }, RENDER_DELAY);
+  });
+
+  onCleanup(() => {
+    window.clearTimeout(timer);
+    token += 1;
   });
 
   function localPoint(event: PointerEvent, rect: DOMRect): { x: number; y: number } {
@@ -279,6 +345,16 @@ export function BoxesEditor(props: BoxesEditorProps) {
           Clear regions
         </button>
         <span class="boxes-count">{boxes().length} marked</span>
+        <Show when={props.effect}>
+          <label class="boxes-toggle">
+            <input
+              type="checkbox"
+              checked={withRedaction()}
+              onChange={(event) => setWithRedaction(event.currentTarget.checked)}
+            />
+            Preview redaction
+          </label>
+        </Show>
       </div>
       <div class="boxes-surface" classList={{ 'is-empty': preview().length === 0 }}>
         <Show when={preview()} fallback={<p class="boxes-placeholder">Preview unavailable</p>}>
@@ -290,7 +366,18 @@ export function BoxesEditor(props: BoxesEditorProps) {
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
           >
-            <img src={preview()} alt="Preview" draggable={false} />
+            <img
+              src={(withRedaction() ? redacted() : '') || preview()}
+              alt="Preview"
+              draggable={false}
+            />
+            {/* Over the picture, never in the flow: a status line would grow the
+                band and move every control below it. */}
+            <Show when={rendering() || renderNote()}>
+              <span class="preview-status" role="status" aria-live="polite">
+                {rendering() ? 'Rendering…' : renderNote()}
+              </span>
+            </Show>
             <For each={shown()}>
               {(box, index) => (
                 <span

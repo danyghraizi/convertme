@@ -16,6 +16,7 @@ use printpdf::{
     DictItem, ExternalStream, ExternalXObject, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
     Px, RawImage, RawImageData, RawImageFormat, XObjectId, XObjectTransform,
 };
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -133,19 +134,26 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 params,
                 &[
                     "style",
+                    "rows",
                     "columns",
                     "aspect",
                     "width",
                     "fit",
-                    "spacing",
+                    "spacing_pct",
+                    "radius_pct",
                     "background",
-                    "radius",
                     "order",
+                    "cells",
                 ],
             )?;
             let style = string(params, "style")?.unwrap_or("grid");
             if !["grid", "row", "column", "featured"].contains(&style) {
                 return Err(unsupported("`style` must be grid, row, column or featured"));
+            }
+            if let Some(rows) = unsigned(params, "rows")?
+                && rows > 6
+            {
+                return Err(unsupported("`rows` must be between 0 and 6"));
             }
             if let Some(columns) = unsigned(params, "columns")?
                 && !(1..=6).contains(&columns)
@@ -168,13 +176,14 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
             {
                 return Err(unsupported("`fit` must be crop or contain"));
             }
-            for key in ["spacing", "radius"] {
-                if let Some(value) = unsigned(params, key)?
-                    && value > 64
+            for key in ["spacing_pct", "radius_pct"] {
+                if let Some(value) = number(params, key)?
+                    && !(0.0..=100.0).contains(&value)
                 {
-                    return Err(unsupported(format!("`{key}` must be between 0 and 64")));
+                    return Err(unsupported(format!("`{key}` must be between 0 and 100")));
                 }
             }
+            collage_transform_entries(params)?;
             if let Some(background) = string(params, "background")?
                 && background.trim().is_empty()
             {
@@ -304,7 +313,6 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 "brightness",
                 "contrast",
                 "saturation",
-                "hue",
                 "temperature",
                 "highlights",
                 "shadows",
@@ -320,6 +328,13 @@ fn validate_tool(tool: ToolId, params: &ToolParams) -> Result<(), JobError> {
                 {
                     return Err(unsupported(format!("`{key}` must be between -100 and 100")));
                 }
+            }
+            // Hue is the one colour control in degrees, and the field spans a half
+            // turn: rejecting +120 here made half the slider dead.
+            if let Some(value) = number(params, "hue")?
+                && !(-180.0..=180.0).contains(&value)
+            {
+                return Err(unsupported("`hue` must be between -180 and 180 degrees"));
             }
             for key in ["grain", "noise", "sharpness"] {
                 if let Some(value) = number(params, key)?
@@ -1024,13 +1039,50 @@ enum CollageStyle {
     Featured,
 }
 
-/// One cell of the composition: which input, where, and how many cell units it spans.
+/// One placed cell: the source index, where it sits, and how many cell units it spans.
+/// `input` indexes `inputs` (the source), while placement follows `order`.
 struct CollageCell {
     input: usize,
     row: usize,
     col: usize,
     row_span: usize,
     col_span: usize,
+}
+
+/// One cell of the arrangement, in output pixels.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct CollageCellOut {
+    /// The source index (into the selection), so the dialog can match a cell to a file.
+    pub input: usize,
+    pub row: usize,
+    pub col: usize,
+    pub row_span: usize,
+    pub col_span: usize,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// The arrangement the composer will write. The dialog draws its hit areas from
+/// these rectangles, so the preview and the job cannot disagree about the layout.
+#[derive(Serialize, Clone, Debug)]
+pub struct CollageLayout {
+    pub width: u32,
+    pub height: u32,
+    pub cols: usize,
+    pub rows: usize,
+    pub spacing: u32,
+    pub cells: Vec<CollageCellOut>,
+}
+
+/// How one picture sits inside its cell: `zoom` scales it before the crop and
+/// `x`/`y` choose the window, both as percentages.
+#[derive(Clone, Copy, Default)]
+struct CollageTransform {
+    zoom: f64,
+    x: f64,
+    y: f64,
 }
 
 fn collage_style(params: &ToolParams) -> Result<CollageStyle, JobError> {
@@ -1079,32 +1131,67 @@ fn collage_ratio(
 ) -> Result<f64, JobError> {
     let aspect = string(params, "aspect")?.unwrap_or("auto");
     if aspect.eq_ignore_ascii_case("auto") || aspect.is_empty() {
-        let (w, h) = image_size_with(magick, first, ctx)?;
+        // The composer resizes after `-auto-orient`; the canvas ratio has to be the
+        // picture's displayed ratio, or a rotated phone photo gets a portrait canvas
+        // around a landscape picture.
+        let (w, h) = oriented_size_with(magick, first, ctx)?;
         return Ok(f64::from(w.max(1)) / f64::from(h.max(1)));
     }
     let (a, b) = parse_aspect(aspect)?;
     Ok(f64::from(a) / f64::from(b))
 }
 
-/// The cell grid. `row` is one column of N rows, `column` N columns of one row;
+/// The picture size after EXIF orientation, which is what the composer's
+/// `-auto-orient -resize` sees. Pan offsets are a fraction of the real overflow.
+fn oriented_size_with(magick: &Path, input: &Path, ctx: &JobCtx) -> Result<(u32, u32), JobError> {
+    let cmd = Cmd::new(magick)
+        .arg("identify")
+        .arg("-auto-orient")
+        .arg("-format")
+        .arg("%w %h")
+        .arg(input)
+        .stdout_piped()
+        .budget(Budget::Short);
+    let output = proc::run(cmd, ctx)?;
+    let output = output.ok()?;
+    let mut parts = output.stdout.split_whitespace();
+    let width: u32 = parts
+        .next()
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "could not read the image width"))?;
+    let height: u32 = parts
+        .next()
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "could not read the image height"))?;
+    Ok((width.max(1), height.max(1)))
+}
+
+/// The cell grid. `row` is one row of N columns, `column` one column of N rows;
 /// `featured` lets the first picture take a 2×2 block and fills the rest around it.
+///
+/// `rows` is the explicit row count (0 = automatic). It is honoured when it is
+/// larger than the pictures need — the spare cells stay background — and it grows
+/// when the pictures would not otherwise fit.
 fn collage_cells(
     style: CollageStyle,
     columns: usize,
-    count: usize,
+    rows: usize,
+    order: &[usize],
 ) -> (usize, usize, Vec<CollageCell>) {
+    let count = order.len();
     let columns = columns.clamp(1, 6);
+    let requested = rows.min(6);
     let featured = style == CollageStyle::Featured && count >= 3 && columns >= 2;
     let (cols, rows) = if featured {
-        let rows = ((count + 3).div_ceil(columns)).max(2);
-        (columns, rows)
+        let fit = ((count + 3).div_ceil(columns)).max(2);
+        (columns, fit.max(requested))
     } else {
         match style {
-            CollageStyle::Row => (1, count.max(1)),
-            CollageStyle::Column => (count.max(1), 1),
+            CollageStyle::Row => (count.max(1), 1),
+            CollageStyle::Column => (1, count.max(1)),
             CollageStyle::Grid | CollageStyle::Featured => {
-                let rows = count.div_ceil(columns).max(1);
-                (columns, rows)
+                let fit = count.div_ceil(columns).max(1);
+                (columns, fit.max(requested).max(1))
             }
         }
     };
@@ -1112,7 +1199,7 @@ fn collage_cells(
     let mut cells = Vec::with_capacity(count);
     if featured {
         cells.push(CollageCell {
-            input: 0,
+            input: order[0],
             row: 0,
             col: 0,
             row_span: 2,
@@ -1128,7 +1215,7 @@ fn collage_cells(
                     continue;
                 }
                 cells.push(CollageCell {
-                    input: next,
+                    input: order[next],
                     row,
                     col,
                     row_span: 1,
@@ -1138,17 +1225,195 @@ fn collage_cells(
             }
         }
     } else {
-        for input in 0..count {
+        for (position, &input) in order.iter().enumerate() {
             cells.push(CollageCell {
                 input,
-                row: input / cols,
-                col: input % cols,
+                row: position / cols,
+                col: position % cols,
                 row_span: 1,
                 col_span: 1,
             });
         }
     }
     (cols, rows, cells)
+}
+
+/// The gutter in pixels: a percentage of the smaller cell side, computed before the
+/// gutter is taken out. 100% leaves one pixel per cell rather than swallowing them.
+fn collage_spacing(
+    params: &ToolParams,
+    width: u32,
+    height: u32,
+    cols: usize,
+    rows: usize,
+) -> Result<u32, JobError> {
+    let pct = number(params, "spacing_pct")?
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    if pct <= 0.0 {
+        return Ok(0);
+    }
+    let base_w = width / cols.max(1) as u32;
+    let base_h = height / rows.max(1) as u32;
+    let wanted = (f64::from(base_w.min(base_h)) * pct / 100.0).round() as u32;
+    let room_w = width.saturating_sub(cols as u32) / (cols as u32 + 1);
+    let room_h = height.saturating_sub(rows as u32) / (rows as u32 + 1);
+    Ok(wanted.min(room_w).min(room_h))
+}
+
+/// The corner radius in pixels: 100% is half the shorter cell side (a circle on a
+/// square cell), so the slider means the same thing at every output size.
+fn collage_radius(params: &ToolParams, cell_w: u32, cell_h: u32) -> Result<u32, JobError> {
+    let pct = number(params, "radius_pct")?
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    if pct <= 0.0 {
+        return Ok(0);
+    }
+    Ok((f64::from(cell_w.min(cell_h)) * pct / 200.0).round() as u32)
+}
+
+/// The `cells` array: zoom and pan per source index, validated but not yet applied.
+fn collage_transform_entries(
+    params: &ToolParams,
+) -> Result<Vec<(usize, CollageTransform)>, JobError> {
+    let Some(value) = params.get("cells") else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(items) = value.as_array() else {
+        return Err(unsupported("`cells` must be an array"));
+    };
+    let mut entries = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(object) = item.as_object() else {
+            return Err(unsupported("`cells` entries must be objects"));
+        };
+        let index = object
+            .get("index")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| unsupported("`cells` entries need an `index`"))?
+            as usize;
+        let lookup = |key: &str| -> Result<f64, JobError> {
+            match object.get(key) {
+                None | Some(Value::Null) => Ok(0.0),
+                Some(value) => value
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| unsupported(format!("`{key}` must be a number"))),
+            }
+        };
+        let zoom = match object.get("zoom") {
+            None | Some(Value::Null) => 1.0,
+            Some(value) => value
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| unsupported("`zoom` must be a number"))?,
+        };
+        let x = lookup("x")?;
+        let y = lookup("y")?;
+        if !(1.0..=4.0).contains(&zoom) {
+            return Err(unsupported("`zoom` must be between 1 and 4"));
+        }
+        if !(-100.0..=100.0).contains(&x) || !(-100.0..=100.0).contains(&y) {
+            return Err(unsupported("`x` and `y` must be between -100 and 100"));
+        }
+        entries.push((index, CollageTransform { zoom, x, y }));
+    }
+    Ok(entries)
+}
+
+/// Transforms indexed by source index; entries for pictures that are not selected
+/// are ignored, so the dialog can keep a pan while the selection changes.
+fn collage_transforms(
+    params: &ToolParams,
+    count: usize,
+) -> Result<Vec<CollageTransform>, JobError> {
+    let mut transforms = vec![CollageTransform::default(); count];
+    for (index, transform) in collage_transform_entries(params)? {
+        if index < count {
+            transforms[index] = transform;
+        }
+    }
+    Ok(transforms)
+}
+
+/// The arrangement at `width` output pixels. Shared by the composer, the 512 px
+/// preview and the dialog's hit areas: one formula, so they cannot drift.
+pub fn collage_layout(
+    tools: &crate::Toolset,
+    inputs: &[PathBuf],
+    params: &ToolParams,
+    width: u32,
+) -> Result<CollageLayout, JobError> {
+    let magick = tools.path(ToolKey::Magick)?;
+    collage_layout_with(&magick, inputs, params, width, &JobCtx::new())
+}
+
+fn collage_layout_with(
+    magick: &Path,
+    inputs: &[PathBuf],
+    params: &ToolParams,
+    width: u32,
+    ctx: &JobCtx,
+) -> Result<CollageLayout, JobError> {
+    if inputs.is_empty() {
+        return Err(unsupported("a collage needs at least one image"));
+    }
+    let order = collage_order(params, inputs.len())?;
+    if order.is_empty() {
+        return Err(unsupported("a collage needs at least one image"));
+    }
+    let style = collage_style(params)?;
+    let columns = unsigned(params, "columns")?.unwrap_or(2).clamp(1, 6) as usize;
+    let rows_param = unsigned(params, "rows")?.unwrap_or(0).min(6) as usize;
+    let requested = width.clamp(512, 8192);
+    let width = requested - requested % 2;
+    let ratio = collage_ratio(params, magick, &inputs[order[0]], ctx)?;
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(unsupported("the canvas ratio must be positive"));
+    }
+    let height = ((f64::from(width) / ratio).round() as u32).max(2);
+    let height = height - height % 2;
+
+    let (cols, rows, cells) = collage_cells(style, columns, rows_param, &order);
+    let spacing = collage_spacing(params, width, height, cols, rows)?;
+    let cell_w =
+        ((i64::from(width) - i64::from(spacing) * (cols as i64 + 1)) / cols as i64).max(1) as u32;
+    let cell_h =
+        ((i64::from(height) - i64::from(spacing) * (rows as i64 + 1)) / rows as i64).max(1) as u32;
+
+    let cells = cells
+        .into_iter()
+        .map(|cell| {
+            let span_w = cell_w * cell.col_span as u32 + spacing * (cell.col_span as u32 - 1);
+            let span_h = cell_h * cell.row_span as u32 + spacing * (cell.row_span as u32 - 1);
+            let x = spacing + cell.col as u32 * (cell_w + spacing);
+            let y = spacing + cell.row as u32 * (cell_h + spacing);
+            CollageCellOut {
+                input: cell.input,
+                row: cell.row,
+                col: cell.col,
+                row_span: cell.row_span,
+                col_span: cell.col_span,
+                x,
+                y,
+                w: span_w,
+                h: span_h,
+            }
+        })
+        .collect();
+
+    Ok(CollageLayout {
+        width,
+        height,
+        cols,
+        rows,
+        spacing,
+        cells,
+    })
 }
 
 /// One `magick` invocation composes the whole canvas; the dialog's preview calls the
@@ -1161,67 +1426,97 @@ fn compose_collage(
     out: &Path,
     ctx: &JobCtx,
 ) -> Result<(), JobError> {
-    if inputs.is_empty() {
-        return Err(unsupported("a collage needs at least one image"));
-    }
-    let order = collage_order(params, inputs.len())?;
-    if order.is_empty() {
-        return Err(unsupported("a collage needs at least one image"));
-    }
-    let style = collage_style(params)?;
-    let columns = unsigned(params, "columns")?.unwrap_or(2).clamp(1, 6) as usize;
+    let requested = width_override
+        .or_else(|| unsigned(params, "width").ok().flatten().map(|w| w as u32))
+        .unwrap_or(2048);
+    // One layout, shared with the dialog: the composer cannot disagree with the
+    // rectangles the preview draws over it.
+    let layout = collage_layout_with(magick, inputs, params, requested, ctx)?;
     let fit = string(params, "fit")?.unwrap_or("crop");
     if !["crop", "contain"].contains(&fit) {
         return Err(unsupported("`fit` must be crop or contain"));
     }
-    let spacing = unsigned(params, "spacing")?.unwrap_or(0).min(64) as u32;
-    let radius = unsigned(params, "radius")?.unwrap_or(0).min(64) as u32;
     let background = string(params, "background")?
         .unwrap_or("#ffffff")
         .to_string();
     if background.trim().is_empty() {
         return Err(unsupported("`background` cannot be empty"));
     }
-    let requested = width_override
-        .or_else(|| unsigned(params, "width").ok().flatten().map(|w| w as u32))
-        .unwrap_or(2048)
-        .clamp(16, 8192);
-    let width = requested - requested % 2;
-    let ratio = collage_ratio(params, magick, &inputs[order[0]], ctx)?;
-    let height = ((f64::from(width) / ratio).round() as u32).max(2);
-    let height = height - height % 2;
-
-    let (cols, rows, cells) = collage_cells(style, columns, order.len());
-    let cell_w =
-        ((i64::from(width) - i64::from(spacing) * (cols as i64 + 1)) / cols as i64).max(1) as u32;
-    let cell_h =
-        ((i64::from(height) - i64::from(spacing) * (rows as i64 + 1)) / rows as i64).max(1) as u32;
+    let transforms = collage_transforms(params, inputs.len())?;
+    // Source sizes are probed once per picture: the pan range is a fraction of the
+    // real overflow, and `-resize …^` overflows by more than the target when the
+    // picture's aspect does not match the cell's.
+    let mut sizes: Vec<Option<(u32, u32)>> = vec![None; inputs.len()];
 
     let mut args: Vec<OsString> = vec![
         os("-size"),
-        os(format!("{width}x{height}")),
+        os(format!("{}x{}", layout.width, layout.height)),
         os(format!("xc:{background}")),
     ];
     ctx.set_stage("composing the collage");
-    let total = cells.len().max(1);
-    for (position, cell) in cells.iter().enumerate() {
-        let span_w = cell_w * cell.col_span as u32 + spacing * (cell.col_span as u32 - 1);
-        let span_h = cell_h * cell.row_span as u32 + spacing * (cell.row_span as u32 - 1);
-        let x = spacing as u64 + cell.col as u64 * u64::from(cell_w + spacing);
-        let y = spacing as u64 + cell.row as u64 * u64::from(cell_h + spacing);
+    let total = layout.cells.len().max(1);
+    for (position, cell) in layout.cells.iter().enumerate() {
+        let span_w = cell.w;
+        let span_h = cell.h;
+        let transform = transforms.get(cell.input).copied().unwrap_or_default();
+        let radius = collage_radius(params, span_w, span_h)?;
 
         args.push(os("("));
         args.push(os("("));
-        args.push(os(&inputs[order[cell.input]]));
+        args.push(os(&inputs[cell.input]));
         args.push(os("-auto-orient"));
-        if fit == "crop" {
+        if fit == "crop"
+            && (transform.zoom - 1.0).abs() < 1e-9
+            && transform.x == 0.0
+            && transform.y == 0.0
+        {
+            // The default cell: a centred cover. No source-size probe is needed, which
+            // keeps an all-default preview at four Magick processes fewer.
             args.push(os("-resize"));
             args.push(os(format!("{span_w}x{span_h}^")));
             args.push(os("-gravity"));
             args.push(os("center"));
             args.push(os("-extent"));
             args.push(os(format!("{span_w}x{span_h}")));
+        } else if fit == "crop" {
+            // Zoom enlarges the picture before the crop; pan picks which part of the
+            // overflow the cell shows. Both are percentages, so they mean the same
+            // thing at any output size.
+            let zoom = transform.zoom.clamp(1.0, 4.0);
+            let resized_w = ((f64::from(span_w) * zoom).round() as u32).max(span_w);
+            let resized_h = ((f64::from(span_h) * zoom).round() as u32).max(span_h);
+            let (source_w, source_h) = match sizes[cell.input] {
+                Some(size) => size,
+                None => {
+                    let size = oriented_size_with(magick, &inputs[cell.input], ctx)?;
+                    sizes[cell.input] = Some(size);
+                    size
+                }
+            };
+            // `-resize …^` keeps the aspect ratio and covers the target, so the real
+            // size is the target scaled up by the larger ratio (rounded the same way).
+            let scale = (f64::from(resized_w) / f64::from(source_w))
+                .max(f64::from(resized_h) / f64::from(source_h));
+            let covered_w = ((f64::from(source_w) * scale).round() as u32).max(resized_w);
+            let covered_h = ((f64::from(source_h) * scale).round() as u32).max(resized_h);
+            let offset = |pan: f64, extra: u32| -> u32 {
+                let half = f64::from(extra) / 2.0;
+                (half + (pan.clamp(-100.0, 100.0) / 100.0) * half)
+                    .round()
+                    .clamp(0.0, f64::from(extra)) as u32
+            };
+            let ox = offset(transform.x, covered_w - span_w);
+            let oy = offset(transform.y, covered_h - span_h);
+            args.push(os("-resize"));
+            args.push(os(format!("{resized_w}x{resized_h}^")));
+            args.push(os("-gravity"));
+            args.push(os("NorthWest"));
+            args.push(os("-crop"));
+            args.push(os(format!("{span_w}x{span_h}+{ox}+{oy}")));
+            args.push(os("+repage"));
         } else {
+            // Contain shows the whole picture: pan and zoom cannot reveal anything
+            // that is not already visible, so the cell keeps the plain fit.
             args.push(os("-resize"));
             args.push(os(format!("{span_w}x{span_h}")));
             args.push(os("-background"));
@@ -1233,6 +1528,8 @@ fn compose_collage(
         }
         args.push(os(")"));
         if radius > 0 {
+            // The mask belongs to the picture, not to the canvas: only the photo's
+            // corners are cut, and the background shows through them.
             let r = radius.min(span_w.min(span_h) / 2).max(1);
             args.push(os("("));
             args.push(os("-size"));
@@ -1262,7 +1559,7 @@ fn compose_collage(
         args.push(os("-compose"));
         args.push(os("Over"));
         args.push(os("-geometry"));
-        args.push(os(format!("+{x}+{y}")));
+        args.push(os(format!("+{}+{}", cell.x, cell.y)));
         args.push(os("-composite"));
         ctx.set_progress((position + 1) as f64 / total as f64);
         if ctx.is_cancelled() {
@@ -1424,8 +1721,15 @@ fn annotate(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
     }
 
     if !shapes.is_empty() {
+        // Font family names are machine-specific: resolve the UI's generic families to
+        // the actual faces this ImageMagick knows, once per process.
+        let fonts = font_table(&magick, cx);
+        // `-gravity` is a persistent setting and the caption above may have left it at
+        // SouthWest. With an explicit corner gravity ImageMagick treats the `text`
+        // primitive's y as the top of the line; resetting to the default keeps it a
+        // baseline, which is what the normalised geometry assumes.
         args.push(os("-gravity"));
-        args.push(os("NorthWest"));
+        args.push(os("Undefined"));
         args.push(os("-fill"));
         args.push(os("none"));
         args.push(os("-stroke"));
@@ -1434,7 +1738,7 @@ fn annotate(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
         args.push(os("4"));
         for shape in &shapes {
             args.push(os("-draw"));
-            args.push(os(draw_command(shape, width, height, &color)));
+            args.push(os(draw_command(shape, width, height, &color, fonts)));
         }
     }
 
@@ -1484,8 +1788,126 @@ struct DrawShape {
     points: Vec<(f32, f32)>,
     text: Option<String>,
     color: Option<String>,
-    /// Stroke width for drawn shapes, point size for text.
+    /// Stroke width in output pixels for drawn shapes, font size for `text`.
     size: Option<f32>,
+    font: Option<FontFamily>,
+}
+
+/// The three families the dialog offers. The actual face is resolved from the machine's
+/// ImageMagick font list; an unknown family is a parameter error, a missing face is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontFamily {
+    Sans,
+    Serif,
+    Mono,
+}
+
+impl FontFamily {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "sans" | "sans-serif" => FontFamily::Sans,
+            "serif" => FontFamily::Serif,
+            "mono" | "monospace" => FontFamily::Mono,
+            _ => return None,
+        })
+    }
+
+    /// The word a plain face of this family carries in ImageMagick's font names.
+    fn marker(self) -> &'static str {
+        match self {
+            FontFamily::Sans => "sans",
+            FontFamily::Serif => "serif",
+            FontFamily::Mono => "mono",
+        }
+    }
+}
+
+/// Faces whose name carries one of these words are not plain: a badge or a caption
+/// should look like the family, not like a weight variant of it.
+const FONT_VARIANTS: &[&str] = &[
+    "bold",
+    "italic",
+    "oblique",
+    "light",
+    "thin",
+    "black",
+    "medium",
+    "semibold",
+    "extrabold",
+    "extra",
+    "condensed",
+];
+
+#[derive(Debug, Default)]
+struct FontTable {
+    sans: Option<String>,
+    serif: Option<String>,
+    mono: Option<String>,
+}
+
+impl FontTable {
+    fn name(&self, family: FontFamily) -> Option<&str> {
+        match family {
+            FontFamily::Sans => self.sans.as_deref(),
+            FontFamily::Serif => self.serif.as_deref(),
+            FontFamily::Mono => self.mono.as_deref(),
+        }
+    }
+}
+
+/// `magick -list font` prints one `Font: Name` line per installed face. The table is
+/// built once: spawning `magick` on every preview would cost more than the draw.
+static FONTS: std::sync::OnceLock<FontTable> = std::sync::OnceLock::new();
+
+fn font_table(magick: &Path, cx: &Context<'_>) -> &'static FontTable {
+    FONTS.get_or_init(|| load_fonts(magick, cx.ctx).unwrap_or_default())
+}
+
+fn load_fonts(magick: &Path, ctx: &JobCtx) -> Option<FontTable> {
+    let output = proc::run(
+        Cmd::new(magick)
+            .arg("-list")
+            .arg("font")
+            .stdout_piped()
+            .budget(Budget::Short),
+        ctx,
+    )
+    .ok()?
+    .ok()
+    .ok()?;
+    let names: Vec<String> = output
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("  Font: ")
+                .or_else(|| line.strip_prefix("Font: "))
+        })
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    let pick = |family: FontFamily| -> Option<String> {
+        let marker = family.marker();
+        let mut plain: Vec<&String> = names
+            .iter()
+            .filter(|name| {
+                let lower = name.to_ascii_lowercase();
+                lower.contains(marker)
+                    // "DejaVu-Sans-Mono" is a monospace face, not the plain sans.
+                    && (family == FontFamily::Mono || !lower.contains("mono"))
+                    && !FONT_VARIANTS.iter().any(|bad| lower.contains(bad))
+            })
+            .collect();
+        // Keep the choice deterministic: the shortest name is the least decorated one.
+        plain.sort_by_key(|name| (name.len(), (*name).clone()));
+        plain.first().map(|name| (*name).clone())
+    };
+
+    Some(FontTable {
+        sans: pick(FontFamily::Sans),
+        serif: pick(FontFamily::Serif),
+        mono: pick(FontFamily::Mono),
+    })
 }
 
 /// `shapes` and `boxes` are arrays of shape objects; `arrow` is one such object.
@@ -1599,20 +2021,48 @@ fn shape_from_object(
         Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
         Some(_) => return Err(unsupported("shape `color` must be a colour string")),
     };
+    let font = match object.get("font") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(FontFamily::parse(value).ok_or_else(|| {
+            unsupported(format!(
+                "unknown shape `font` `{value}`; use `sans`, `serif` or `mono`"
+            ))
+        })?),
+        Some(_) => return Err(unsupported("shape `font` must be a string")),
+    };
     let size = optional("size");
+    // A stroke wider than 64 px is a fill, not a stroke; a caption above 200 px cannot
+    // be placed inside the picture. Number badges derive their size from their box.
+    let size_max = match kind {
+        ShapeKind::Text | ShapeKind::Number => 200.0,
+        _ => 64.0,
+    };
     if let Some(size) = size
-        && !(1.0..=200.0).contains(&size)
+        && !(1.0..=size_max).contains(&size)
     {
-        return Err(unsupported("shape `size` must be between 1 and 200"));
+        return Err(unsupported(format!(
+            "shape `size` must be between 1 and {size_max:.0}"
+        )));
     }
 
     match kind {
-        ShapeKind::Rect | ShapeKind::Ellipse | ShapeKind::Highlight | ShapeKind::Number => {
+        ShapeKind::Rect | ShapeKind::Ellipse | ShapeKind::Highlight => {
             if w <= 0.0 || h <= 0.0 {
                 return Err(unsupported(format!("{kind:?} `w`/`h` must be > 0")));
             }
             if !inside(x + w) || !inside(y + h) {
                 return Err(unsupported("shape must lie inside the image"));
+            }
+        }
+        ShapeKind::Number => {
+            if w <= 0.0 || h <= 0.0 {
+                return Err(unsupported("number `w`/`h` must be > 0"));
+            }
+            if !inside(x + w) || !inside(y + h) {
+                return Err(unsupported("number must lie inside the image"));
+            }
+            if text.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                return Err(unsupported("a number shape needs `text`"));
             }
         }
         ShapeKind::Arrow => {
@@ -1654,17 +2104,30 @@ fn shape_from_object(
         text,
         color,
         size,
+        font,
     })
 }
 
 /// One `-draw` string per shape. Fill, stroke and width are set inside the string so
 /// each shape can carry its own colour without leaking into the next.
-fn draw_command(shape: &DrawShape, width: u32, height: u32, default: &str) -> String {
+fn draw_command(
+    shape: &DrawShape,
+    width: u32,
+    height: u32,
+    default: &str,
+    fonts: &FontTable,
+) -> String {
     let colour = shape.color.as_deref().unwrap_or(default);
     let stroke = shape
         .size
         .filter(|_| shape.kind != ShapeKind::Text)
         .unwrap_or(4.0);
+    // The face is optional: when the machine has no plain face for the family the
+    // command is omitted and ImageMagick's default face draws the text anyway.
+    let font = fonts
+        .name(shape.font.unwrap_or(FontFamily::Sans))
+        .map(|name| format!("font '{}' ", escape_draw(name)))
+        .unwrap_or_default();
     let x1 = shape.x * width as f32;
     let y1 = shape.y * height as f32;
     let x2 = (shape.x + shape.w) * width as f32;
@@ -1721,24 +2184,34 @@ fn draw_command(shape: &DrawShape, width: u32, height: u32, default: &str) -> St
             }
         }
         ShapeKind::Number => {
+            let box_w = (x2 - x1).abs();
+            let box_h = (y2 - y1).abs();
             let cx = (x1 + x2) / 2.0;
             let cy = (y1 + y2) / 2.0;
-            let r = ((x2 - x1).abs().min((y2 - y1).abs()) / 2.0).max(1.0);
+            let r = (box_w.min(box_h) / 2.0).max(1.0);
+            // A badge is sized by its box, so resizing the box keeps the digit legible.
+            // 0.55 of the diameter leaves the same breathing room at every size.
+            let size = (box_w.min(box_h) * 0.55).clamp(8.0, 200.0);
+            // Under `gravity center` the `text` primitive centres the whole text box on
+            // the canvas centre plus the given offset. That centres one digit and two
+            // digits alike, without guessing a font's ascent or digit advance.
+            let tx = cx - width as f32 / 2.0;
+            let ty = cy - height as f32 / 2.0;
             let label = shape.text.as_deref().unwrap_or("1");
-            let font = (r * 1.2).max(8.0);
             format!(
                 "fill {colour} stroke none circle {cx:.2},{cy:.2} {:.2},{cy:.2} \
-                 fill white stroke none font-size {font:.1} text {:.2},{:.2} '{}'",
+                 fill white stroke none {font}font-size {size:.1} \
+                 gravity center text {tx:.2},{ty:.2} '{}' gravity NorthWest",
                 cx + r,
-                cx - r * 0.35,
-                cy + r * 0.35,
                 escape_draw(label)
             )
         }
         ShapeKind::Text => {
-            let size = shape.size.unwrap_or(32.0).clamp(12.0, 200.0);
+            let size = shape.size.unwrap_or(32.0).clamp(1.0, 200.0);
+            // `y` is the top of the line box; the glyph baseline sits 0.8 em below it.
+            let ty = y1 + 0.8 * size;
             format!(
-                "fill {colour} stroke none font-size {size:.1} text {x1:.2},{y1:.2} '{}'",
+                "fill {colour} stroke none {font}font-size {size:.1} text {x1:.2},{ty:.2} '{}'",
                 escape_draw(shape.text.as_deref().unwrap_or(""))
             )
         }
@@ -1988,6 +2461,12 @@ fn add_background(
     } else {
         args.push(os(format!("xc:{color}")));
     }
+    // A gray background picture (a black-and-white photograph, say) put the whole
+    // composite in Gray, and the colour photo came out white instead of red. The
+    // canvas is a colour surface whatever the picture is, so normalise it before the
+    // photo lands on top. Geometry is untouched.
+    args.push(os("-colorspace"));
+    args.push(os("sRGB"));
     if let Some(shadow) = &shadow {
         args.push(os(shadow));
         args.push(os("-gravity"));
@@ -2084,7 +2563,7 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
         args.push(os("+channel"));
     }
     if tint != 0.0 {
-        // Tint is the green/magenta axis: green up and the picture reads magenta.
+        // Tint is the green/magenta axis: green down and the picture reads magenta.
         let green = (1.0 - tint / 400.0).clamp(0.05, 2.0);
         args.push(os("-channel"));
         args.push(os("G"));
@@ -2094,28 +2573,44 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
         args.push(os("+channel"));
     }
     if whites != 0.0 {
+        // `-level black%,white%` rescales so the white point becomes 255. Raising it
+        // above 100% therefore *darkens*; a positive Whites must lower it and clip
+        // toward white, and a negative Whites must raise it to dim the top end.
         args.push(os("-level"));
-        args.push(os(format!("0%,{:.2}%", 100.0 + whites * 0.25)));
+        args.push(os(format!(
+            "0%,{:.2}%",
+            (100.0 - whites * 0.25).clamp(5.0, 200.0)
+        )));
     }
     if blacks != 0.0 {
+        // The mirror of whites: a black point below 0% lifts 0 to a positive value
+        // (`-level -25%,100%` writes 51 at black), a point above 0% crushes shadows.
         args.push(os("-level"));
-        args.push(os(format!("{:.2}%,100%", blacks * 0.25)));
+        args.push(os(format!(
+            "{:.2}%,100%",
+            (-blacks * 0.25).clamp(-50.0, 50.0)
+        )));
     }
     if shadows != 0.0 {
-        // Gamma lifts or crushes the dark end without touching white.
-        let g = (1.0 / (1.0 + shadows / 100.0)).clamp(0.05, 20.0);
+        // ImageMagick's gamma is the inverse exponent: `-gamma 2` brightens and
+        // `-gamma 0.5` darkens. A shadow lift is therefore gamma above one.
+        let g = (1.0 + shadows / 100.0).clamp(0.1, 4.0);
         args.push(os("-gamma"));
         args.push(os(format!("{g:.3}")));
     }
     if highlights != 0.0 {
+        // The sigmoid midpoint decides which end moves: below 50% lifts the upper
+        // range and pins black at 0, above 50% recovers (darkens) the bright end.
+        let midpoint = (50.0 - highlights * 0.3).clamp(0.0, 100.0);
         args.push(os("-sigmoidal-contrast"));
-        args.push(os(format!("3,{:.1}%", 50.0 + highlights * 0.3)));
+        args.push(os(format!("3,{midpoint:.1}%")));
     }
     if brightness != 0.0 || saturation != 0.0 || hue != 0.0 {
         let bright = (100.0 + brightness).clamp(0.0, 200.0);
         let sat = (100.0 + saturation).clamp(0.0, 200.0);
-        // `-modulate`'s third value is a hue percentage: 100 is unchanged.
-        let hue_shift = (100.0 + hue / 3.6).clamp(0.0, 200.0);
+        // `-modulate`'s third value is a hue percentage: 100 is unchanged and 200 is
+        // +180°, so one degree is 1/1.8 of a percent.
+        let hue_shift = (100.0 + hue / 1.8).clamp(0.0, 200.0);
         args.push(os("-modulate"));
         args.push(os(format!("{bright:.2},{sat:.2},{hue_shift:.2}")));
     }
@@ -2140,8 +2635,18 @@ fn photo_filter_args(params: &ToolParams) -> Result<Vec<OsString>, JobError> {
         args.push(os(format!("0x{:.2}", -clarity / 50.0)));
     }
     if dehaze > 0.0 {
+        // A real magnitude, not one fixed push: 10 % is a gentle 1.2 curve and 100 %
+        // is a strong 3.0. The midpoint stays put so the exposure does not shift.
+        let contrast = 1.0 + dehaze / 50.0;
         args.push(os("-sigmoidal-contrast"));
-        args.push(os("4,50%"));
+        args.push(os(format!("{contrast:.3},50%")));
+    } else if dehaze < 0.0 {
+        // Haze is a veil: flatten the tone curve and soften a little, both scaled.
+        let drop = -dehaze;
+        args.push(os("-brightness-contrast"));
+        args.push(os(format!("0x-{:.0}", drop * 0.5)));
+        args.push(os("-blur"));
+        args.push(os(format!("0x{:.2}", drop / 100.0)));
     }
     if noise > 0.0 {
         // Each pass removes another layer of speckle; 25 is one pass.
@@ -2854,6 +3359,59 @@ mod tests {
         )
     }
 
+    /// Mean luma of the horizontal strip `x .. x + w`, 0..255.
+    fn strip_mean(f: &Fixture, path: &Path, x: u32, w: u32) -> f64 {
+        let cmd = Cmd::new(&f.magick)
+            .arg(format!("{}[{w}x1+{x}+0]", path.display()))
+            .arg("-format")
+            .arg("%[fx:mean*255]")
+            .arg("info:")
+            .stdout_piped()
+            .budget(Budget::Short);
+        let output = proc::run(cmd, &JobCtx::new()).expect("run magick");
+        assert!(output.success, "magick failed: {}", output.stderr_tail);
+        output
+            .stdout
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("unreadable mean `{}`", output.stdout.trim()))
+    }
+
+    /// Standard deviation of the whole image, 0..255: how textured it is.
+    fn deviation(f: &Fixture, path: &Path) -> f64 {
+        let cmd = Cmd::new(&f.magick)
+            .arg(path)
+            .arg("-colorspace")
+            .arg("Gray")
+            .arg("-format")
+            .arg("%[fx:standard_deviation*255]")
+            .arg("info:")
+            .stdout_piped()
+            .budget(Budget::Short);
+        let output = proc::run(cmd, &JobCtx::new()).expect("run magick");
+        assert!(output.success, "magick failed: {}", output.stderr_tail);
+        output.stdout.trim().parse().unwrap_or(0.0)
+    }
+
+    /// HSV hue of an RGB triple, in degrees.
+    fn hue_degrees((r, g, b): (u8, u8, u8)) -> f64 {
+        let (r, g, b) = (r as f64, g as f64, b as f64);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        if delta == 0.0 {
+            return 0.0;
+        }
+        let raw = if max == r {
+            60.0 * ((g - b) / delta)
+        } else if max == g {
+            60.0 * ((b - r) / delta + 2.0)
+        } else {
+            60.0 * ((r - g) / delta + 4.0)
+        };
+        raw.rem_euclid(360.0)
+    }
+
     #[test]
     fn add_background_padding_and_radius_are_proportional() {
         let Some(f) = fixture() else { return };
@@ -2945,6 +3503,74 @@ mod tests {
     }
 
     #[test]
+    fn background_blur_changes_only_the_background_layer() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "blur-photo.png", "400x300", "red");
+        // A black-and-white checkerboard: a flat colour blurs to itself, so only a
+        // pattern can show whether the sigma reached the background and nothing else.
+        let backdrop = make_image(
+            &f,
+            "blur-backdrop.png",
+            vec![
+                os("-size"),
+                os("400x400"),
+                os("pattern:checkerboard"),
+                os("-threshold"),
+                os("50%"),
+            ],
+        );
+        let compose = |blur: f64| {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::AddBackground,
+                    params: params(json!({
+                        "image": backdrop.to_string_lossy(),
+                        "bg_zoom": 1,
+                        "padding_pct": 25,
+                        "bg_blur": blur,
+                    })),
+                },
+            );
+            run_engine(&f, &job).expect("compose")[0].clone()
+        };
+        let sharp = compose(0.0);
+        let soft = compose(35.0);
+        // 25% padding on a 400x300 photo is 75 px: the canvas is 550x450 and the
+        // photo starts at x=75, so x=37 is background at every height.
+        let mut biggest = 0i32;
+        for y in [40u32, 120, 200, 280, 360] {
+            let (sr, sg, sb) = pixel(&f, &sharp, 37, y);
+            let (br, bg, bb) = pixel(&f, &soft, 37, y);
+            let delta = (i32::from(sr) - i32::from(br))
+                .abs()
+                .max((i32::from(sg) - i32::from(bg)).abs())
+                .max((i32::from(sb) - i32::from(bb)).abs());
+            biggest = biggest.max(delta);
+        }
+        assert!(
+            biggest > 30,
+            "blur must change the background layer, biggest channel delta was {biggest}"
+        );
+        // The photo is composited after the background: blurring the backdrop must not
+        // touch it. Centre of the 550x450 canvas.
+        let (pr, pg, pb) = pixel(&f, &sharp, 275, 225);
+        let (qr, qg, qb) = pixel(&f, &soft, 275, 225);
+        // The checkerboard is gray: without a colour canvas the photo used to come
+        // back white, so this also guards the sRGB normalisation.
+        assert!(
+            pr > 240 && pg < 12 && pb < 12,
+            "the photo centre should be red, got {pr}/{pg}/{pb}"
+        );
+        let same = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs() <= 2;
+        assert!(
+            same(pr, qr) && same(pg, qg) && same(pb, qb),
+            "the photo must not change with the background blur: \
+             {pr}/{pg}/{pb} vs {qr}/{qg}/{qb}"
+        );
+    }
+
+    #[test]
     fn add_background_shadow_darkens_the_band_below_the_photo() {
         let Some(f) = fixture() else { return };
         let input = solid(&f, "shadow.png", "400x300", "red");
@@ -2989,7 +3615,7 @@ mod tests {
         let compose = |order: Value, extra: Value| {
             let mut map = serde_json::json!({
                 "width": 2048,
-                "spacing": 16,
+                "spacing_pct": 1.5625,
                 "background": "#000000",
                 "order": order,
             });
@@ -3026,7 +3652,7 @@ mod tests {
         // A rounded corner of the first cell is the background.
         let rounded = compose(
             serde_json::json!([0, 1, 2, 3]),
-            serde_json::json!({ "radius": 32 }),
+            serde_json::json!({ "radius_pct": 50 }),
         );
         assert_eq!(pixel(&f, &rounded[0], 17, 17), (0, 0, 0));
     }
@@ -3042,7 +3668,7 @@ mod tests {
                 tool: ToolId::Collage,
                 params: params(serde_json::json!({
                     "width": 2048,
-                    "spacing": 16,
+                    "spacing_pct": 1.5625,
                     "background": "#000000",
                     "fit": "contain",
                 })),
@@ -3053,7 +3679,123 @@ mod tests {
         assert_eq!((w, h), (2048, 1024), "auto ratio follows the first picture");
         // The wide picture is letterboxed inside its square-ish cell.
         assert_eq!(pixel(&f, &artifacts[0], 516, 100), (0, 0, 0));
-        assert_eq!(pixel(&f, &artifacts[0], 516, 512), (0, 0, 255));
+        assert_eq!(pixel(&f, &artifacts[0], 516, 516), (0, 0, 255));
+    }
+
+    #[test]
+    fn collage_rows_columns_make_the_requested_grid() {
+        let Some(f) = fixture() else { return };
+        let colours = ["red", "green", "blue", "white", "yellow", "magenta"];
+        let inputs: Vec<PathBuf> = colours
+            .iter()
+            .enumerate()
+            .map(|(index, colour)| solid(&f, &format!("grid-{index}.png"), "100x100", colour))
+            .collect();
+        let case = |rows: u32, columns: u32| {
+            let params = params(serde_json::json!({
+                "width": 2048,
+                "aspect": "1:1",
+                "rows": rows,
+                "columns": columns,
+                "background": "#000000",
+                "radius_pct": 100,
+            }));
+            let layout =
+                collage_layout(&f.tools, &inputs, &params, 2048).expect("compute the layout");
+            let job = Job::with_inputs(
+                inputs.clone(),
+                Intent::Tool {
+                    tool: ToolId::Collage,
+                    params,
+                },
+            );
+            let artifacts = run_engine(&f, &job).expect("compose");
+            (layout, artifacts)
+        };
+        let expected = [
+            (255, 0, 0),
+            (0, 128, 0),
+            (0, 0, 255),
+            (255, 255, 255),
+            (255, 255, 0),
+            (255, 0, 255),
+        ];
+        let rect = |cell: &CollageCellOut| (cell.x, cell.y, cell.w, cell.h);
+
+        // 3 rows × 2 columns: cells are 1024 wide and 682 tall.
+        let (layout, composed) = case(3, 2);
+        assert_eq!((layout.width, layout.height), (2048, 2048));
+        assert_eq!((layout.cols, layout.rows), (2, 3));
+        assert_eq!(layout.cells.len(), 6);
+        assert_eq!(rect(&layout.cells[0]), (0, 0, 1024, 682));
+        assert_eq!(rect(&layout.cells[1]), (1024, 0, 1024, 682));
+        assert_eq!(rect(&layout.cells[5]), (1024, 1364, 1024, 682));
+        for (cell, colour) in layout.cells.iter().zip(expected) {
+            assert_eq!(
+                pixel(&f, &composed[0], cell.x + cell.w / 2, cell.y + cell.h / 2),
+                colour,
+                "cell {} is the wrong picture",
+                cell.input
+            );
+        }
+        // radius_pct 100 rounds the picture, so its corner is the canvas.
+        assert_eq!(pixel(&f, &composed[0], 2, 2), (0, 0, 0));
+
+        // 2 rows × 3 columns: the same pictures, a visibly different grid.
+        let (layout, composed) = case(2, 3);
+        assert_eq!((layout.cols, layout.rows), (3, 2));
+        assert_eq!(rect(&layout.cells[0]), (0, 0, 682, 1024));
+        assert_eq!(rect(&layout.cells[1]), (682, 0, 682, 1024));
+        assert_eq!(rect(&layout.cells[5]), (1364, 1024, 682, 1024));
+        for (cell, colour) in layout.cells.iter().zip(expected) {
+            assert_eq!(
+                pixel(&f, &composed[0], cell.x + cell.w / 2, cell.y + cell.h / 2),
+                colour,
+                "cell {} is the wrong picture",
+                cell.input
+            );
+        }
+        assert_eq!(pixel(&f, &composed[0], 2, 2), (0, 0, 0));
+    }
+
+    #[test]
+    fn collage_cell_pan_and_zoom_move_the_picture() {
+        let Some(f) = fixture() else { return };
+        // Left half red, right half blue: a pan or zoom changes which half fills the
+        // sampled point.
+        let source = make_image(
+            &f,
+            "pan-source.png",
+            vec![
+                os("-size"),
+                os("200x100"),
+                os("xc:red"),
+                os("-fill"),
+                os("blue"),
+                os("-draw"),
+                os("rectangle 100,0 199,99"),
+            ],
+        );
+        let compose = |cells: Value| {
+            let job = Job::with_inputs(
+                vec![source.clone()],
+                Intent::Tool {
+                    tool: ToolId::Collage,
+                    params: params(serde_json::json!({
+                        "width": 2048,
+                        "background": "#000000",
+                        "cells": cells,
+                    })),
+                },
+            );
+            run_engine(&f, &job).expect("compose the collage")
+        };
+
+        // One cell at 0,0 is 1024×1024; zoom 2 shows a 2×2 copy of the picture.
+        let centred = compose(serde_json::json!([{ "index": 0, "zoom": 2, "x": 0, "y": 0 }]));
+        let panned = compose(serde_json::json!([{ "index": 0, "zoom": 2, "x": 100, "y": 0 }]));
+        assert_eq!(pixel(&f, &centred[0], 256, 512), (255, 0, 0));
+        assert_eq!(pixel(&f, &panned[0], 256, 512), (0, 0, 255));
     }
 
     #[test]
@@ -3093,6 +3835,99 @@ mod tests {
         // The highlight changes the picture under it without hiding the source.
         let lit = pixel(&f, &artifacts[0], 450, 80);
         assert_ne!(lit, (255, 0, 0), "the highlight did not draw");
+    }
+
+    #[test]
+    fn annotate_number_and_text_are_centred_and_legible() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "annotate-centre.png", "400x300", "black");
+        let annotate = |font: &str| -> PathBuf {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::Annotate,
+                    params: params(json!({
+                        "shapes": [
+                            // 40 x 40 px badge centred on (200, 140): the circle fills
+                            // the box, so a background pixel at the centre would mean
+                            // the digit was drawn at the edge instead of centred.
+                            {"kind": "number", "x": 0.45, "y": 0.4, "w": 0.1, "h": 0.133333,
+                             "text": "7", "color": "#0055ff"},
+                            // The same box with two digits: width must not shift the glyph
+                            // off the centre.
+                            {"kind": "number", "x": 0.2, "y": 0.4, "w": 0.1, "h": 0.133333,
+                             "text": "10", "color": "#0055ff"},
+                            {"kind": "text", "x": 0.05, "y": 0.05, "w": 0.5, "h": 0.2,
+                             "text": "MMMM", "size": 40, "color": "#ff2200", "font": font}
+                        ]
+                    })),
+                },
+            );
+            run_engine(&f, &job).expect("annotate")[0].clone()
+        };
+
+        let sans = annotate("sans");
+        // The badge body is blue and the digit is white. Sampling a small grid around
+        // the centre accepts any digit shape: a stroke of the 7 crosses that area.
+        let mut white_near_centre = false;
+        let mut blue_in_box = false;
+        for (dx, dy) in [(-5, -5), (-2, -3), (0, -2), (1, 1), (2, -1), (3, 0), (0, 0)] {
+            let (r, g, b) = pixel(&f, &sans, (200i64 + dx) as u32, (140i64 + dy) as u32);
+            if r > 150 && g > 150 && b > 150 {
+                white_near_centre = true;
+            }
+            if b > 150 && r < 100 {
+                blue_in_box = true;
+            }
+        }
+        assert!(blue_in_box, "the number badge did not fill its box");
+        assert!(
+            white_near_centre,
+            "the digit is not near the centre of the badge"
+        );
+
+        // Two digits: the whole text box is centred, so its glyphs surround (100, 140).
+        let mut two_digit_white = false;
+        for (dx, dy) in [
+            (-10, -4),
+            (-8, -8),
+            (-6, 0),
+            (-2, -1),
+            (2, -1),
+            (4, -6),
+            (7, 0),
+            (10, 4),
+            (0, 0),
+        ] {
+            let (r, g, b) = pixel(&f, &sans, (100i64 + dx) as u32, (140i64 + dy) as u32);
+            if r > 150 && g > 150 && b > 150 {
+                two_digit_white = true;
+            }
+        }
+        assert!(
+            two_digit_white,
+            "the two-digit badge is not centred on its box"
+        );
+
+        // The caption is red somewhere inside its box, not only under its rim.
+        let mut red_inside = false;
+        for (x, y) in [(25, 30), (45, 35), (70, 40), (95, 42)] {
+            let (r, _g, _b) = pixel(&f, &sans, x, y);
+            if r > 120 {
+                red_inside = true;
+            }
+        }
+        assert!(red_inside, "the text shape did not draw inside its box");
+
+        // If the machine has both a plain sans and a plain serif, swapping the family
+        // must change the pixels: this is what proves the family reaches the draw string.
+        let table = load_fonts(&f.magick, &JobCtx::new()).unwrap_or_default();
+        if table.name(FontFamily::Sans).is_some() && table.name(FontFamily::Serif).is_some() {
+            let serif = annotate("serif");
+            let a = std::fs::read(&sans).expect("read sans output");
+            let b = std::fs::read(&serif).expect("read serif output");
+            assert_ne!(a, b, "sans and serif produced identical bytes");
+        }
     }
 
     #[test]
@@ -3220,6 +4055,304 @@ mod tests {
             },
         );
         assert!(run_engine(&f, &nothing).is_ok(), "detail controls must run");
+    }
+
+    /// Every slider must move the picture the way its label says. A 256 px black→white
+    /// ramp makes the tone controls measurable; solids cover colour and detail.
+    #[test]
+    fn photo_sliders_have_the_expected_direction() {
+        let Some(f) = fixture() else { return };
+        let edit = |source: &Path, value: Value| -> PathBuf {
+            let job = Job::new(
+                source.to_path_buf(),
+                Intent::Tool {
+                    tool: ToolId::EditPhoto,
+                    params: params(value),
+                },
+            );
+            run_engine(&f, &job).expect("edit photo")[0].clone()
+        };
+
+        let ramp = make_image(
+            &f,
+            "photo-ramp.png",
+            vec![os("-size"), os("256x1"), os("gradient:black-white")],
+        );
+        let neutral = strip_mean(&f, &ramp, 0, 256);
+        let top = |path: &Path| strip_mean(&f, path, 205, 51);
+        let bottom = |path: &Path| strip_mean(&f, path, 0, 26);
+        let (neutral_top, neutral_bottom) = (top(&ramp), bottom(&ramp));
+
+        // Highlights: + lifts the upper range and leaves black alone; − recovers it.
+        let highlights_up = edit(&ramp, json!({ "highlights": 60 }));
+        assert!(
+            top(&highlights_up) > neutral_top + 6.0,
+            "highlights +60 must brighten the top 20%: {neutral_top:.1} -> {:.1}",
+            top(&highlights_up)
+        );
+        assert!(
+            top(&highlights_up) - neutral_top > (bottom(&highlights_up) - neutral_bottom).abs(),
+            "highlights +60 must move the top more than the bottom: top +{:.1}, bottom {:.1}",
+            top(&highlights_up) - neutral_top,
+            bottom(&highlights_up) - neutral_bottom
+        );
+        let highlights_down = edit(&ramp, json!({ "highlights": -60 }));
+        assert!(
+            top(&highlights_down) < neutral_top - 0.5,
+            "highlights -60 must darken the top 20%: {neutral_top:.1} -> {:.1}",
+            top(&highlights_down)
+        );
+        assert_eq!(
+            pixel(&f, &highlights_down, 0, 0).0,
+            0,
+            "highlights must leave black at black"
+        );
+
+        // Whites: + clips toward white (brighter), − pulls the white point down.
+        let whites_up = edit(&ramp, json!({ "whites": 60 }));
+        assert!(
+            strip_mean(&f, &whites_up, 0, 256) > neutral + 15.0,
+            "whites +60 must brighten: {neutral:.1} -> {:.1}",
+            strip_mean(&f, &whites_up, 0, 256)
+        );
+        let whites_down = edit(&ramp, json!({ "whites": -60 }));
+        assert!(
+            pixel(&f, &whites_down, 255, 0).0 < 240,
+            "whites -60 must dim the white end: white is {}",
+            pixel(&f, &whites_down, 255, 0).0
+        );
+
+        // Blacks: + lifts the shadows, − crushes them.
+        let blacks_up = edit(&ramp, json!({ "blacks": 60 }));
+        assert!(
+            pixel(&f, &blacks_up, 0, 0).0 > 25,
+            "blacks +60 must lift black: 0 -> {}",
+            pixel(&f, &blacks_up, 0, 0).0
+        );
+        let blacks_down = edit(&ramp, json!({ "blacks": -60 }));
+        assert_eq!(
+            pixel(&f, &blacks_down, 32, 0).0,
+            0,
+            "blacks -60 must crush the low end"
+        );
+
+        // Shadows: + lifts the dark end and keeps white; − crushes it.
+        let shadows_up = edit(&ramp, json!({ "shadows": 60 }));
+        assert!(
+            pixel(&f, &shadows_up, 64, 0).0 > 90,
+            "shadows +60 must lift the dark end: 64 -> {}",
+            pixel(&f, &shadows_up, 64, 0).0
+        );
+        assert_eq!(
+            pixel(&f, &shadows_up, 255, 0).0,
+            255,
+            "shadows must keep white"
+        );
+        let shadows_down = edit(&ramp, json!({ "shadows": -60 }));
+        assert!(
+            pixel(&f, &shadows_down, 64, 0).0 < 40,
+            "shadows -60 must crush the dark end: 64 -> {}",
+            pixel(&f, &shadows_down, 64, 0).0
+        );
+
+        // A near-neutral *sRGB* solid: `xc:gray` is a Grayscale image, so a channel
+        // edit would be flattened back to grey when the PNG is written.
+        let grey = solid(&f, "photo-grey.png", "8x8", "rgb(130,128,126)");
+        let grey_value = pixel(&f, &grey, 4, 4).0;
+        let brighter = edit(&grey, json!({ "brightness": 60 }));
+        assert!(
+            pixel(&f, &brighter, 4, 4).0 > grey_value + 20,
+            "brightness +60 must brighten"
+        );
+        let darker = edit(&grey, json!({ "brightness": -60 }));
+        assert!(
+            pixel(&f, &darker, 4, 4).0 < grey_value - 20,
+            "brightness -60 must darken"
+        );
+        let stop_up = edit(&grey, json!({ "exposure": 1 }));
+        assert!(
+            pixel(&f, &stop_up, 4, 4).0 >= 250,
+            "exposure +1 must double the light"
+        );
+        let stop_down = edit(&grey, json!({ "exposure": -1 }));
+        assert!(
+            pixel(&f, &stop_down, 4, 4).0 < grey_value - 50,
+            "exposure -1 must halve the light"
+        );
+
+        // Contrast: + spreads the ramp, − flattens it.
+        let more_contrast = edit(&ramp, json!({ "contrast": 60 }));
+        assert!(
+            pixel(&f, &more_contrast, 64, 0).0 < 40 && pixel(&f, &more_contrast, 192, 0).0 > 240,
+            "contrast +60 must spread the ramp"
+        );
+        let less_contrast = edit(&ramp, json!({ "contrast": -60 }));
+        assert!(
+            pixel(&f, &less_contrast, 64, 0).0 > 90 && pixel(&f, &less_contrast, 192, 0).0 < 170,
+            "contrast -60 must flatten the ramp"
+        );
+
+        // Gamma: 1.0 is neutral, above 1 brightens and below 1 darkens.
+        let gamma_up = edit(&grey, json!({ "gamma": 2.0 }));
+        assert!(
+            pixel(&f, &gamma_up, 4, 4).0 > grey_value + 20,
+            "gamma above 1 must brighten"
+        );
+        let gamma_down = edit(&grey, json!({ "gamma": 0.5 }));
+        assert!(
+            pixel(&f, &gamma_down, 4, 4).0 < grey_value - 20,
+            "gamma below 1 must darken"
+        );
+
+        // Temperature: + warmer (red up, blue down), − cooler.
+        let (r0, _, b0) = pixel(&f, &grey, 4, 4);
+        let warm = edit(&grey, json!({ "temperature": 60 }));
+        let (r, _, b) = pixel(&f, &warm, 4, 4);
+        assert!(
+            r > b + 20 && b < b0 && r > r0,
+            "temperature +60 must warm: {r} {b}"
+        );
+        let cool = edit(&grey, json!({ "temperature": -60 }));
+        let (r, _, b) = pixel(&f, &cool, 4, 4);
+        assert!(
+            b > r + 20 && r < r0 && b > b0,
+            "temperature -60 must cool: {r} {b}"
+        );
+
+        // Tint: + magenta (green down), − green.
+        let magenta = edit(&grey, json!({ "tint": 60 }));
+        let (r, g, b) = pixel(&f, &magenta, 4, 4);
+        assert!(
+            g + 12 < r && g + 12 < b,
+            "tint +60 must move toward magenta: {r} {g} {b}"
+        );
+        let green = edit(&grey, json!({ "tint": -60 }));
+        let (r, g, b) = pixel(&f, &green, 4, 4);
+        assert!(
+            g > r + 12 && g > b + 12,
+            "tint -60 must move toward green: {r} {g} {b}"
+        );
+
+        // Hue: the slider is in degrees, so 60° is 60° and 180° is a half turn.
+        let swatch = solid(&f, "photo-swatch.png", "8x8", "rgb(200,60,40)");
+        let base_hue = hue_degrees(pixel(&f, &swatch, 4, 4));
+        let turned = edit(&swatch, json!({ "hue": 60 }));
+        let turned_hue = hue_degrees(pixel(&f, &turned, 4, 4));
+        assert!(
+            (turned_hue - (base_hue + 60.0)).abs() < 4.0,
+            "hue +60 must rotate 60°: {base_hue:.1} -> {turned_hue:.1}"
+        );
+        let half = edit(&swatch, json!({ "hue": 180 }));
+        let half_hue = hue_degrees(pixel(&f, &half, 4, 4));
+        assert!(
+            (half_hue - (base_hue + 180.0) % 360.0).abs() < 4.0,
+            "hue +180 must be a half turn: {base_hue:.1} -> {half_hue:.1}"
+        );
+
+        // Saturation and vibrance: + more colour, − less.
+        let muted = solid(&f, "photo-muted.png", "8x8", "rgb(160,120,120)");
+        let spread = |pixel: (u8, u8, u8)| {
+            pixel.0.max(pixel.1).max(pixel.2) - pixel.0.min(pixel.1).min(pixel.2)
+        };
+        let base_spread = spread(pixel(&f, &muted, 4, 4));
+        let saturated = edit(&muted, json!({ "saturation": 60 }));
+        assert!(
+            spread(pixel(&f, &saturated, 4, 4)) > base_spread,
+            "saturation +60 must add colour"
+        );
+        let vibrant = edit(&muted, json!({ "vibrance": 60 }));
+        assert!(
+            spread(pixel(&f, &vibrant, 4, 4)) > base_spread,
+            "vibrance +60 must add colour"
+        );
+        let desaturated = edit(&muted, json!({ "saturation": -60 }));
+        assert!(
+            spread(pixel(&f, &desaturated, 4, 4)) < base_spread,
+            "saturation -60 must remove colour"
+        );
+
+        // Dehaze: positive adds contrast, scaled by the value; negative veils.
+        let dehaze_low = edit(&ramp, json!({ "dehaze": 10 }));
+        let dehaze_high = edit(&ramp, json!({ "dehaze": 100 }));
+        let (low, high) = (
+            pixel(&f, &dehaze_low, 64, 0).0,
+            pixel(&f, &dehaze_high, 64, 0).0,
+        );
+        assert!(
+            high < low && low < 64,
+            "dehaze must scale and add contrast at 64: 64 -> {low} -> {high}"
+        );
+        assert!(
+            pixel(&f, &dehaze_high, 192, 0).0 > 195,
+            "dehaze must lift the bright side near white"
+        );
+        let haze = edit(&ramp, json!({ "dehaze": -60 }));
+        assert!(
+            bottom(&haze) > neutral_bottom + 5.0 && top(&haze) < neutral_top - 2.0,
+            "dehaze -60 must veil the picture: bottom {:.1}, top {:.1}",
+            bottom(&haze),
+            top(&haze)
+        );
+
+        // Clarity and sharpness sharpen the edge; negative clarity softens it.
+        let step = make_image(
+            &f,
+            "photo-step.png",
+            vec![
+                os("-size"),
+                os("64x16"),
+                os("xc:rgb(102,102,102)"),
+                os("-fill"),
+                os("rgb(153,153,153)"),
+                os("-draw"),
+                os("rectangle 32,0 63,15"),
+            ],
+        );
+        let (left, right) = (pixel(&f, &step, 31, 8).0, pixel(&f, &step, 32, 8).0);
+        let clarity_up = edit(&step, json!({ "clarity": 60 }));
+        assert!(
+            pixel(&f, &clarity_up, 31, 8).0 < left && pixel(&f, &clarity_up, 32, 8).0 > right,
+            "clarity +60 must sharpen the edge"
+        );
+        let clarity_down = edit(&step, json!({ "clarity": -60 }));
+        assert!(
+            pixel(&f, &clarity_down, 31, 8).0 > left + 5
+                && pixel(&f, &clarity_down, 32, 8).0 < right - 5,
+            "clarity -60 must soften the edge"
+        );
+        let sharper = edit(&step, json!({ "sharpness": 60 }));
+        assert!(
+            pixel(&f, &sharper, 31, 8).0 < left && pixel(&f, &sharper, 32, 8).0 > right,
+            "sharpness +60 must sharpen the edge"
+        );
+
+        // Noise reduction removes texture; grain adds it.
+        let noisy = make_image(
+            &f,
+            "photo-noise.png",
+            vec![
+                os("-seed"),
+                os("42"),
+                os("-size"),
+                os("64x64"),
+                os("xc:gray"),
+                os("+noise"),
+                os("Random"),
+            ],
+        );
+        let before = deviation(&f, &noisy);
+        let denoised = edit(&noisy, json!({ "noise": 100 }));
+        let after = deviation(&f, &denoised);
+        assert!(
+            after < before * 0.9,
+            "noise +100 must reduce texture: {before:.1} -> {after:.1}"
+        );
+        let grainy = edit(&grey, json!({ "grain": 100 }));
+        assert!(
+            deviation(&f, &grainy) > 10.0,
+            "grain +100 must add texture: {:.1}",
+            deviation(&f, &grainy)
+        );
     }
 
     #[test]

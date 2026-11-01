@@ -310,19 +310,21 @@ export default function App() {
       if (state.tool.id === 'crop') {
         const boxes = Array.isArray(params.boxes) ? (params.boxes as Record<string, number>[]) : [];
         delete params.boxes;
-        if (params.aspect === 'free') {
-          // A free crop sends the rectangle the user drew.
+        const box = boxes[0];
+        if (box) {
+          // The rectangle the user placed is the crop, whatever the preset says. Sending
+          // the ratio as well made the engine ignore the placement and crop the centre,
+          // which the preset box happened to satisfy — the reported bug.
           delete params.aspect;
-          const box = boxes[0];
-          if (box) {
-            params.x = box.x;
-            params.y = box.y;
-            params.w = box.w;
-            params.h = box.h;
-          }
+          params.x = box.x;
+          params.y = box.y;
+          params.w = box.w;
+          params.h = box.h;
+        } else {
+          // No rectangle (a job built without the editor) can only state the ratio. The
+          // engine rejects both together, so exactly one of the two shapes travels.
+          if (params.aspect === 'free') delete params.aspect;
         }
-        // An aspect crop sends the ratio only. The editor's fitted rectangle is a
-        // preview detail; sending both is rejected ("use either ... not both").
       }
       const result = await ipc.run([entry.path], state.category, {
         kind: 'tool',

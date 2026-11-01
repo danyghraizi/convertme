@@ -5,6 +5,7 @@ import { baseName, extensionOf, isLosslessImage } from './format';
 import type {
   AnalyzeResult,
   BootInfo,
+  CollageLayout,
   CompressPreview,
   DetectedBox,
   Field,
@@ -533,6 +534,62 @@ export function mockCollagePreview(paths: string[], params: Record<string, unkno
   const count = Math.max(1, paths.length);
   const style = String(params.style ?? 'grid');
   return svgDataUrl(`collage · ${style} · ${count}`, 512, 512);
+}
+
+/**
+ * A mock arrangement, not the product's geometry: the real dialog asks the backend for
+ * the layout the composer will use. The browser mock only needs rectangles that let
+ * the overlay be exercised.
+ */
+export function mockCollageLayout(paths: string[], params: Record<string, unknown>): CollageLayout {
+  const count = Math.max(1, paths.length);
+  const style = String(params.style ?? 'grid');
+  const width = Number(params.width ?? 2048) || 2048;
+  const aspect = String(params.aspect ?? 'auto');
+  const [ratioW, ratioH] =
+    aspect === 'auto' ? [1, 1] : aspect.split(':').map(Number);
+  const ratio = ratioW > 0 && ratioH > 0 ? ratioW / ratioH : 1;
+  const height = Math.max(2, Math.round(width / ratio));
+  const requestedCols = Math.max(1, Math.min(6, Number(params.columns ?? 2) || 2));
+  const requestedRows = Math.max(0, Math.min(6, Number(params.rows ?? 0) || 0));
+  const columns =
+    style === 'row' ? count : style === 'column' ? 1 : Math.max(1, Math.min(count, requestedCols));
+  const rows =
+    style === 'row'
+      ? 1
+      : style === 'column'
+        ? count
+        : requestedRows > 0
+          ? Math.max(requestedRows, Math.ceil(count / columns))
+          : Math.ceil(count / columns);
+  const spacing = Math.round(
+    (Math.min(width / columns, height / rows) * Number(params.spacing_pct ?? 0)) / 100,
+  );
+  const cellW = Math.max(1, Math.floor((width - spacing * (columns + 1)) / columns));
+  const cellH = Math.max(1, Math.floor((height - spacing * (rows + 1)) / rows));
+  const cells = [];
+  for (let input = 0; input < count; input += 1) {
+    const row = Math.floor(input / columns);
+    const col = input % columns;
+    if (row >= rows) break;
+    cells.push({
+      input,
+      row,
+      col,
+      row_span: 1,
+      col_span: 1,
+      x: spacing + col * (cellW + spacing),
+      y: spacing + row * (cellH + spacing),
+      w: cellW,
+      h: cellH,
+    });
+  }
+  return { width, height, cols: columns, rows, spacing, cells };
+}
+
+export function mockRedactPreview(path: string, params: Record<string, unknown>): string {
+  const style = String(params.style ?? 'solid');
+  return svgDataUrl(`redacted · ${style} · ${baseName(path)}`, 1024, 768);
 }
 
 export function mockFileMetadata(path: string): MetaGroup[] {

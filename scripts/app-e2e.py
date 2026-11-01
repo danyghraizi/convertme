@@ -199,11 +199,13 @@ CONTROL_EXPECTATIONS = {
     ],
     ("Images", "Collage"): [
         ("combo box", "Style"),
+        ("entry", "Rows (0 = auto)"),
         ("entry", "Columns"),
         ("combo box", "Canvas ratio"),
-        ("entry", "Width"),
+        ("combo box", "Output size"),
         ("combo box", "Fit"),
-        ("entry", "Spacing"),
+        ("slider", "Spacing"),
+        ("slider", "Corner radius"),
     ],
     ("Images", "Redact"): [("button", "Detect text"), ("toggle button", "Blur")],
     ("Images", "Edit photo"): [
@@ -1037,13 +1039,37 @@ class Session:
         return bool(_safe(component, "grab_focus"))
 
     def ensure_visible(self, node):
-        box = self.extents(node)
-        frame = self.frame_extents()
-        if box and frame:
-            x, y, w, h = box
-            fx, fy, fw, fh = frame
-            if x >= fx and y >= fy and x + w <= fx + fw and y + h <= fy + fh:
+        """Bring a node into the *sheet's* viewport, not merely the window's.
+
+        A control below the sheet's scroller is clipped by the dialog, but its extents
+        are still inside the window; clicking those coordinates hits the backdrop and
+        closes the dialog. The wheel is what actually scrolls a WebKit scroller.
+        """
+        for _attempt in range(8):
+            box = self.extents(node)
+            dialog_open = self.dialog() is not None
+            container = self.sheet() if dialog_open else None
+            frame = container if container is not None else self.frame_extents()
+            if not box or frame is None:
                 return
+            frame_box = self.extents(frame)
+            if not frame_box:
+                return
+            x, y, w, h = box
+            fx, fy, fw, fh = [int(v) for v in frame_box]
+            inside = x >= fx and y >= fy and x + w <= fx + fw and y + h <= fy + fh
+            if inside:
+                return
+            if dialog_open:
+                direction = "down" if y + h > fy + fh else "up"
+                self.scroll_dialog(2, direction)
+            else:
+                component = _safe(node, "get_component_iface")
+                if component is not None:
+                    _safe(component, "scroll_to", self.atspi.ScrollType.ANYWHERE)
+                time.sleep(0.2)
+                return
+            time.sleep(0.15)
         component = _safe(node, "get_component_iface")
         if component is not None:
             _safe(component, "scroll_to", self.atspi.ScrollType.ANYWHERE)
@@ -1278,6 +1304,10 @@ class Session:
             if node is None:
                 raise ScenarioFailure(f"entry {label!r} not found")
             self.ensure_visible(node)
+            # Scrolling rebuilds the tree; use the freshly located node for the click.
+            node = self.entry(label)
+            if node is None:
+                continue
             self.focus(node)
             self.click(node)
             # The click is a coordinate gesture; make sure it landed on the entry.
@@ -1302,6 +1332,10 @@ class Session:
         if node is None:
             raise ScenarioFailure(f"slider {label!r} not found")
         self.ensure_visible(node)
+        # Scrolling may have rebuilt the tree: click the node as it is now.
+        node = self.slider(label)
+        if node is None:
+            raise ScenarioFailure(f"slider {label!r} left the tree after scrolling")
         # Clicking gives the X window focus; Home then sets the minimum before the
         # arrow keys walk to the target. A Value-interface write alone does not fire
         # the Solid input handler on WebKit.
@@ -1312,8 +1346,20 @@ class Session:
         if count:
             run(["xdotool", "key", "--repeat", str(count), "--delay", "12", "Right"], timeout=60)
         time.sleep(0.3)
+        # A preview re-render rebuilds WebKit's accessibility tree; the node that was
+        # found a moment ago can be absent for a frame. Re-locate it before reading.
+        deadline = time.time() + 3
         node = self.slider(label)
-        value_iface = _safe(node, "get_value_iface")
+        # Home may scroll the sheet back to its top, which prunes the slider from the
+        # tree even though it kept keyboard focus: walk the scroller both ways when the
+        # lookup comes back empty.
+        direction = "down"
+        while node is None and time.time() < deadline:
+            self.scroll_dialog(2, direction)
+            time.sleep(0.15)
+            node = self.slider(label)
+            direction = "up" if direction == "down" else "down"
+        value_iface = _safe(node, "get_value_iface") if node is not None else None
         current = _safe(value_iface, "get_current_value") if value_iface is not None else None
         if current is None or abs(float(current) - value) > step / 2:
             if value_iface is not None and _safe(value_iface, "set_current_value", value):
@@ -1322,7 +1368,14 @@ class Session:
                 value_iface = _safe(node, "get_value_iface")
                 current = _safe(value_iface, "get_current_value") if value_iface is not None else None
         if current is None or abs(float(current) - value) > step / 2:
-            raise ScenarioFailure(f"slider {label!r} is {current!r}, wanted {value}")
+            labels = [self.text(n) for n in self.find_all(role="label")]
+            sliders = [
+                (_safe(n, "get_name") or "") for n in self.find_all(role="slider")
+            ]
+            raise ScenarioFailure(
+                f"slider {label!r} is {current!r}, wanted {value}; "
+                f"labels={labels[-14:]} sliders={sliders}"
+            )
 
     def preview_image(self, dialog, timeout=12):
         """The canvas preview is generated asynchronously; a video frame takes longer."""
@@ -3108,27 +3161,185 @@ def scenario_tool_image_crop(h, rec, checks):
             [info.get("width"), info.get("height")],
         )
 
+        # The reported bug: with a preset active the dialog sent only the ratio, so the
+        # engine centred the crop and the placement the user dragged was ignored.
+        # 9:16 on 4,000×3,000 is a full-height region 0.29..0.71 of the width; dragged a
+        # third to the left, its left edge clamps to 0, so the expected geometry is exact.
+        def preset_and_drag(s):
+            s.press_button("9:16", within=s.dialog())
+            # The fit needs the source's pixel size, which arrives asynchronously.
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                entry = s.dialog_entry("Width")
+                if entry is not None and s.text(entry) not in ("", "0", "4000"):
+                    break
+                time.sleep(0.2)
+            time.sleep(0.4)
+            image = s.preview_image(s.dialog())
+            if image is None:
+                raise Skip("the crop surface exposes no picture to drag on")
+            s.ensure_visible(image)
+            time.sleep(0.2)
+            s.drag_fraction(image, (0.5, 0.5), (0.15, 0.5))
+            origin = re.search(r"at (\d+), (\d+)", s.subtree_text(s.dialog()))
+            rec["measurements"]["crop_origin"] = origin.group(0) if origin else ""
+            rec["parameters"]["crop_placement"] = "9:16 dragged to the left edge"
+
+        outputs, _preview = run_tool_job(
+            session, rec, checks, "Crop", category="Images", apply=preset_and_drag
+        )
+        record = record_outputs(rec, outputs)[0]
+        info = _first_image(record)
+        width, height = info.get("width"), info.get("height")
+        rec["measurements"]["crop_preset_size"] = [width, height]
+        checks.add(
+            "the dragged 9:16 preset keeps its ratio and the source height",
+            height == 3000 and width is not None and abs(width / height - 9 / 16) <= 0.002,
+            "3,000 high, 9:16 wide",
+            [width, height],
+        )
+        origin = rec["measurements"].get("crop_origin")
+        if origin:
+            checks.add(
+                "the placed region is not re-centred",
+                origin == "at 0, 0",
+                "at 0, 0",
+                origin,
+            )
+        else:
+            # The drag is proven below by comparing the artifact with both origins; the
+            # readout is only a second witness when the tree exposes it.
+            rec["measurements"]["crop_origin"] = "readout not exposed in the tree"
+        source = os.path.join(session.workdir, "photo-landscape-4000x3000.jpg")
+        if width and height:
+            # Same size, two origins: the one that was dragged to, and the centred one
+            # the old code used. A JPEG re-encode keeps the left one close; the centred
+            # one differs across the whole frame.
+            references = {}
+            for name, ox in (("left", 0), ("centre", (4000 - width) // 2)):
+                reference = os.path.join(session.workdir, f"crop-{name}-reference.png")
+                run(
+                    ["magick", source, "-crop", f"{width}x{height}+{ox}+0", "+repage", reference],
+                    timeout=120,
+                )
+                references[name] = reference
+
+            def rmse(a, b):
+                result = run(
+                    ["magick", "compare", "-metric", "RMSE", a, b, "null:"], timeout=180
+                )
+                match = re.search(r"\(([0-9.eE+-]+)\)", result.stderr)
+                if not match:
+                    raise ScenarioFailure(f"RMSE produced no metric: {result.stderr!r}")
+                return float(match.group(1))
+
+            left_rmse = rmse(outputs[0], references["left"])
+            centre_rmse = rmse(outputs[0], references["centre"])
+            rec["measurements"]["crop_rmse"] = {
+                "vs_dragged": round(left_rmse, 5),
+                "vs_centred": round(centre_rmse, 5),
+            }
+            checks.add(
+                "the artifact matches the dragged crop, not the centred one",
+                left_rmse < centre_rmse / 2 and centre_rmse > 0.02,
+                "dragged ≪ centred",
+                [round(left_rmse, 5), round(centre_rmse, 5)],
+            )
+
+            def patch(path, x, y):
+                """A 16×16 average, so one JPEG edge pixel cannot decide the check."""
+                result = run(
+                    [
+                        "magick",
+                        path,
+                        "-crop",
+                        f"16x16+{x}+{y}",
+                        "+repage",
+                        "-resize",
+                        "1x1!",
+                        "-format",
+                        "%[fx:int(255*r+0.5)],%[fx:int(255*g+0.5)],%[fx:int(255*b+0.5)]",
+                        "info:",
+                    ],
+                    timeout=120,
+                )
+                return tuple(int(part) for part in result.stdout.strip().split(","))
+
+            # A patch inside the left third, where a centred crop would show different
+            # content. Candidates are checked against the source so the check is skipped
+            # only when the picture genuinely has nothing to tell them apart.
+            centre_origin = (4000 - width) // 2
+            chosen = None
+            for x, y in ((200, 600), (200, 1500), (200, 2400), (400, 1500)):
+                left_source = patch(source, x, y)
+                centred_source = patch(source, centre_origin + x, y)
+                if pixel_distance(left_source, centred_source) > 12:
+                    chosen = (x, y, left_source, centred_source)
+                    break
+            if chosen is None:
+                rec["measurements"]["crop_placement_patch"] = "no distinguishable patch"
+            else:
+                x, y, left_source, centred_source = chosen
+                shown = patch(outputs[0], x, y)
+                rec["measurements"]["crop_placement_patch"] = {
+                    "at": [x, y],
+                    "output": list(shown),
+                    "source_left": list(left_source),
+                    "source_centred": list(centred_source),
+                }
+                checks.add(
+                    "a left-third patch of the artifact is the source there, not the centre",
+                    pixel_distance(shown, left_source) <= 12
+                    and pixel_distance(shown, centred_source) > 12,
+                    list(left_source),
+                    list(shown),
+                )
+
 
 def scenario_tool_image_annotate(h, rec, checks):
-    def click_canvas(s):
-        image = s.preview_image(s.dialog())
-        if image is None:
-            raise Skip("the annotation canvas exposes no image to click")
-        box = s.extents(image)
+    def click_at(session, image, fx, fy):
+        box = session.extents(image)
         if not box:
             raise Skip("the annotation canvas has no screen extents")
         x, y, width, height = box
         run(
-            ["xdotool", "mousemove", str(x + width // 2), str(y + height // 2)],
+            ["xdotool", "mousemove", str(x + int(width * fx)), str(y + int(height * fy))],
             timeout=10,
         )
         time.sleep(0.15)
         run(["xdotool", "click", "1"], timeout=10)
-        time.sleep(0.5)
+        time.sleep(0.4)
 
     def apply(s):
+        dialog = s.dialog()
+        image = s.preview_image(dialog)
+        if image is None:
+            raise Skip("the annotation canvas exposes no picture to draw on")
+        s.ensure_visible(image)
+        time.sleep(0.2)
+        # A rectangle by dragging, and a numbered badge by a click: the two tools that
+        # were reported as doing nothing. The drag is a real pointer sequence, not a
+        # value typed into a field. The toolbar is a group of toggle buttons, so the
+        # role matters: a "button" lookup silently finds nothing.
+        def choose_tool(name):
+            node = s.find(role="toggle button", name=name, within=dialog)
+            if node is None:
+                node = s.find(role="button", name=name, within=dialog)
+            if node is None:
+                raise Skip(f"the annotation toolbar exposes no {name} tool")
+            s.press(node)
+            time.sleep(0.2)
+
+        choose_tool("Rectangle")
+        s.drag_fraction(image, (0.2, 0.2), (0.55, 0.55))
+        choose_tool("Number")
+        click_at(s, image, 0.78, 0.25)
         s.set_entry("Caption", "Harness")
-        rec["parameters"]["annotations"] = "caption"
+        rec["parameters"]["annotations"] = "rectangle + number + caption"
+        rec["measurements"]["annotate_marks"] = {
+            "rectangle": "0.20,0.20 → 0.55,0.55",
+            "number": "0.78,0.25",
+        }
 
     with h.launch("tool-image-annotate", [h.fixture("images/screenshot-text.png")]) as session:
         rec["workdir"] = session.workdir
@@ -3157,6 +3368,23 @@ def scenario_tool_image_annotate(h, rec, checks):
             source_corner,
             corner,
         )
+        # The drawn rectangle's border and the number badge must be in the file, not
+        # only in the dialog's overlay.
+        source_path = os.path.join(session.workdir, "screenshot-text.png")
+        for label, x, y in (
+            ("the dragged rectangle border", 320, 370),
+            ("the numbered badge", 1268, 250),
+        ):
+            source_pixel = validate.pixel(source_path, x, y)
+            drawn_pixel = validate.pixel(outputs[0], x, y)
+            checks.add(
+                f"annotate wrote {label}",
+                source_pixel is not None
+                and drawn_pixel is not None
+                and max(abs(a - b) for a, b in zip(source_pixel, drawn_pixel)) > 40,
+                f"pixel at {x},{y} differs from the source",
+                [source_pixel, drawn_pixel],
+            )
 
 
 def scenario_tool_image_collage(h, rec, checks):
@@ -3168,7 +3396,45 @@ def scenario_tool_image_collage(h, rec, checks):
     ]
     with h.launch("tool-image-collage", fixtures) as session:
         rec["workdir"] = session.workdir
-        outputs, _preview = run_tool_job(session, rec, checks, "Collage", category="Images")
+
+        def wait_layout(s):
+            # The preview and its hit areas come from the backend: the image and one
+            # `Cell N` button per placed picture are the proof that the layout command
+            # answered, not just that the dialog opened.
+            deadline = time.time() + 20
+            image = None
+            cells = []
+            while time.time() < deadline:
+                images = s.find_all(role="image", within=s.dialog())
+                image = images[0] if images else None
+                cells = []
+                for alias in ("button", "push button", "toggle button"):
+                    cells.extend(
+                        node
+                        for node in s.find_all(role=alias, within=s.dialog())
+                        if (_safe(node, "get_name") or "").startswith("Cell ")
+                    )
+                if image is not None and len(cells) >= 4:
+                    break
+                time.sleep(0.4)
+            rec["measurements"]["collage_cells"] = len(cells)
+            rec["measurements"]["collage_preview"] = image is not None
+            checks.add(
+                "the collage preview loaded from the backend",
+                image is not None,
+                "a Collage preview image",
+                "present" if image is not None else "missing",
+            )
+            checks.add(
+                "the collage layout exposes one hit area per picture",
+                len(cells) == 4,
+                4,
+                len(cells),
+            )
+
+        outputs, _preview = run_tool_job(
+            session, rec, checks, "Collage", category="Images", apply=wait_layout
+        )
         record = record_outputs(rec, outputs)[0]
         info = _first_image(record)
         checks.add(
@@ -3210,6 +3476,78 @@ def scenario_tool_image_background(h, rec, checks):
         )
         corner = pixel(outputs[0], 5, 5)
         checks.add("the default background is #101418", corner["pixel"] == "srgb(16,20,24)", "srgb(16,20,24)", corner["pixel"])
+
+        # The reported failure was image mode with a blur: the preview froze the dialog
+        # and the saved file disagreed with it. Run the real job at a large blur and
+        # sample both layers: the background must be the chosen picture and the photo
+        # centre must be unchanged.
+        backdrop = h.fixture("images/screenshot-text.png")
+        def image_and_blur(s):
+            s.select_option("Background", "Another image")
+            time.sleep(0.3)
+            s.set_entry("Background image", backdrop)
+            # `set_slider` scrolls the control into view itself; scrolling before it
+            # moved the field out of the pruned tree and made the lookup fail.
+            s.set_slider_auto("Background blur", 10.0)
+            time.sleep(0.3)
+
+            def slider_value(label):
+                node = s.slider(label)
+                value = _safe(node, "get_value_iface") if node is not None else None
+                current = _safe(value, "get_current_value") if value is not None else None
+                return float(current) if current is not None else None
+
+            blur = s.slider("Background blur")
+            padding_before = slider_value("Padding")
+            if blur is not None:
+                # The reported failure: dragging the blur lost the pointer and moved
+                # whatever control it drifted onto. A real drag must change the blur and
+                # leave its neighbour alone.
+                s.ensure_visible(blur)
+                s.drag_fraction(blur, (0.2, 0.5), (0.8, 0.5))
+                time.sleep(0.4)
+            blur_after = slider_value("Background blur")
+            padding_after = slider_value("Padding")
+            checks.add(
+                "dragging the blur slider moves it and nothing else",
+                blur_after is not None
+                and blur_after > 10.0
+                and padding_before is not None
+                and padding_after is not None
+                and abs(padding_after - padding_before) <= 1.0,
+                "blur rises, padding unchanged",
+                [blur_after, padding_before, padding_after],
+            )
+            rec["parameters"]["background"] = f"image + blur {blur_after}"
+
+        blurred, _preview = run_tool_job(
+            session, rec, checks, "Add background", category="Images", apply=image_and_blur
+        )
+        record = record_outputs(rec, blurred)[0]
+        info = _first_image(record)
+        checks.add(
+            "image mode keeps the padded canvas",
+            (info.get("width"), info.get("height")) == (2160, 3160),
+            [2160, 3160],
+            [info.get("width"), info.get("height")],
+        )
+        edge = pixel(blurred[0], 5, 5)
+        checks.add(
+            "the background picture replaced the default ink",
+            edge["pixel"] != "srgb(16,20,24)",
+            "not the default ink",
+            edge["pixel"],
+        )
+        source_centre = validate.pixel(os.path.join(session.workdir, os.path.basename(POSTER)), 1000, 1500)
+        output_centre = validate.pixel(blurred[0], 1080, 1580)
+        checks.add(
+            "the photo is not changed by the background blur",
+            source_centre is not None
+            and output_centre is not None
+            and max(abs(a - b) for a, b in zip(source_centre, output_centre)) <= 8,
+            source_centre,
+            output_centre,
+        )
 
 
 def scenario_tool_image_edit(h, rec, checks):
@@ -3329,6 +3667,27 @@ def scenario_tool_image_redact(h, rec, checks):
 
     def apply_blur(s):
         s.press_button("Blur", within=s.dialog())
+        time.sleep(0.35)
+        # Strength and the preview toggle belong to the blur mode: they must appear with
+        # it, and the strength must travel (a "more blur" slider that does nothing is
+        # the same lie as an inverted tonal slider).
+        strength = s.slider("Blur strength")
+        checks.add(
+            "Blur reveals its strength",
+            strength is not None,
+            "a Blur strength slider",
+            "present" if strength is not None else "missing",
+        )
+        toggle = s.find(role="check box", name="Preview redaction", within=s.dialog())
+        checks.add(
+            "the redaction preview can be toggled",
+            toggle is not None,
+            "Preview redaction",
+            "present" if toggle is not None else "missing",
+        )
+        if strength is not None:
+            s.set_slider("Blur strength", 90.0, 0.0, 1.0)
+            rec["parameters"]["blur_strength"] = 90
         s.mark_region(s.dialog())
         rec["parameters"]["region_method"] = "drawn+blur"
 

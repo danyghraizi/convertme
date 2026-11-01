@@ -234,6 +234,30 @@ export interface CompressPreview {
   height: number;
 }
 
+/** One placed picture of a collage, in output pixels. */
+export interface CollageCellLayout {
+  /** Index into the ordered inputs. */
+  input: number;
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The arrangement the engine will write: the preview draws its hit areas from it. */
+export interface CollageLayout {
+  width: number;
+  height: number;
+  cols: number;
+  rows: number;
+  spacing: number;
+  cells: CollageCellLayout[];
+}
+
 export type DragSignal =
   | { kind: 'modifier'; key: string; active: boolean }
   | { kind: 'shortcut'; key: string }

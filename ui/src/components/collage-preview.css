@@ -1,16 +1,111 @@
 .collage-preview {
-  display: grid;
-  place-items: center;
-  min-height: 120px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* A fixed band: the "Rendering…" badge and the readout never resize the fields. */
+  min-height: 360px;
   padding: 8px;
   border-radius: var(--r-2, 10px);
   background: var(--surface-2, rgba(127, 127, 127, 0.08));
 }
 
-.collage-preview img {
-  display: block;
+.collage-frame {
+  position: relative;
+  flex: 0 0 auto;
   max-width: 100%;
-  max-height: 300px;
-  object-fit: contain;
+  overflow: hidden;
   border-radius: 6px;
+  background: var(--surface-1, rgba(0, 0, 0, 0.15));
+}
+
+.collage-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  border-radius: 6px;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* One hit region per placed picture: the border marks the selected cell. */
+.collage-cell {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.collage-cell:hover {
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.collage-cell.is-selected {
+  border-color: var(--accent, #ff5a36);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  cursor: grabbing;
+}
+
+.collage-empty {
+  margin: 0;
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  color: var(--text-2, rgba(127, 127, 127, 0.9));
+}
+
+.collage-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-1, #fff);
+  background: rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+}
+
+.collage-readout {
+  margin: 0;
+  min-height: 1.35em;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-2, rgba(127, 127, 127, 0.9));
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collage-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+}
+
+.collage-zoom {
+  font-size: 12px;
+  color: var(--text-2, rgba(127, 127, 127, 0.9));
+}
+
+.collage-controls input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.collage-reset {
+  flex: 0 0 auto;
 }

@@ -39,3 +39,19 @@
 .boxes-handle-s { left: 50%; bottom: -4px; margin-left: -4px; cursor: ns-resize; }
 .boxes-handle-sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
 .boxes-handle-w { left: -4px; top: 50%; margin-top: -4px; cursor: ew-resize; }
+
+/* The redaction preview toggle keeps to the toolbar's own row: a new line would grow
+   the pinned band and move every field below it. */
+.boxes-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: var(--t-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.boxes-toggle input {
+  margin: 0;
+}

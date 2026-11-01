@@ -356,6 +356,121 @@ def measure_modal(m: Marionette):
     return m.js(script)
 
 
+def layout_sample(m: Marionette) -> dict:
+    """Where the controls sit while a preview renders.
+
+    The dialog's preview band is a sibling above the scroller. A status line that is
+    inserted into flow grows the band and pushes every control down; the user sees the
+    sliders jump. Sampling this during and after a render makes that measurable.
+    """
+    return m.js(
+        """
+        const fields = document.querySelector('.modal-fields');
+        const preview = document.querySelector('.modal-preview');
+        const status = document.querySelector(
+          '.preview-status, .compress-working, .boxes-status, .annotate-status');
+        return {
+          fieldsTop: fields ? Math.round(fields.getBoundingClientRect().top) : null,
+          fieldsH: fields ? Math.round(fields.getBoundingClientRect().height) : null,
+          previewH: preview ? Math.round(preview.getBoundingClientRect().height) : null,
+          status: status ? ((status.innerText || '').trim() || status.className) : null,
+        };
+        """
+    )
+
+
+def pointer_actions(m: Marionette, moves) -> None:
+    """Real pointer input through Marionette: a synthetic `dispatchEvent` has no
+    active pointer id, so `setPointerCapture` in a drag surface would throw."""
+    actions = [{"type": "pointerMove", "duration": 0, "x": moves[0][0], "y": moves[0][1],
+                "origin": "viewport"}, {"type": "pointerDown", "button": 0}]
+    for x, y in moves[1:]:
+        actions.append({"type": "pointerMove", "duration": 80, "x": x, "y": y,
+                        "origin": "viewport"})
+    actions.append({"type": "pointerUp", "button": 0})
+    m.cmd(
+        "WebDriver:PerformActions",
+        {"actions": [{"type": "pointer", "id": "mouse",
+                      "parameters": {"pointerType": "mouse"}, "actions": actions}]},
+    )
+    m.cmd("WebDriver:ReleaseActions")
+
+
+def surface_points(m: Marionette, selector: str, points) -> list[tuple[int, int]]:
+    box = m.js(
+        """
+        const el = document.querySelector(%s);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height };
+        """
+        % json.dumps(selector)
+    )
+    if not box or box.get("w", 0) <= 1:
+        raise RuntimeError(f"{selector} has no measurable extents")
+    return [
+        (int(box["x"] + box["w"] * fx), int(box["y"] + box["h"] * fy)) for fx, fy in points
+    ]
+
+
+def set_field_value(m: Marionette, label: str, value: str) -> bool:
+    """Set one dialog control by its row label, through the native value setter."""
+    return bool(
+        m.js(
+            """
+            const label = %s;
+            const value = %s;
+            const row = [...document.querySelectorAll('.modal .field')]
+              .find((r) => {
+                const own = r.querySelector(':scope > .field-label');
+                return own && own.innerText.trim() === label;
+              })
+              || [...document.querySelectorAll('.modal .field')]
+                .find((r) => (r.innerText || '').trim().startsWith(label));
+            if (!row) return false;
+            const input = row.querySelector('input[type=range], input[type=number],'
+              + ' input[type=text], select');
+            if (!input) return false;
+            if (input.tagName === 'SELECT') {
+              const option = [...input.options].find((o) => o.value === value);
+              if (!option) return false;
+              input.value = value;
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+            const proto = input.type === 'range'
+              ? HTMLInputElement.prototype : HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, value);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+            """
+            % (json.dumps(label), json.dumps(value))
+        )
+    )
+
+
+def watch_layout(m: Marionette, step, rounds: int = 24, gap: float = 0.05) -> dict:
+    """Run `step(index)`, sampling the sheet throughout and after the render."""
+    samples = [layout_sample(m)]
+    for index in range(rounds):
+        step(index)
+        time.sleep(gap)
+        samples.append(layout_sample(m))
+    time.sleep(0.8)
+    for _ in range(6):
+        samples.append(layout_sample(m))
+        time.sleep(0.08)
+    tops = [s["fieldsTop"] for s in samples if s.get("fieldsTop") is not None]
+    heights = [s["previewH"] for s in samples if s.get("previewH") is not None]
+    return {
+        "samples": len(samples),
+        "fields_top": [min(tops), max(tops)] if tops else None,
+        "preview_height": [min(heights), max(heights)] if heights else None,
+        "status_seen": sorted({s["status"] for s in samples if s.get("status")})[:4],
+    }
+
+
 def open_category(m: Marionette, label: str):
     ok = m.js(
         """
@@ -546,6 +661,233 @@ def run_category(
                 close_dialog(m)
             else:
                 failures.append("images/crop: the crop surface never appeared")
+
+            # Annotate: a real drag must draw, Number must place a badge on a click,
+            # and Eraser must remove the clicked mark. A synthetic `dispatchEvent` has
+            # no pointer id, so this uses WebDriver pointer actions.
+            m.js(
+                "const card = [...document.querySelectorAll('.tool-card')]"
+                ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                ".trim().startsWith('Annotate'));"
+                "if (card) card.click(); return !!card;"
+            )
+            if m.wait_for("document.querySelector('.annotate-frame')", 6):
+                time.sleep(0.8)
+                try:
+                    def choose_tool(name: str) -> bool:
+                        return bool(
+                            m.js(
+                                "const b = [...document.querySelectorAll('.annotate-tool')]"
+                                f".find((x) => x.innerText.trim() === {json.dumps(name)});"
+                                "if (b) b.click(); return !!b;"
+                            )
+                        )
+
+                    def shape_count() -> int:
+                        return int(
+                            m.js(
+                                "return document.querySelectorAll("
+                                "'.annotate-shapes .annotate-shape').length;"
+                            )
+                            or 0
+                        )
+
+                    drawn = choose_tool("Rectangle")
+                    points = surface_points(
+                        m, ".annotate-frame", [(0.25, 0.30), (0.55, 0.65)]
+                    )
+                    pointer_actions(m, points)
+                    time.sleep(0.4)
+                    after_rect = shape_count()
+
+                    numbered = choose_tool("Number")
+                    number_at = surface_points(m, ".annotate-frame", [(0.78, 0.22)])[0]
+                    pointer_actions(m, [number_at, number_at])
+                    time.sleep(0.4)
+                    after_number = shape_count()
+
+                    erased = choose_tool("Eraser")
+                    pointer_actions(m, [number_at, number_at])
+                    time.sleep(0.4)
+                    after_erase = shape_count()
+
+                    report.append(
+                        {
+                            "category": "images",
+                            "tool": "annotate-interaction",
+                            "dialog": True,
+                            "tools": {"rectangle": drawn, "number": numbered, "eraser": erased},
+                            "shapes": {
+                                "after_drag": after_rect,
+                                "after_number": after_number,
+                                "after_erase": after_erase,
+                            },
+                        }
+                    )
+                    if not drawn or after_rect < 1:
+                        failures.append("images/annotate: dragging drew no rectangle")
+                    if not numbered or after_number <= after_rect:
+                        failures.append("images/annotate: Number did not place a badge")
+                    if not erased or after_erase >= after_number:
+                        failures.append("images/annotate: Eraser did not remove the badge")
+                except RuntimeError as error:
+                    failures.append(f"images/annotate: interaction check failed ({error})")
+            else:
+                failures.append("images/annotate: the annotation canvas never appeared")
+            close_dialog(m)
+
+        if key == "images":
+            # A transient status ("Rendering…", "Encoding the preview…") must not move
+            # the controls. Sample the fields' top edge while a preview is requested and
+            # after it lands; a status inserted into flow is a jump of one text line.
+            def open_card(prefix: str) -> bool:
+                return bool(
+                    m.js(
+                        "const card = [...document.querySelectorAll('.tool-card')]"
+                        ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                        f".trim().startsWith({json.dumps(prefix)}));"
+                        "if (card) card.click(); return !!card;"
+                    )
+                )
+
+            def stable_after(label: str, detail: dict) -> None:
+                record = {"category": "images", "tool": label, "dialog": True, **detail}
+                report.append(record)
+                if not detail.get("fields_top"):
+                    failures.append(f"images/{label}: the fields have no measured position")
+                    return
+                top_span = detail["fields_top"][1] - detail["fields_top"][0]
+                if top_span > 2:
+                    failures.append(
+                        f"images/{label}: the fields moved {top_span}px while rendering"
+                    )
+                if detail.get("preview_height"):
+                    span = detail["preview_height"][1] - detail["preview_height"][0]
+                    if span > 2:
+                        failures.append(
+                            f"images/{label}: the preview band grew {span}px while rendering"
+                        )
+
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files={key}"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "Images")
+
+            if open_card("Edit photo"):
+                if m.wait_for("document.querySelector('.modal')", 6):
+                    time.sleep(0.9)
+                    if set_field_value(m, "Exposure", "100"):
+                        measured = watch_layout(
+                            m,
+                            lambda index: set_field_value(
+                                m, "Exposure", "100" if index % 2 else "-100"
+                            ),
+                        )
+                        stable_after("edit-photo-preview", measured)
+                    else:
+                        failures.append("images/edit-photo: no Exposure slider")
+                    close_dialog(m)
+                else:
+                    failures.append("images/edit-photo: no dialog")
+            else:
+                failures.append("images/edit-photo: no card")
+
+            if open_card("Add background"):
+                if m.wait_for("document.querySelector('.modal')", 6):
+                    time.sleep(0.7)
+                    set_field_value(m, "Background", "image")
+                    set_field_value(m, "Background image", "/fixtures/photo.jpg")
+                    time.sleep(0.4)
+                    if set_field_value(m, "Background blur", "40"):
+                        measured = watch_layout(
+                            m,
+                            lambda index: set_field_value(
+                                m, "Background blur", "40" if index % 2 else "0"
+                            ),
+                            rounds=18,
+                        )
+                        stable_after("add-background-blur", measured)
+                    else:
+                        failures.append("images/add-background: no Background blur slider")
+                    # The image-backed canvas must show a picture, not a broken layer.
+                    shown = m.js(
+                        """
+                        const canvas = document.querySelector('.background-canvas');
+                        const layer = canvas
+                          ? canvas.querySelector('.background-fill-image, canvas img')
+                          : null;
+                        return { canvas: !!canvas, layer: !!layer };
+                        """
+                    )
+                    if not (shown or {}).get("canvas"):
+                        failures.append("images/add-background: image mode draws no canvas")
+                    close_dialog(m)
+                else:
+                    failures.append("images/add-background: no dialog")
+            else:
+                failures.append("images/add-background: no card")
+
+            if open_card("Compress"):
+                if m.wait_for("document.querySelector('.modal')", 6):
+                    # The facts appear only when the real encode lands; the row is
+                    # reserved so the dialog does not grow underneath the pointer.
+                    measured = watch_layout(
+                        m,
+                        lambda index: set_field_value(
+                            m, "Quality", "20" if index % 2 else "90"
+                        ),
+                        rounds=20,
+                    )
+                    stable_after("compress-preview", measured)
+                    loaded = m.js(
+                        """
+                        const img = document.querySelector('.compress-frame img');
+                        return img ? !!(img.complete && img.naturalWidth > 0) : false;
+                        """
+                    )
+                    if not loaded:
+                        failures.append("images/compress: the frame never showed a picture")
+                    close_dialog(m)
+                else:
+                    failures.append("images/compress: no dialog")
+            else:
+                failures.append("images/compress: no card")
+
+            if open_card("Collage"):
+                if m.wait_for("document.querySelector('.collage-cell')", 6):
+                    cells = m.js(
+                        "return document.querySelectorAll('.collage-cell').length;"
+                    )
+                    point = surface_points(
+                        m, ".collage-cell", [(0.5, 0.5)]
+                    )
+                    pointer_actions(m, [point[0], point[0]])
+                    time.sleep(0.4)
+                    selected = m.js(
+                        """
+                        const cell = document.querySelector('.collage-cell');
+                        const zoom = document.querySelector('input[aria-label="Zoom"]');
+                        return {
+                          selected: !!document.querySelector('.collage-cell.is-selected'),
+                          zoom_enabled: zoom ? !zoom.disabled : false,
+                          readout: (document.querySelector('.collage-readout') || {}).innerText || '',
+                        };
+                        """
+                    )
+                    report.append(
+                        {"category": "images", "tool": "collage-interaction",
+                         "dialog": True, "cells": cells, **selected}
+                    )
+                    if not cells:
+                        failures.append("images/collage: the layout drew no cells")
+                    if not selected.get("selected"):
+                        failures.append("images/collage: clicking a cell did not select it")
+                    if not selected.get("zoom_enabled"):
+                        failures.append("images/collage: Zoom stayed disabled after selecting")
+                    close_dialog(m)
+                else:
+                    failures.append("images/collage: no cell overlay appeared")
+            else:
+                failures.append("images/collage: no card")
         if key == "video":
             # Typing the output size must work before anything is drawn: the reference
             # dialog lets you enter exact dimensions first.

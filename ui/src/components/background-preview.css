@@ -1,0 +1,58 @@
+/* Add background: the canvas clips the placed picture against the photo.
+   Nothing inside it may take the pointer — the canvas owns the drag, so a press can
+   never land on the picture, the photo or a blur layer and keep moving controls. */
+.background-stage {
+  position: relative;
+}
+
+.background-canvas {
+  position: relative;
+  /* The layers below are ordered inside the canvas, never against the dialog. */
+  isolation: isolate;
+  /* The drag owns every gesture that starts on the canvas. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.background-canvas > * {
+  pointer-events: none;
+}
+
+/* The chosen picture, placed by the engine's own crop maths. */
+.background-canvas .background-image {
+  position: absolute;
+  display: block;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* The untouched copy that fills the blur's transparent bleed, then the blurred one
+   over it, then the photo. */
+.background-canvas .background-bleed {
+  z-index: 0;
+}
+
+.background-canvas .background-fill-image {
+  z-index: 1;
+}
+
+.background-canvas .background-photo {
+  position: relative;
+  z-index: 2;
+}
+
+/* Preview failures say so over the stage: a line in flow would move the fields. */
+.background-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--s-4);
+  text-align: center;
+  pointer-events: none;
+}

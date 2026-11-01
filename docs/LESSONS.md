@@ -1017,3 +1017,189 @@ ignore a response whose token is stale. Publish the new `{order, rotate}` per fi
 
 **Evidence.** `tool-pdf-organize-multi` switches from a 5-page report to a 3-page scan
 and counts 5 then 3 page cards.
+
+## 71. When two representations describe one edit, the explicit one is the edit
+
+**Trap.** The crop editor fitted the preset box on screen and also stored the box, but
+`submitModal` deleted `boxes` and sent only `aspect` for a locked ratio — the comment
+called the rectangle "a preview detail". The engine's aspect path centres, so every
+preset crop ignored the placement the user dragged. The dialog showed the right box and
+the file had a different one; the failure was in the branch between them.
+
+**Rule.** Send exactly one representation, and prefer the one the user moved. If a box
+exists, send `x/y/w/h` and omit `aspect`; use `aspect` only when no box exists. Keep the
+engine's mutual-exclusion check: it is what makes the next leak fail instead of silently
+choosing a default.
+
+**Evidence.** `tool-image-crop`, 9:16 dragged to the left third: output `1688×3000`,
+RMSE `0.00152` against the dragged reference and `0.23977` against the centred one; the
+left-third patch `(156,122,190)` equals the source there and differs from the centre's
+`(95,128,173)`.
+
+## 72. A slider's sign is a measurement, not a reading of its name
+
+**Trap.** Four tonal controls moved the wrong way, and two more were wrong in range:
+`whites` raised ImageMagick's white point (darkening), `blacks` raised the black point,
+`highlights` raised the sigmoid midpoint (darkening), `shadows` used `-gamma 1/(1+s)`
+where ImageMagick's gamma is inverse, `dehaze` ignored its magnitude, and hue's
+`100 + h/3.6` reached only ±90° although the slider spans ±180°. The labels looked
+plausible; only a ramp exposed them.
+
+**Rule.** Render a black→white ramp (and a colour/noise sample for the colour/detail
+controls) at +N and −N and assert the intended region moves in the intended direction.
+Pin the endpoints and the neutral value (`1.0` gamma), not just "it runs".
+
+**Evidence.** `photo_sliders_have_the_expected_direction`: highlights +100 raises the
+top 20 % from 223 to 243 while black stays 0; whites +100 takes the white point from 204
+to 255; blacks +100 lifts 0 → 51; shadows +60 lifts x64 from 27 to 107; hue +180 now
+emits `-modulate …,200` instead of `…,150`.
+
+## 73. An annotation editor is an object model, not a canvas of ink
+
+**Trap.** The first editor let a user drag a shape but its toolbar had no eraser, numbers
+required a drag that a click never produced, text required pre-typing in a side input,
+and the SVG used `naturalWidth/400` for strokes while the engine used raw pixels. It
+looked like a drawing surface and behaved like a list of marks with no handles.
+
+**Rule.** Every mark is an object with a source-pixel `size`, a colour, and a hit box;
+the tools are Select (move + four corner handles), Eraser (click removes the topmost
+shape), Text (inline entry at the click point), and Number (a click places an
+auto-numbered badge). Delete/Backspace remove the selected object; Escape clears the
+selection instead of closing the dialog when one exists. The overlay is drawn in the
+same pixel space the engine uses.
+
+**Evidence.** `ui-shots.py` drives real pointer actions: a drag creates 1 shape, Number
+adds a badge (3 SVG elements), Eraser returns to 1. `tool-image-annotate` finds the
+rectangle border at `(320,370)` = `(255,90,54)` and the badge at `(1268,250)` in the
+published file, not only in the overlay.
+
+## 74. A badge is centred by the text engine, not by guessed font metrics
+
+**Trap.** The number's digit was drawn with a hand-guessed ascent/advance offset, so it
+sat at the bottom edge of the circle and moved if the label had two digits. Measuring
+digit widths suggested a different constant for every glyph and every font.
+
+**Rule.** Under MVG `gravity center`, `text X,Y` puts the text's centre at the canvas
+centre plus `(X,Y)`. For a badge at `(cx,cy)` on a `W×H` canvas, draw with
+`gravity center text {cx-W/2},{cy-H/2}` and reset to `gravity NorthWest`. The result is
+width-independent and needs no font-metric table.
+
+**Evidence.** `annotate_number_and_text_are_centred_and_legible` samples the badge centre
+for one digit and for `10`; `tool-image-annotate` writes the badge at the click point.
+
+## 75. Spacing and radius are proportions; rows and columns are a layout
+
+**Trap.** Collage's corner radius and spacing were fixed pixel counts capped at 64 on a
+2048 px canvas, so the controls looked broken at realistic output sizes. `columns` was
+only read by two of four styles, there was no row count, and the output width was a free
+text box that could not be discovered before a typo changed the resolution.
+
+**Rule.** Express spacing and radius as percentages of the cell's shorter side
+(100 % radius = a circle), and give the grid independent `rows` and `columns` controls:
+explicit rows are honoured, spare cells stay background, and rows grow when the pictures
+do not fit. An output size is a choice (1024/2048/4096), not free text. Round the
+picture layer with a mask, as `add_background` does.
+
+**Evidence.** 6 pictures at 2048 px: 3×2 gives six `1024×682` cells at x 0/1024 and y
+0/682/1364; 2×3 gives six `682×1024` cells. `radius_pct=100` leaves the cell corner
+`(0,0,0)` background while every cell centre keeps its source colour.
+
+## 76. One layout function feeds the composer, the preview and the hit areas
+
+**Trap.** A preview that re-derives the grid in JavaScript drifts from the composer the
+first time one side rounds a cell or treats a span differently — the drag then moves a
+different picture from the one that gets cropped.
+
+**Rule.** Return the layout (`width/height/cols/rows/cells`) from the backend and draw
+the preview's hit regions from those rectangles. Key per-image `{index, zoom, x, y}` by
+the **source** index, not the ordered position, so reordering does not move a transform
+to another file. Apply pan as a crop window inside the cover-resized picture; scale the
+pointer delta by the rendered cell.
+
+**Evidence.** `collage_cell_pan_and_zoom_move_the_picture`: one `1024×1024` cell, zoom 2,
+pixel `(256,512)` is red at pan 0 and blue at x=100. `tool-image-collage` still matches
+all four quadrants and the default 2048×2048.
+
+## 77. A preview status is an overlay, and that is measurable
+
+**Trap.** "Rendering…" was a `<p>` under the picture. When it appeared, the preview band
+grew by a line and pushed every slider down; when it finished, they jumped back. The
+user read it as the slider moving under the pointer.
+
+**Rule.** Transient status lives in a positioned badge over the preview (or in a
+permanently reserved row). Keep the facts row's height reserved so numbers arriving
+later cannot resize the band either. Measure the fields' top edge and the band height
+while requests are in flight; a change over 2 px is a failure.
+
+**Evidence.** `ui-shots.py` samples 25–31 times through a render for Edit photo,
+Add background and Compress: `fields_top` and `preview_height` are constant
+(`502/369`, `404/271`, `546/364` in the three dialogs), while Compress still reports
+`Encoding the preview…`.
+
+## 78. A CSS blur is a rendering cost and a hit-testing layer
+
+**Trap.** Image mode drew the background with `background-size: … auto` and a
+`background-position` percentage, which letterboxes when the picture's aspect differs
+from the canvas, then added a full-size `filter: blur(Npx)` layer on every 0↔positive
+change. The geometry disagreed with the engine, and the blur layer sat over the canvas
+where the pointer was dragging.
+
+**Rule.** Draw the background as an `<img>` sized and offset by the engine's cover/zoom/
+crop formulas, scale the blur radius by the display/source ratio, cap it, and make every
+child `pointer-events: none`. One canvas owns the drag with pointer capture; no layer is
+created or removed as a slider moves. Use a plain thumbnail, never the full picture, for
+a live preview.
+
+**Evidence.** `background_blur_changes_only_the_background_layer`: checkerboard backdrop
+changes by up to 128 channel levels inside the background-only region at `bg_blur=35`,
+while the photo centre stays `255/0/0`. `tool-image-background` runs image mode + blur in
+the real window and the photo centre is byte-identical `(237,140,76)`.
+
+## 79. A strength knob must reach both the job and its preview
+
+**Trap.** Redaction's blur radius was a constant `min(bw,bh)*0.15`. Adding a slider only
+to the dialog would have produced a preview that never matched the file; adding it only
+to the engine would have left a dead control.
+
+**Rule.** Parse the treatment once (`style`, `colour`, `strength`, boxes) into settings
+shared by the job and the preview, and render the preview through the same function at
+its own pixel size. The preview is an engine artifact cached by the full request;
+the dialog toggles between it and the plain thumbnail. Normalised boxes need no
+rescaling when the surface is a thumbnail.
+
+**Evidence.** `redaction_blur_strength_changes_the_result` measures interior variance
+`0.304 → 0.087 (strength 10) → 0.019 (90)`; `redaction_preview_uses_the_same_treatment`
+fills the same box at 200 px. `tool-image-redact` sees the strength slider and the
+"Preview redaction" toggle in the real window and still writes the solid/blur artifacts.
+
+## 80. "Visible" means inside the sheet, and a toggle is not a button
+
+**Trap.** `ensure_visible` compared a control's extents with the whole **window**. A
+field below the dialog's scroller is clipped by the sheet but still inside the window,
+so the harness clicked its off-screen coordinates — on the backdrop — and closed the
+dialog. Separately, the annotation toolbar's `aria-pressed` buttons are `toggle button`
+in AT-SPI; `press_button` looked only for `button` and skipped every tool.
+
+**Rule.** Scroll a control into the **sheet's** viewport before clicking it, re-locate
+it afterwards (the wheel rebuilds the tree), and give role `toggle button` the same
+weight as `button` in a toolbar. A skip must name the role it looked for.
+
+**Evidence.** `tool-image-background` image mode initially failed at `Background blur`
+because the click hit the backdrop; with sheet scrolling and a re-located node the
+scenario passes. `tool-image-annotate` initially skipped with "no Rectangle tool"; after
+the role fix it draws and saves a rectangle and a number.
+
+## 81. A stand-in preview must be the source, and the facts must wait
+
+**Trap.** Compress showed a black frame with "Encoding the preview…" for the real encode
+(2.5 s on a poster). The artifact is the only honest source of dimensions and bytes, but
+the wait does not have to be black.
+
+**Rule.** Show the source thumbnail immediately (the same picture the artifact derives
+from), overlay the encoding status, and replace it with the artifact when it lands. Only
+the artifact may supply size/dimensions/notes. Reserve the facts row so the dialog does
+not grow when they arrive.
+
+**Evidence.** `ui-shots.py` samples the Compress dialog through an encode: the status is
+seen and `fields_top` stays 546, `preview_height` 364; the frame always shows a loaded
+picture.

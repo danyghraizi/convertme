@@ -2255,6 +2255,27 @@ body.wheel-body {
   user-select: none;
 }
 
+/* Transient render state lives over the preview, never in its flow: inserting a
+   status line would grow the band and move every field below it. Shared by each
+   preview component. */
+.preview-status {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  max-width: calc(100% - 16px);
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(8, 10, 12, 0.72);
+  color: #fff;
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  text-align: right;
+  pointer-events: none;
+}
+
 .photo-tint {
   position: absolute;
   inset: 0;
@@ -2292,17 +2313,45 @@ body.wheel-body {
   font-size: 13px;
 }
 
-/* Re-encoding an edited setting keeps the old image on screen; this says it is stale. */
-.compress-working {
+/* Re-encoding an edited setting keeps the old image on screen; this says it is stale.
+ * It is an overlay, not a row: a status line in flow would push every field below it
+ * the moment an encode starts or finishes. */
+.compress-working,
+.compress-error {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 8px;
-  height: 8px;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--t-2xs);
+  line-height: 1.4;
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+
+.compress-working::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
+  box-shadow: 0 0 0 2px var(--accent-ring);
   animation: compress-pulse 0.9s ease-in-out infinite alternate;
+}
+
+.compress-error {
+  top: 10px;
+  bottom: auto;
+  color: var(--fail-ink);
+  background: var(--fail-bg);
 }
 
 @keyframes compress-pulse {
@@ -2319,6 +2368,9 @@ body.wheel-body {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
+  /* Held open for two lines at the facts size, so the numbers arriving after an encode
+   * never resize the band and shift the controls below. */
+  min-height: 3.2em;
   font-size: var(--t-2xs);
   color: var(--ink-2);
 }
@@ -2347,8 +2399,12 @@ body.wheel-body {
 }
 
 .compress-target-miss {
-  margin: 4px 0 0;
+  /* The note only exists for some targets; its line is held either way so gaining or
+   * losing it never moves the fields under the preview. */
+  margin: 0;
+  min-height: 1.5em;
   font-size: var(--t-2xs);
+  line-height: 1.5;
   color: var(--warn-ink);
 }
 
