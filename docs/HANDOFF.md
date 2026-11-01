@@ -14,13 +14,13 @@ regression, 71–82 the image-tools feedback round, 83–101 the interaction, vi
 | | |
 |---|---|
 | Branch | `master` |
-| Last code commit | `3e8bbc8` — "the image tools match their own previews" (Round 4) |
-| Previous code commit | `2e8bd5c` — "the docs for Round 3" |
+| Last code commit | `1f25fb7` — "tools: previews, playback and outputs follow the user" (Rounds 5–8) |
+| Previous code commit | `3e8bbc8` — "the image tools match their own previews" (Round 4) |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
 | Proof | `artifacts/round8/ui-full` (layout), `artifacts/round8/app-full` (real window), `artifacts/round8/targeted` (tool runs); older: `artifacts/round7/*`, `artifacts/round6/*`, `artifacts/round5/*`, `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
 
-Nothing is pushed; CI runs on push to `master` and PRs, and merge commits carry
-`[skip ci]`.
+Pushed to `origin/master`; CI runs on push and PRs, and this session's commits carry
+`[skip ci]` (the local preflight + full `ui-shots`/`app-e2e` runs are the proof above).
 
 First three commands, in this order:
 
@@ -74,7 +74,7 @@ A full `./scripts/app-e2e.py` takes ~16 minutes and is the acceptance run.
 | `savepoint/pre-alignment-2026-10-31` | the product before the alignment session; the revert point |
 | `work/alignment-foundation` | dialog shell, field grammar, field kinds, dialog commands, harness foundation (merged) |
 | `work/images-tools`, `work/video-audio-tools` | the Images and Video/Audio phases (merged) |
-| `master` | the merged product plus the first bug round |
+| `master` | the merged product, rounds 5–8 (interaction, video, audio) |
 
 ## Where things stand
 
