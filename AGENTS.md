@@ -23,6 +23,13 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - A tool dialog is **one sheet**: head (drag handle, close at the top right), optional
   preview band, scrolling settings, footer. The preview is pinned *outside* the scroller;
   a control row is as tall as its content.
+- A transient preview status is an **overlay** over the picture, never a paragraph in the
+  band's flow: inserting a line moves every field. Reserve the facts row and sample the
+  fields' top edge while rendering (`ui-shots.py` fails on a >2 px move).
+- One edit travels as **one representation**. A crop with a placed box sends `x/y/w/h`
+  and no `aspect`; the ratio is only for a job built without the editor.
+- Collage hit areas come from the backend `collage_layout`; never re-derive the grid in
+  the UI. Per-picture transforms are keyed by source index.
 - **Field grammar:** the label sits **above** a full-width control. Do not use
   `align-self: start` on `.field` inside the flex-column `.modal-fields` — the flex cross
   axis is horizontal, so it shrink-wraps the row (a 199 px select beside a 552 px input).
@@ -69,6 +76,10 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - Bound intermediates: crop the source, then scale to the canvas; never upscale to
   `zoom × canvas`. Compose at depth 8.
 - Masks apply to the layer the control names (rounding is the photo's, not the canvas's).
+- A tonal slider's direction is measured on a ramp at +N/−N (highlights, whites, blacks,
+  shadows, hue range, dehaze magnitude). A sign is not implied by the label.
+- A composite inherits the colour space of its canvas: a grayscale backdrop needs an
+  explicit `-colorspace sRGB` before the photo/shadow composites.
 
 ## Dialogs
 
@@ -80,8 +91,11 @@ the failures that produced each rule, is `docs/LESSONS.md`.
   the shared file.
 - `./scripts/ui-shots.py` measures the contract (sheet margins and width, title against
   the backend table, primary label, row alignment, **overlaps between controls**, the
-  crop ratio probes) and `./scripts/app-e2e.py --only dialogs-images` re-measures it in
-  the real window, including a drag of the head (`dialog-moves`).
+  crop ratio probes, preview-band stability, annotate drawing/erasing and collage cell
+  selection) and `./scripts/app-e2e.py --only dialogs-images` re-measures it in the real
+  window, including a drag of the head (`dialog-moves`). The real-image scenarios add
+  crop-placement RMSE, annotate pixels, a background blur slider drag and the collage
+  preview/hit areas.
 - The primary button is named by the tool (`Save Organized PDF`), never "Run". Use
   `press_primary()` in the harness, not a literal label.
 
@@ -94,6 +108,12 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - The harness's `set_entry` / `press_primary` re-locate the node and retry: WebKit
   rebuilds the accessibility tree when a preview inserts media, and a click that used
   pre-shift extents lands elsewhere.
+- "Visible" means inside the **sheet**, not the window: a control below the dialog's
+  scroller is clipped, and clicking its coordinates hits the backdrop and closes the
+  dialog. Scroll with the wheel, re-locate, and guard a null extent.
+- A toolbar button with `aria-pressed` is a `toggle button` in AT-SPI; accept both roles.
+- A preview change is not proven by a screenshot: sample the preview band and the fields'
+  top edge through the render, and validate the published file's pixels.
 - An engine change is verified by sampling the output (dimensions, corner pixels, alpha).
 - Reproduce the user's exact parameters and files before concluding anything about a bug.
 - A test that only runs through the mock proves the mock.

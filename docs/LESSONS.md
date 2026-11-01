@@ -9,8 +9,9 @@ commands, and the exact measurements that proved each fix. Each item states the 
 that exposed it, and the rule that prevents it. Read this before touching the UI, the
 engines, or the build.
 
-Lessons 1–41 came from the first build-out, 42–56 from the design-alignment session, and
-57–63 from its first round of real use. When a rule sounds abstract, the scenario named
+Lessons 1–41 came from the first build-out, 42–56 from the design-alignment session,
+57–63 from its first round of real use, 64–70 from the design/media regression, and
+71–82 from the image-tools feedback round. When a rule sounds abstract, the scenario named
 under **Evidence** is its executable version in `scripts/app-e2e.py` or `scripts/ui-shots.py`.
 
 ## 1. A rebuilt binary is not a new window
@@ -1066,7 +1067,8 @@ the tools are Select (move + four corner handles), Eraser (click removes the top
 shape), Text (inline entry at the click point), and Number (a click places an
 auto-numbered badge). Delete/Backspace remove the selected object; Escape clears the
 selection instead of closing the dialog when one exists. The overlay is drawn in the
-same pixel space the engine uses.
+same pixel space the engine uses. The canvas loads the **shown file's** path, not a
+modal-level preview value that may be absent in the mock.
 
 **Evidence.** `ui-shots.py` drives real pointer actions: a drag creates 1 shape, Number
 adds a badge (3 SVG elements), Eraser returns to 1. `tool-image-annotate` finds the
@@ -1114,7 +1116,9 @@ different picture from the one that gets cropped.
 the preview's hit regions from those rectangles. Key per-image `{index, zoom, x, y}` by
 the **source** index, not the ordered position, so reordering does not move a transform
 to another file. Apply pan as a crop window inside the cover-resized picture; scale the
-pointer delta by the rendered cell.
+pointer delta by the rendered cell. An `auto` canvas ratio is the **auto-oriented**
+source ratio (a rotated phone photo must not get a landscape canvas around a portrait
+picture).
 
 **Evidence.** `collage_cell_pan_and_zoom_move_the_picture`: one `1024×1024` cell, zoom 2,
 pixel `(256,512)` is red at pan 0 and blue at x=100. `tool-image-collage` still matches
@@ -1163,9 +1167,11 @@ to the engine would have left a dead control.
 
 **Rule.** Parse the treatment once (`style`, `colour`, `strength`, boxes) into settings
 shared by the job and the preview, and render the preview through the same function at
-its own pixel size. The preview is an engine artifact cached by the full request;
-the dialog toggles between it and the plain thumbnail. Normalised boxes need no
-rescaling when the surface is a thumbnail.
+its own pixel size. The image sigma is
+`max(2, min(bw,bh) * (0.06 + 0.30 * strength/100))`; video's `boxblur` radius is the same
+expression with `0.05` and a `2..64` clamp. The preview is an engine artifact cached by
+the full request; the dialog toggles between it and the plain thumbnail. Normalised boxes
+need no rescaling when the surface is a thumbnail.
 
 **Evidence.** `redaction_blur_strength_changes_the_result` measures interior variance
 `0.304 → 0.087 (strength 10) → 0.019 (90)`; `redaction_preview_uses_the_same_treatment`
@@ -1181,13 +1187,17 @@ dialog. Separately, the annotation toolbar's `aria-pressed` buttons are `toggle 
 in AT-SPI; `press_button` looked only for `button` and skipped every tool.
 
 **Rule.** Scroll a control into the **sheet's** viewport before clicking it, re-locate
-it afterwards (the wheel rebuilds the tree), and give role `toggle button` the same
-weight as `button` in a toolbar. A skip must name the role it looked for.
+it afterwards (the wheel rebuilds the tree), and guard every extent lookup: a sheet that
+has not laid out yet returns no box, and unpacking it crashed the persistence scenario
+after the rest of the run was green. Give role `toggle button` the same weight as
+`button` in a toolbar. A skip must name the role it looked for.
 
 **Evidence.** `tool-image-background` image mode initially failed at `Background blur`
 because the click hit the backdrop; with sheet scrolling and a re-located node the
 scenario passes. `tool-image-annotate` initially skipped with "no Rectangle tool"; after
-the role fix it draws and saves a rectangle and a number.
+the role fix it draws and saves a rectangle and a number. The first full Round 4 run
+failed `persistence` with `TypeError: 'NoneType' object is not iterable` at the sheet
+extent; the guarded rerun is 65/0/6.
 
 ## 81. A stand-in preview must be the source, and the facts must wait
 
@@ -1203,3 +1213,18 @@ not grow when they arrive.
 **Evidence.** `ui-shots.py` samples the Compress dialog through an encode: the status is
 seen and `fields_top` stays 546, `preview_height` 364; the frame always shows a loaded
 picture.
+
+## 82. A composite inherits the colour space of its canvas
+
+**Trap.** `add_background` built the canvas from the chosen background picture and then
+composited the photo on it. A grayscale background picture put the whole operation in
+Gray; the colour photo came out white (`255/255/255` where red was expected), and the
+unit test that sampled the photo centre caught it.
+
+**Rule.** A canvas is a colour surface regardless of the picture used as its fill.
+Normalise it to sRGB after the fill (and before the photo/shadow composites), and assert
+the photo's own colour in the composite — not just that a file was written.
+
+**Evidence.** `background_blur_changes_only_the_background_layer` uses a black-and-white
+checkerboard backdrop and requires the photo centre to stay `255/0/0`; the real-window
+`tool-image-background` run samples `(237,140,76)` in the file.

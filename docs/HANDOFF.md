@@ -7,14 +7,14 @@ the source. 307 conversion options, 31 backend tools, everything offline.
 This file is the state of the product and the protocol for changing it. Read it first,
 then `AGENTS.md` (rules) and `docs/LESSONS.md` (the failures that produced the rules;
 42–56 are the alignment session, 57–63 the first bug round, 64–70 the design/media
-regression, 71–81 the image-tools feedback round).
+regression, 71–82 the image-tools feedback round).
 
 ## Start here (new session)
 
 | | |
 |---|---|
 | Branch | `master` |
-| Last code commit | `HEAD` — "the image tools match their own previews" (Round 4) |
+| Last code commit | `3e8bbc8` — "the image tools match their own previews" (Round 4) |
 | Previous code commit | `2e8bd5c` — "the docs for Round 3" |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
 | Proof | `artifacts/round4/ui-full` (layout), `artifacts/round4/app-full` (real window), `artifacts/round4/app-*` (targeted), `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
@@ -100,11 +100,16 @@ DOCX reflow analyser.
 the edge stays there). Annotate is an object editor (select/move/resize, eraser, inline
 text with size/family, numbered badges centred by MVG gravity). Collage has independent
 rows/columns, percentage spacing/radius, an output-size select, and per-picture pan/zoom
-with one backend layout. Add background's image preview is an `<img>` placed by the
-engine's own crop formulas; its blur is display-scaled and pointer-transparent. Edit
+with one backend layout (`dialog::collage_layout`). Add background's image preview is
+an `<img>` placed by the engine's own crop formulas; its blur is display-scaled and
+pointer-transparent (and the composite is normalised to sRGB so a grayscale backdrop
+cannot turn a colour photo white). Edit
 photo's tonal directions are pinned by a ramp test; its preview status and the compress
 stand-in never move the fields. Redact has a blur-strength control and a real
-with/without preview toggle.
+with/without preview toggle (`dialog::redact_preview`, cached by the full request).
+Both new commands are registered in `app.rs`; the field-table changes (collage
+`rows`/`spacing_pct`/`radius_pct`, width select; redact `strength` in both categories)
+went through `generated_fields`, so `ui/src/fields.generated.json` is current.
 
 **Engines.** Every external command goes through `proc.rs` (argv, cache limits, watchdog,
 bounded stderr). Metadata writes/reads one vocabulary per format (`editable_tags`);
@@ -114,8 +119,8 @@ PNG text chunks are read (`comment` → `Title`).
 
 | Layer | What it proves | Command |
 |---|---|---|
-| `ui-shots.py` | layout, dialog contract, overlaps, crop ratios, against the mock | `./scripts/ui-shots.py --out DIR` |
-| `app-e2e.py` | the real window via AT-SPI: real jobs, artifacts, design contract | `./scripts/app-e2e.py --out DIR` |
+| `ui-shots.py` | layout, dialog contract, overlaps, crop ratios, preview-band stability, annotate/collage interaction, against the mock | `./scripts/ui-shots.py --out DIR` |
+| `app-e2e.py` | the real window via AT-SPI: real jobs, artifacts, design contract, crop placement RMSE, annotate drawing, background blur drag, collage layout/preview | `./scripts/app-e2e.py --out DIR` |
 | `quality-audit.py` | every reachable conversion through the CLI, each artifact validated | `./scripts/quality-audit.py --out DIR` |
 | `docx-quality.py` | one DOCX against the structure contract and a reference | `./scripts/docx-quality.py --source PDF --docx OUT --reference REF` |
 | `perf-audit.py` | wall time, peak RSS, temp peak, cache bytes, installed size against ceilings | `./scripts/perf-audit.py --baseline artifacts/perf/baseline.json` |
@@ -175,7 +180,7 @@ slides→PDF conversion, unchanged from the previous handoff.
 
 ## Round 4 — the image-tools feedback round
 
-Cause → fix → measurement; lessons 71–81. The report was deliberately kept to Images:
+Cause → fix → measurement; lessons 71–82. The report was deliberately kept to Images:
 each fix is at a seam the other categories share (representations, slider direction,
 preview status, preview geometry, harness visibility).
 
@@ -184,7 +189,7 @@ preview status, preview geometry, harness visibility).
 | "crop ignores the selection; presets crop centred" | `submitModal` dropped `boxes` for a locked ratio and sent `aspect`; the engine's aspect path centres | a placed box always travels as `x/y/w/h`; `aspect` is only for a job built without the editor | `tool-image-crop`: 9:16 dragged left → `1688×3000`, RMSE 0.00152 vs the dragged reference, 0.23977 vs centred |
 | "Annotate is incomplete: delete does nothing, numbers don't work" | no eraser, numbers needed a drag a click never made, text needed pre-typing, stroke/text sizes were guessed in the overlay | Select with four handles, Eraser, inline text + size/family, click-to-place numbered badges; both sides use source-pixel sizes | `ui-shots.py`: drag → 1 shape, Number → 3 SVG nodes, Eraser → 1; `tool-image-annotate` finds the rectangle and badge in the file |
 | "Collage styles don't make sense; no rows; radius broken; limited to 64; can't move images" | pixel spacing/radius capped at 64, no row count, columns read by two styles, a free-text width, no per-picture transform | percentage spacing/radius, independent rows/columns, output-size select, per-picture `{index,zoom,x,y}`, one backend layout for hit areas | 3×2 = six `1024×682` cells; 2×3 = six `682×1024`; 100 % radius shows background at the corner; zoom 2 + pan 100 moves the sample |
-| "Add background blur breaks the cursor and the preview" | the preview placed the picture with CSS cover/background-position, then added a full-size CSS blur layer over the drag surface | background is an `<img>` placed by the engine's crop formulas; blur is display-scaled, capped, pointer-transparent; one pointer-captured drag | `background_blur_changes_only_the_background_layer`: background-only delta up to 128, photo centre `255/0/0`; `tool-image-background` image+blur keeps the photo centre `(237,140,76)` |
+| "Add background blur breaks the cursor and the preview" | the preview placed the picture with CSS cover/background-position, then added a full-size CSS blur layer over the drag surface; a grayscale backdrop also switched the composite to Gray and turned the colour photo white | background is an `<img>` placed by the engine's crop formulas; blur is display-scaled, capped, pointer-transparent; one pointer-captured drag; normalize the canvas to sRGB before compositing | `background_blur_changes_only_the_background_layer`: background-only delta up to 128, photo centre `255/0/0`; real drag `10→40 px` with Padding unchanged; `tool-image-background` keeps the photo centre `(237,140,76)` |
 | "Highlights/Whites look inverted; Rendering moves the sliders" | four tonal signs were wrong, hue reached ±90°, dehaze ignored its value; the status was a `<p>` in flow | measured directions for every slider; ramp test; status is an absolutely positioned badge | highlights +100: top-20 % 223→243, black 0; whites +100 white 204→255; blacks +100 black 0→51; fields top constant 502, band 369 |
 | "Redact: control the blur level, toggle the preview" | blur sigma was a constant; no redacted preview | `strength` 0–100 in the shared settings, same treatment for job and preview; cached engine preview toggled against the thumbnail | variance 0.304 → 0.087 (10) → 0.019 (90); `tool-image-redact` sees the slider and the toggle |
 | "Compress takes a while to render" | the frame stayed black until the real encode finished | show the source thumbnail immediately, overlay the encoding status; facts still come only from the artifact, row height reserved | `ui-shots.py`: status seen, `fields_top` 546 and band 364 constant, frame always has a picture |
@@ -200,9 +205,12 @@ preview status, preview geometry, harness visibility).
 
 The six skips are the five categories with no backend tools and the LibreOffice-dependent
 slides→PDF conversion. `persistence` exposed a harness bug in Round 4 (`ensure_visible`
-unpacked a null sheet extent); the fixed harness passes the full run.
+unpacked a null sheet extent); the fixed harness passes the full run. The background
+sRGB normalisation is in lesson 82; the image-engine tests are joined by the ramp test
+(lesson 72), the collage layout tests (lesson 76) and the redaction-strength preview test
+(lesson 79).
 
-## Numbers from the final run
+## Numbers from the previous final run (Round 3)
 
 | Layer | Result |
 |---|---|
