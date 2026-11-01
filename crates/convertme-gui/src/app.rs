@@ -116,6 +116,7 @@ pub fn run() -> i32 {
             dialog::audio_preview,
             dialog::bleep_preview,
             dialog::play_preview,
+            dialog::stop_preview,
             dialog::photo_preview,
             dialog::redact_preview,
             dialog::collage_preview,
@@ -232,6 +233,7 @@ pub fn build_state(initial_paths: Vec<PathBuf>) -> AppState {
         progress: Mutex::new(Default::default()),
         previews: Mutex::new(Default::default()),
         preview_guard: convertme_engines::preview::PreviewGuard::default(),
+        audio: crate::audio::AudioSink::default(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         drag: Mutex::new(None),
         events: Mutex::new(Some(rx)),
@@ -322,6 +324,11 @@ fn start_show_main_hook(app: &tauri::AppHandle) {
                 // at all — and the next launch would find a lock owner with nothing to
                 // show, which reads as "the app did not start".
                 api.prevent_close();
+                // A preview player is a child process; exiting without this leaves
+                // the sound running with no window to stop it.
+                if let Some(state) = handle.try_state::<AppState>() {
+                    state.audio.stop();
+                }
                 let for_exit = handle.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(50));

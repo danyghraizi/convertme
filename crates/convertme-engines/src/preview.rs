@@ -48,10 +48,20 @@ pub struct Waveform {
     /// Per-bucket min/max sample, in -1.0..1.0.
     pub peaks: Vec<(f32, f32)>,
     pub duration_ms: u64,
-    /// True when the clip is longer than the 10-minute cap and only its head is
+    /// True when the recording is longer than the waveform cap and only its head is
     /// represented.
     pub truncated: bool,
 }
+
+/// Waveforms are drawn at 1 kHz: plenty for 2000 overview buckets, and a three-hour
+/// recording is 10.8 MB of raw samples instead of 172 MB at 8 kHz.
+const WAVEFORM_RATE: u32 = 1_000;
+/// Six hours is "a few hours" with headroom; past that the head is drawn and the
+/// dialog says so. The samples are still bounded, not the user's file.
+const WAVEFORM_SECONDS: u64 = 6 * 3600;
+/// The overview never needs more than the dialog's width, and the cache stores every
+/// bucket as 4 bytes.
+const WAVEFORM_BUCKETS: usize = 2000;
 
 /// Pages rendered for the organizer are capped here: past this the grid draws a
 /// numbered card, so a 900-page document still opens immediately.
@@ -413,9 +423,9 @@ impl PreviewCache {
         Ok(produced)
     }
 
-    /// Waveform peaks, 8 kHz mono, capped at 10 minutes.
+    /// Waveform peaks, 1 kHz mono, covering up to six hours of the recording.
     pub fn waveform(&self, source: &Path, ctx: &JobCtx) -> Result<Waveform, JobError> {
-        self.waveform_filtered(source, "8k", None, ctx)
+        self.waveform_filtered(source, "1k", None, ctx)
     }
 
     /// The two source channels, one waveform each, for the Channels dialog: the
@@ -428,8 +438,8 @@ impl PreviewCache {
     ) -> Result<(Waveform, Waveform), JobError> {
         // A mono file has one channel; the second row then shows the same signal,
         // which is what the engine does when it duplicates it.
-        let left = self.waveform_filtered(source, "8k-c0", Some("pan=mono|c0=c0"), ctx)?;
-        let right = match self.waveform_filtered(source, "8k-c1", Some("pan=mono|c0=c1"), ctx) {
+        let left = self.waveform_filtered(source, "1k-c0", Some("pan=mono|c0=c0"), ctx)?;
+        let right = match self.waveform_filtered(source, "1k-c1", Some("pan=mono|c0=c1"), ctx) {
             Ok(right) => right,
             Err(_) => left.clone(),
         };
@@ -464,11 +474,11 @@ impl PreviewCache {
         }
         proc::run(
             cmd.arg("-t")
-                .arg("600")
+                .arg(WAVEFORM_SECONDS.to_string())
                 .arg("-ac")
                 .arg("1")
                 .arg("-ar")
-                .arg("8000")
+                .arg(WAVEFORM_RATE.to_string())
                 .arg("-f")
                 .arg("s16le")
                 .arg(&raw)
@@ -479,7 +489,11 @@ impl PreviewCache {
 
         let bytes = std::fs::read(&raw).map_err(|e| JobError::io("reading the waveform", &e))?;
         let _ = std::fs::remove_file(&raw);
-        let waveform = build_waveform(&bytes, 8000, true);
+        // A clip that filled the cap is longer than what is drawn; a short one is
+        // complete and must not claim otherwise.
+        let cap_samples = (WAVEFORM_SECONDS * WAVEFORM_RATE as u64) as usize;
+        let truncated = bytes.len() / 2 >= cap_samples.saturating_sub(WAVEFORM_RATE as usize);
+        let waveform = build_waveform(&bytes, WAVEFORM_RATE, truncated);
         if let Ok(encoded) = encode_waveform(&waveform) {
             let _ = std::fs::write(&cache, encoded);
             self.enforce_cap();
@@ -790,7 +804,7 @@ fn build_waveform(bytes: &[u8], rate: u32, truncated: bool) -> Waveform {
         .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let buckets = 400usize;
+    let buckets = WAVEFORM_BUCKETS;
     let per_bucket = (samples.len() / buckets).max(1);
     let mut peaks = Vec::with_capacity(buckets);
     for chunk in samples.chunks(per_bucket).take(buckets) {
@@ -811,9 +825,12 @@ fn build_waveform(bytes: &[u8], rate: u32, truncated: bool) -> Waveform {
 
 /// Compact encoding: 3 f32 per bucket is wasteful, so store i16 pairs.
 fn encode_waveform(w: &Waveform) -> Result<Vec<u8>, JobError> {
-    let mut out = Vec::with_capacity(16 + w.peaks.len() * 4);
+    let mut out = Vec::with_capacity(13 + w.peaks.len() * 4);
     out.extend_from_slice(&w.duration_ms.to_le_bytes());
     out.extend_from_slice(&(w.peaks.len() as u32).to_le_bytes());
+    // The truncated flag belongs in the cache: a 6-hour file read back used to claim
+    // "first 10 minutes" on every waveform, even a 14-second one.
+    out.push(u8::from(w.truncated));
     for (lo, hi) in &w.peaks {
         out.extend_from_slice(&((lo * 32768.0) as i16).to_le_bytes());
         out.extend_from_slice(&((hi * 32768.0) as i16).to_le_bytes());
@@ -822,17 +839,18 @@ fn encode_waveform(w: &Waveform) -> Result<Vec<u8>, JobError> {
 }
 
 fn decode_waveform(bytes: &[u8]) -> Option<Waveform> {
-    if bytes.len() < 12 {
+    if bytes.len() < 13 {
         return None;
     }
     let duration_ms = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
     let count = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
-    if bytes.len() < 12 + count * 4 {
+    let truncated = bytes[12] & 1 == 1;
+    if bytes.len() < 13 + count * 4 {
         return None;
     }
     let mut peaks = Vec::with_capacity(count);
     for i in 0..count {
-        let off = 12 + i * 4;
+        let off = 13 + i * 4;
         let lo = i16::from_le_bytes([bytes[off], bytes[off + 1]]);
         let hi = i16::from_le_bytes([bytes[off + 2], bytes[off + 3]]);
         peaks.push((lo as f32 / 32768.0, hi as f32 / 32768.0));
@@ -840,7 +858,7 @@ fn decode_waveform(bytes: &[u8]) -> Option<Waveform> {
     Some(Waveform {
         peaks,
         duration_ms,
-        truncated: true,
+        truncated,
     })
 }
 
@@ -874,11 +892,18 @@ mod tests {
         }
         let w = build_waveform(&bytes, 8000, true);
         assert_eq!(w.duration_ms, 1000);
-        assert_eq!(w.peaks.len(), 400);
+        assert_eq!(w.peaks.len(), WAVEFORM_BUCKETS);
         let encoded = encode_waveform(&w).unwrap();
         let back = decode_waveform(&encoded).unwrap();
         assert_eq!(back.duration_ms, 1000);
+        assert!(back.truncated, "the flag must survive the cache");
         assert!((back.peaks[0].1 - w.peaks[0].1).abs() < 0.01);
+        let complete = build_waveform(&bytes, 8000, false);
+        let back = decode_waveform(&encode_waveform(&complete).unwrap()).unwrap();
+        assert!(
+            !back.truncated,
+            "a complete waveform must not claim truncation"
+        );
     }
 
     #[test]

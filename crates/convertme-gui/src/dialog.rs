@@ -33,6 +33,8 @@ pub struct MediaInfoOut {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
+    pub fps: f64,
+    pub channels: u32,
     pub has_audio: bool,
     pub has_video: bool,
     pub format: String,
@@ -54,6 +56,8 @@ pub async fn media_info(state: State<'_, AppState>, path: String) -> Result<Medi
         duration: facts.duration,
         width: facts.width,
         height: facts.height,
+        fps: facts.fps,
+        channels: facts.audio_channels,
         has_audio: facts.has_audio,
         has_video: facts.has_video,
         format: facts.format,
@@ -396,58 +400,35 @@ pub async fn audio_preview(
     .map_err(|e| e.to_string())?
 }
 
-/// Play an audio preview through the machine's audio sink.
+/// Start an audio preview through the machine's controllable sink.
 ///
 /// The window never decodes audio itself: WebKitGTK's media stack is what killed the
-/// process on Play, and a machine without an audio sink wedged the web process even
-/// when the element was created off-DOM. A headless player (`ffplay -nodisp`, `mpv
-/// --no-video`, `paplay`, `pw-play` or `aplay`) keeps the sound in this app's
-/// lifetime without opening a second application. The desktop opener is only a last
-/// resort on a platform with none of them.
+/// process on Play. A headless player (`ffplay -nodisp`, `mpv --no-video`, then the
+/// simple sinks) is started and *returned from immediately*; one sink is shared, so a
+/// second Play stops the first, and `stop_preview` pauses it (the dialog restarts at
+/// the current time). Closing the dialog calls `stop_preview`, so no sound outlives
+/// the window that started it.
 #[tauri::command]
-pub async fn play_preview(path: String) -> Result<(), String> {
+pub async fn play_preview(
+    state: State<'_, AppState>,
+    path: String,
+    start: Option<f64>,
+) -> Result<(), String> {
     let source = PathBuf::from(path);
     if !source.is_file() {
         return Err("the preview file is gone".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        use convertme_engines::proc::{Budget, Cmd};
-        let player = ["ffplay", "mpv", "paplay", "pw-play", "aplay"]
-            .iter()
-            .find_map(|name| convertme_engines::probe::which(name).map(|path| (*name, path)));
-        let ctx = JobCtx::new();
-        let Some((name, program)) = player else {
-            #[cfg(unix)]
-            {
-                let cmd = Cmd::new("xdg-open").arg(&source).budget(Budget::Short);
-                return convertme_engines::proc::run(cmd, &ctx)
-                    .map(|_| ())
-                    .map_err(|e| format!("could not open the preview: {}", e.message));
-            }
-            #[cfg(not(unix))]
-            {
-                return Err(
-                    "no audio player is installed (ffplay, mpv, paplay, pw-play or aplay)"
-                        .to_string(),
-                );
-            }
-        };
-        let cmd = match name {
-            "ffplay" => Cmd::new(program)
-                .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
-                .arg(&source),
-            "mpv" => Cmd::new(program)
-                .args(["--no-video", "--really-quiet", "--no-terminal"])
-                .arg(&source),
-            _ => Cmd::new(program).arg(&source),
-        }
-        .budget(Budget::Long);
-        convertme_engines::proc::run(cmd, &ctx)
-            .map(|_| ())
-            .map_err(|e| format!("could not play the preview: {}", e.message))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let sink = state.audio.clone();
+    let start = start.unwrap_or(0.0);
+    tauri::async_runtime::spawn_blocking(move || sink.play(&source, start))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Stop the shared sink; the next Play starts where the dialog's clock says.
+#[tauri::command]
+pub fn stop_preview(state: State<'_, AppState>) {
+    state.audio.stop();
 }
 
 /// The bleeped audio, so the dialog can offer "Original" and "With Bleeps".
@@ -582,7 +563,10 @@ pub async fn collage_preview(
         .artifact_key(
             &source,
             "collage",
-            &preview_key_arg("collage", &params, &identity),
+            // `512thumb`: the preview composes from cached 512 px thumbnails, not the
+            // full sources. It is still the same composer and formulas, but an artifact
+            // from the full-source path must not be served for this key.
+            &preview_key_arg("collage", &params, &format!("{identity}|512thumb")),
             "png",
         )
         .ok_or_else(|| "cannot stat the source for a preview".to_string())?;
@@ -590,8 +574,29 @@ pub async fn collage_preview(
         return Ok(key.to_string_lossy().into_owned());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        convertme_engines::image::collage_preview(&tools, &cache, &inputs, &params, &key, 512)
-            .map_err(|e| e.to_string())?;
+        // A 512 px composition needs at most 512 px of each source. Decoding a 5000 px
+        // PNG just to resize it to 256 px was most of the preview's cost, and got worse
+        // with every picture. The thumbnail cache is already populated by the file
+        // cards, so a repeated drag costs no extra decode. The original is the fallback
+        // when a thumbnail cannot be produced.
+        let ctx = JobCtx::new();
+        let preview_inputs: Vec<PathBuf> = inputs
+            .iter()
+            .map(|path| {
+                cache
+                    .thumbnail(path, 512, &ctx)
+                    .unwrap_or_else(|_| path.clone())
+            })
+            .collect();
+        convertme_engines::image::collage_preview(
+            &tools,
+            &cache,
+            &preview_inputs,
+            &params,
+            &key,
+            512,
+        )
+        .map_err(|e| e.to_string())?;
         cache.enforce_cap();
         Ok::<String, String>(key.to_string_lossy().into_owned())
     })

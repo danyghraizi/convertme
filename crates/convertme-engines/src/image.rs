@@ -2031,10 +2031,12 @@ fn shape_from_object(
         Some(_) => return Err(unsupported("shape `font` must be a string")),
     };
     let size = optional("size");
-    // A stroke wider than 64 px is a fill, not a stroke; a caption above 200 px cannot
-    // be placed inside the picture. Number badges derive their size from their box.
+    // A stroke wider than 64 px is a fill, not a stroke. A caption is free-form: the
+    // dialog offers sizes up to 2000 so a title can span a large photo. Number badges
+    // derive their size from their box.
     let size_max = match kind {
-        ShapeKind::Text | ShapeKind::Number => 200.0,
+        ShapeKind::Text => 2000.0,
+        ShapeKind::Number => 200.0,
         _ => 64.0,
     };
     if let Some(size) = size
@@ -2150,13 +2152,23 @@ fn draw_command(
         }
         ShapeKind::Arrow => {
             let angle = (y2 - y1).atan2(x2 - x1);
-            let head = (0.03 * width.min(height) as f32).clamp(8.0, 48.0);
+            // The head scales with the stroke: a fixed 48 px head is shorter than the
+            // stroke itself at wide settings, and butt-capped lines meeting at a point
+            // leave wedge-shaped gaps there. Round caps and joins close the tip at any
+            // width. Bounded by the picture and by the arrow's own length.
+            let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
+            let ceiling = (width.min(height) as f32 * 0.25).max(1.0);
+            let head = (stroke * 3.5)
+                .min(ceiling)
+                .max(1.0)
+                .min((length * 0.8).max(1.0));
             let ax = x2 - head * (angle + 0.45).cos();
             let ay = y2 - head * (angle + 0.45).sin();
             let bx = x2 - head * (angle - 0.45).cos();
             let by = y2 - head * (angle - 0.45).sin();
             format!(
                 "fill none stroke {colour} stroke-width {stroke:.1} \
+                 stroke-linecap round stroke-linejoin round \
                  line {x1:.2},{y1:.2} {x2:.2},{y2:.2} \
                  line {x2:.2},{y2:.2} {ax:.2},{ay:.2} \
                  line {x2:.2},{y2:.2} {bx:.2},{by:.2}"
@@ -2207,7 +2219,9 @@ fn draw_command(
             )
         }
         ShapeKind::Text => {
-            let size = shape.size.unwrap_or(32.0).clamp(1.0, 200.0);
+            // A caption is not a badge: it may be larger than the picture's short side,
+            // and the dialog lets the user type any size up to this bound.
+            let size = shape.size.unwrap_or(32.0).clamp(1.0, 2000.0);
             // `y` is the top of the line box; the glyph baseline sits 0.8 em below it.
             let ty = y1 + 0.8 * size;
             format!(
@@ -2426,10 +2440,23 @@ fn add_background(
         let (bg_w, bg_h) = image_size(&magick, &background, cx)?;
         let target = f64::from(canvas_w) / f64::from(canvas_h);
         let src_aspect = f64::from(bg_w) / f64::from(bg_h);
-        let (base_w, base_h) = if src_aspect > target {
-            (f64::from(bg_h) * target, f64::from(bg_h))
+        // The cover window is centred in the picture: a 4:3 picture on a square canvas
+        // throws away the left and right edges, not just the right one. `bg_x`/`bg_y`
+        // slide inside that window, so the crop starts at the window's own origin.
+        let (base_w, base_h, base_x, base_y) = if src_aspect > target {
+            (
+                f64::from(bg_h) * target,
+                f64::from(bg_h),
+                (f64::from(bg_w) - f64::from(bg_h) * target) / 2.0,
+                0.0,
+            )
         } else {
-            (f64::from(bg_w), f64::from(bg_w) / target)
+            (
+                f64::from(bg_w),
+                f64::from(bg_w) / target,
+                0.0,
+                (f64::from(bg_h) - f64::from(bg_w) / target) / 2.0,
+            )
         };
         let vis_w = (base_w / zoom).round().clamp(1.0, f64::from(bg_w));
         let vis_h = (base_h / zoom).round().clamp(1.0, f64::from(bg_h));
@@ -2439,8 +2466,10 @@ fn add_background(
             (number(params, "bg_x")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * free_x / 2.0;
         let shift_y =
             (number(params, "bg_y")?.unwrap_or(0.0).clamp(-100.0, 100.0) / 100.0) * free_y / 2.0;
-        let crop_x = (free_x / 2.0 - shift_x).round().clamp(0.0, free_x) as u32;
-        let crop_y = (free_y / 2.0 - shift_y).round().clamp(0.0, free_y) as u32;
+        let crop_x =
+            base_x.round() as u32 + (free_x / 2.0 - shift_x).round().clamp(0.0, free_x) as u32;
+        let crop_y =
+            base_y.round() as u32 + (free_y / 2.0 - shift_y).round().clamp(0.0, free_y) as u32;
         args.push(os("("));
         args.push(os(&background));
         args.push(os("-crop"));
@@ -3502,6 +3531,71 @@ mod tests {
         }
     }
 
+    /// The background picture is cropped from the centre of its cover window: the crop
+    /// starts at `(base_x, base_y)` and `bg_x`/`bg_y` slide inside that window. Cropping
+    /// from source (0, 0) instead showed the wrong part of a picture whose aspect differs
+    /// from the canvas, so the dialog preview and the saved file disagreed.
+    #[test]
+    fn add_background_image_crop_starts_at_the_cover_window() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "cover-shot.png", "100x100", "green");
+        // Red everywhere except a blue band from x=40 to x=89. On a square canvas this
+        // 200x100 picture's cover window is 100x100 starting at source x=50: blue. The
+        // source origin, which is where the crop used to start, is red.
+        let backdrop = make_image(
+            &f,
+            "cover-backdrop.png",
+            vec![
+                os("-size"),
+                os("200x100"),
+                os("xc:red"),
+                os("-fill"),
+                os("blue"),
+                os("-draw"),
+                os("rectangle 40,0 89,99"),
+            ],
+        );
+        let compose = |zoom: f64, x: f64| {
+            let job = Job::new(
+                input.clone(),
+                Intent::Tool {
+                    tool: ToolId::AddBackground,
+                    params: params(json!({
+                        "image": backdrop.to_string_lossy(),
+                        // 100% of the 100 px shorter side: a 200x200 canvas, so the
+                        // background is visible around the photo. With no padding the
+                        // photo covers the canvas and there is no background pixel left.
+                        "padding_pct": 100,
+                        "aspect": "1:1",
+                        "bg_zoom": zoom,
+                        "bg_x": x,
+                        "bg_y": 0,
+                    })),
+                },
+            );
+            run_engine(&f, &job).expect("compose")[0].clone()
+        };
+        // Cover window at source (50, 0): its first pixel is the blue band.
+        assert_eq!(
+            pixel(&f, &compose(1.0, 0.0), 1, 1),
+            (0, 0, 255),
+            "the cover window must start at source x=50, not at the source origin"
+        );
+        // Zoom 2 leaves 50 px of room inside the window. A fully positive bg_x keeps
+        // the crop at the window's origin (blue); a fully negative one slides it to
+        // source x=100, back into the red field.
+        assert_eq!(
+            pixel(&f, &compose(2.0, 100.0), 1, 1),
+            (0, 0, 255),
+            "bg_x=100 must not move the crop outside the cover window"
+        );
+        assert_eq!(
+            pixel(&f, &compose(2.0, -100.0), 1, 1),
+            (255, 0, 0),
+            "bg_x=-100 must slide the crop to the window's far edge"
+        );
+    }
+
     #[test]
     fn background_blur_changes_only_the_background_layer() {
         let Some(f) = fixture() else { return };
@@ -3931,6 +4025,76 @@ mod tests {
     }
 
     #[test]
+    fn annotate_arrow_uses_round_caps_and_a_large_text_is_allowed() {
+        let arrow = DrawShape {
+            kind: ShapeKind::Arrow,
+            x: 0.1,
+            y: 0.1,
+            w: 0.5,
+            h: 0.5,
+            points: Vec::new(),
+            text: None,
+            color: None,
+            size: Some(40.0),
+            font: None,
+        };
+        let command = draw_command(&arrow, 1000, 800, "#ff0000", &FontTable::default());
+        assert!(
+            command.contains("stroke-linecap round"),
+            "the arrow tip must be closed at wide strokes: {command}"
+        );
+        assert!(command.contains("stroke-linejoin round"));
+        // A 40 px stroke gets a 140 px head, not the old fixed 48 px.
+        let angle = (0.5f32 * 800.0).atan2(0.5 * 1000.0);
+        let head_x = 0.6 * 1000.0 - 140.0 * (angle + 0.45).cos();
+        assert!(
+            command.contains(&format!("{head_x:.2}")),
+            "the head did not scale with the stroke: {command}"
+        );
+
+        let text = DrawShape {
+            kind: ShapeKind::Text,
+            x: 0.1,
+            y: 0.2,
+            w: 0.0,
+            h: 0.0,
+            points: Vec::new(),
+            text: Some("Hi".into()),
+            color: None,
+            size: Some(600.0),
+            font: None,
+        };
+        let command = draw_command(&text, 1000, 800, "#ff0000", &FontTable::default());
+        assert!(
+            command.contains("font-size 600.0"),
+            "a caption above 200 px was clamped: {command}"
+        );
+    }
+
+    #[test]
+    fn annotate_accepts_a_text_above_the_old_cap() {
+        let Some(f) = fixture() else { return };
+        let input = solid(&f, "annotate-large-text.png", "1000x800", "red");
+        let job = Job::new(
+            input,
+            Intent::Tool {
+                tool: ToolId::Annotate,
+                params: params(json!({
+                    "shapes": [
+                        {"kind": "text", "x": 0.1, "y": 0.1, "w": 0.0, "h": 0.0,
+                         "text": "Big", "size": 600}
+                    ]
+                })),
+            },
+        );
+        let artifacts = run_engine(&f, &job).expect("a 600 px caption is valid");
+        assert!(
+            deviation(&f, &artifacts[0]) > 10.0,
+            "the 600 px caption never reached the picture"
+        );
+    }
+
+    #[test]
     fn annotate_rejects_a_shape_outside_the_image() {
         let job = Job::new(
             PathBuf::from("/tmp/image.png"),
@@ -4108,6 +4272,31 @@ mod tests {
             "highlights must leave black at black"
         );
 
+        // The endpoints keep the direction: the round-4 report said the sliders read
+        // inverted only at ±100, so the extremes are measured, not just ±60.
+        for (value, should_rise) in [(100.0, true), (-100.0, false)] {
+            let edge = edit(&ramp, json!({ "highlights": value }));
+            let moved = top(&edge) - neutral_top;
+            if should_rise {
+                assert!(
+                    moved > 6.0,
+                    "highlights +100 must brighten the top 20%: {neutral_top:.1} -> {:.1}",
+                    top(&edge)
+                );
+            } else {
+                assert!(
+                    moved < -0.5,
+                    "highlights -100 must darken the top 20%: {neutral_top:.1} -> {:.1}",
+                    top(&edge)
+                );
+            }
+            assert_eq!(
+                pixel(&f, &edge, 0, 0).0,
+                0,
+                "highlights {value} must leave black at black"
+            );
+        }
+
         // Whites: + clips toward white (brighter), − pulls the white point down.
         let whites_up = edit(&ramp, json!({ "whites": 60 }));
         assert!(
@@ -4120,6 +4309,18 @@ mod tests {
             pixel(&f, &whites_down, 255, 0).0 < 240,
             "whites -60 must dim the white end: white is {}",
             pixel(&f, &whites_down, 255, 0).0
+        );
+        let whites_max = edit(&ramp, json!({ "whites": 100 }));
+        assert!(
+            strip_mean(&f, &whites_max, 0, 256) > neutral + 15.0,
+            "whites +100 must brighten: {neutral:.1} -> {:.1}",
+            strip_mean(&f, &whites_max, 0, 256)
+        );
+        let whites_min = edit(&ramp, json!({ "whites": -100 }));
+        assert!(
+            pixel(&f, &whites_min, 255, 0).0 < 240,
+            "whites -100 must dim the white end: white is {}",
+            pixel(&f, &whites_min, 255, 0).0
         );
 
         // Blacks: + lifts the shadows, − crushes them.

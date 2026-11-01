@@ -254,14 +254,14 @@ CONTROL_EXPECTATIONS = {
         ("slider", "Target loudness"),
         ("slider", "Loudness range"),
         ("slider", "True peak limit"),
-        ("button", "Play Output"),
+        ("button", "Output"),
     ],
     ("Audio", "Channels"): [
         ("toggle button", "Mono"),
         ("toggle button", "Stereo"),
         ("slider", "Left volume"),
         ("slider", "Right volume"),
-        ("button", "Play Output"),
+        ("button", "Output"),
     ],
     ("Audio", "Visualize"): [
         ("toggle button", "Waveform"),
@@ -1361,6 +1361,24 @@ class Session:
             direction = "up" if direction == "down" else "down"
         value_iface = _safe(node, "get_value_iface") if node is not None else None
         current = _safe(value_iface, "get_current_value") if value_iface is not None else None
+        # A preview re-render can swallow a few keys around Home. Nudge the remaining
+        # distance with arrow keys before falling back to the Value interface (which
+        # does not fire the Solid input handler on WebKit).
+        for _attempt in range(3):
+            if current is None or abs(float(current) - value) <= step / 2:
+                break
+            delta = round((value - float(current)) / max(step, 1e-6))
+            if delta == 0:
+                break
+            key = "Right" if delta > 0 else "Left"
+            run(
+                ["xdotool", "key", "--repeat", str(abs(delta)), "--delay", "12", key],
+                timeout=60,
+            )
+            time.sleep(0.2)
+            node = self.slider(label)
+            value_iface = _safe(node, "get_value_iface") if node is not None else None
+            current = _safe(value_iface, "get_current_value") if value_iface is not None else None
         if current is None or abs(float(current) - value) > step / 2:
             if value_iface is not None and _safe(value_iface, "set_current_value", value):
                 time.sleep(0.2)
@@ -1751,17 +1769,42 @@ class Session:
         stable_since = None
         last_rows = []
         next_history_check = 0.0
+        source_stem = (
+            os.path.splitext(os.path.basename(self.inputs[0]))[0] if self.inputs else ""
+        )
         while time.time() < deadline:
             current = self.snapshot()
             new_names = [name for name in current if name not in before_files]
-            new_paths = [os.path.join(self.workdir, name) for name in sorted(new_names)]
+            # Several outputs from one source are published inside a folder named
+            # after it (`clip/part-001.mp4`). The folder is one new entry; its files
+            # are the artifacts the checks inspect.
+            new_paths = []
+            entries = []
+            for name in sorted(new_names):
+                path = os.path.join(self.workdir, name)
+                if os.path.isdir(path) and name == source_stem:
+                    for root, _dirs, files in os.walk(path):
+                        for item in sorted(files):
+                            nested = os.path.join(root, item)
+                            try:
+                                stat = os.stat(nested)
+                            except OSError:
+                                continue
+                            new_paths.append(nested)
+                            entries.append(
+                                (os.path.relpath(nested, self.workdir), stat.st_size, stat.st_mtime_ns)
+                            )
+                else:
+                    size, mtime, _is_dir = current[name]
+                    new_paths.append(path)
+                    entries.append((name, size, mtime))
             if len(new_paths) >= expect:
-                fingerprint = tuple((name, current[name][0], current[name][1]) for name in sorted(new_names))
+                fingerprint = tuple(sorted(entries))
                 if fingerprint == candidate:
                     if stable_since is None:
                         stable_since = time.time()
                     elif time.time() - stable_since >= 0.5:
-                        return new_paths
+                        return sorted(new_paths)
                 else:
                     candidate = fingerprint
                     stable_since = None
@@ -3778,6 +3821,27 @@ def scenario_tool_video_trim(h, rec, checks):
         # dialog has the clip's length.
         s.set_slider_auto("Trim end", 5.0)
         s.set_slider_auto("Trim start", 2.0)
+        # All three sliders must share the clip's axis, or the same time sits at a
+        # different pixel on the end handle and the playhead.
+        axes = {}
+        for label in ("Trim start", "Trim end", "Playhead"):
+            node = s.slider(label)
+            value = _safe(node, "get_value_iface") if node is not None else None
+            axes[label] = (
+                _safe(value, "get_minimum_value") if value is not None else None,
+                _safe(value, "get_maximum_value") if value is not None else None,
+                _safe(value, "get_current_value") if value is not None else None,
+            )
+        rec["measurements"]["trim_axes"] = axes
+        checks.add(
+            "the trim sliders share one time axis",
+            axes["Trim start"][0] == axes["Trim end"][0] == axes["Playhead"][0] == 0.0
+            and axes["Trim start"][1]
+            == axes["Trim end"][1]
+            == axes["Playhead"][1],
+            "same min/max on all three",
+            axes,
+        )
 
     with h.launch("tool-video-trim", [h.fixture("video/clip-landscape-720p-10s.mp4")]) as session:
         rec["workdir"] = session.workdir
@@ -3867,6 +3931,32 @@ def scenario_tool_video_speed(h, rec, checks):
 
 def scenario_tool_video_frames(h, rec, checks):
     def apply(s):
+        # All frames is the engine's fps mode. Enter it once, read the primary action,
+        # then go back to chips so the job stays small.
+        dialog = s.dialog()
+        all_button = s.find(role="button", startswith="All frames", within=dialog)
+        if all_button is not None:
+            label = _safe(all_button, "get_name") or ""
+            s.press(all_button)
+            time.sleep(0.5)
+            primary = s.primary_label()
+            rec["parameters"]["all_frames"] = {"button": label, "primary": primary}
+            checks.add(
+                "All frames states the frame count",
+                label.startswith("All frames (") and label.endswith(")"),
+                "All frames (N)",
+                label,
+            )
+            checks.add(
+                "All frames names every frame on the primary action",
+                primary.startswith("Save ") and primary.endswith("Frames") and primary != "Save 0 Frames",
+                "Save N Frames",
+                primary,
+            )
+            back = s.find(role="button", name="Choose moments instead", within=dialog)
+            if back is not None:
+                s.press(back)
+                time.sleep(0.4)
         # The chips are the value: scrub to a moment, add it, repeat.
         s.set_slider_auto("Playhead", 1.0)
         s.press_in_dialog("Add frame")
@@ -3902,6 +3992,20 @@ def scenario_tool_video_frames(h, rec, checks):
             "different pixels",
             "identical",
         )
+        folder = os.path.join(session.workdir, "clip-landscape-720p-10s")
+        checks.add(
+            "several frames land in a folder named after the source",
+            outputs
+            and all(os.path.dirname(os.path.realpath(p)) == os.path.realpath(folder) for p in outputs),
+            folder,
+            [os.path.dirname(p) for p in outputs],
+        )
+        checks.add(
+            "the frame names drop the repeated source stem",
+            [os.path.basename(p) for p in outputs] == ["frame-001.png", "frame-002.png"],
+            ["frame-001.png", "frame-002.png"],
+            [os.path.basename(p) for p in outputs],
+        )
 
 
 def scenario_tool_video_split(h, rec, checks):
@@ -3919,6 +4023,24 @@ def scenario_tool_video_split(h, rec, checks):
         durations = [round(media_duration(record), 2) for record in records]
         wanted = [2.5, 2.5, 5.0]
         checks.add("two split points write three clips", len(records) == 3, 3, len(records))
+        checks.add(
+            "the parts are grouped in a source-named folder",
+            outputs
+            and all(
+                os.path.dirname(os.path.realpath(p))
+                == os.path.realpath(os.path.join(session.workdir, "clip-landscape-720p-10s"))
+                for p in outputs
+            ),
+            "clip-landscape-720p-10s/part-*.mp4",
+            [p for p in outputs],
+        )
+        checks.add(
+            "the part names drop the repeated source stem",
+            [os.path.basename(p) for p in outputs]
+            == ["part-001.mp4", "part-002.mp4", "part-003.mp4"],
+            ["part-001.mp4", "part-002.mp4", "part-003.mp4"],
+            [os.path.basename(p) for p in outputs],
+        )
         checks.add(
             "clips are 2.5/2.5/5.0 s",
             len(durations) == 3
@@ -3946,6 +4068,80 @@ def scenario_tool_video_split(h, rec, checks):
             [2.5, 2.5, 2.5, 2.5],
             durations,
         )
+
+
+def scenario_multi_file_videos(h, rec, checks):
+    """Three videos must show their three cards quickly.
+
+    The strip asked ImageMagick for a video still; it walked each clip, took ~28 s
+    and failed, so the app sat on "Reading files" with no selection. The cards now
+    come from the filmstrip's first frame.
+    """
+    fixtures = [
+        h.fixture("video/clip-landscape-720p-10s.avi"),
+        h.fixture("video/clip-landscape-720p-10s.mp4"),
+        h.fixture("video/clip-landscape-720p-10s.mkv"),
+    ]
+    started = time.time()
+    with h.launch("multi-file-videos", fixtures, category="Video") as session:
+        rec["workdir"] = session.workdir
+        deadline = time.time() + 20
+        panel = None
+        while time.time() < deadline:
+            panel = session.find(name="Selected")
+            if panel is not None:
+                break
+            time.sleep(0.3)
+        elapsed = round(time.time() - started, 1)
+        rec["measurements"]["analysis_seconds"] = elapsed
+        checks.add("three videos reach the selection strip", panel is not None, "Selected panel", panel is not None)
+        if panel is None:
+            return
+        text = session.subtree_text(panel)
+        wanted = [os.path.basename(path) for path in fixtures]
+        rec["measurements"]["panel_text"] = text[:400]
+        checks.add(
+            "every selected video has a card",
+            all(name in text for name in wanted),
+            wanted,
+            text[:200],
+        )
+        # The cards' stills are decorative images (alt=""), which AT-SPI does not
+        # expose; the app's own preview cache is where the analysis put them.
+        cache_root = os.path.join(os.environ.get("XDG_CACHE_HOME", ""), "convertme", "previews")
+        strips = []
+        if os.path.isdir(cache_root):
+            for entry in os.listdir(cache_root):
+                folder = os.path.join(cache_root, entry)
+                if entry.startswith("strip-") and os.path.isfile(
+                    os.path.join(folder, "frame001.jpg")
+                ):
+                    strips.append(entry)
+        rec["measurements"]["video_stills"] = len(strips)
+        checks.add(
+            "every video still was decoded by the filmstrip",
+            len(strips) >= 3,
+            "3 cached video stills",
+            strips,
+        )
+        checks.add(
+            "the analysis is not stuck walking the clips",
+            elapsed < 15,
+            "< 15 s",
+            elapsed,
+        )
+        rec["screenshots"].append(session.shot("selected"))
+        session.toggle_category("Video")
+        dialog = session.open_tool("Trim")
+        if dialog is not None:
+            body = session.subtree_text(dialog)
+            checks.add(
+                "the dialog knows all three videos",
+                "1 of 3" in body,
+                "1 of 3",
+                body[:200],
+            )
+            close_dialog(session)
 
 
 def scenario_tool_video_redact(h, rec, checks):
@@ -4024,6 +4220,70 @@ def scenario_tool_video_redact(h, rec, checks):
             not (blurred and blurred[0] > 200 and blurred[1] < 120 and blurred[2] < 100),
             "not #e4572e",
             blurred,
+        )
+
+
+def scenario_audio_playback(h, rec, checks):
+    """Play starts a controllable sink, and closing the dialog stops it.
+
+    `SDL_AUDIODRIVER=dummy` makes ffplay consume the file without an audio device, so
+    the test can observe the child process: the app must not leave it running after the
+    sheet closes.
+    """
+    if not any(shutil.which(name) for name in ("ffplay", "mpv")):
+        raise Skip("no controllable audio player (ffplay/mpv)")
+    source = h.fixture("audio/speech.flac")
+    with h.launch(
+        "audio-playback", [source], category="Audio", env_extra={"SDL_AUDIODRIVER": "dummy"}
+    ) as session:
+        rec["workdir"] = session.workdir
+        session.toggle_category("Audio")
+        dialog = session.open_tool("Trim")
+        if dialog is None:
+            raise Skip("the trim dialog has no fields")
+        deadline = time.time() + 15
+        while time.time() < deadline and session.slider("Trim start") is None:
+            time.sleep(0.3)
+        if session.slider("Trim start") is None:
+            raise Skip("the waveform did not load")
+        session.set_slider_auto("Trim end", 4.0)
+        session.set_slider_auto("Trim start", 2.0)
+
+        def players() -> list[str]:
+            result = subprocess.run(
+                ["ps", "--ppid", str(session.proc.pid), "-o", "comm="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+        session.press_in_dialog("Play")
+        time.sleep(0.9)
+        pause = session.find(role="button", name="Pause", within=session.dialog())
+        started = players()
+        rec["measurements"]["playing"] = {"pause_button": pause is not None, "children": started}
+        checks.add(
+            "Play starts a controllable preview",
+            pause is not None,
+            "a Pause button",
+            pause is not None,
+        )
+        checks.add(
+            "the player is a child of the app",
+            any(name in ("ffplay", "mpv") for name in started),
+            "ffplay or mpv",
+            started,
+        )
+        close_dialog(session)
+        time.sleep(1.0)
+        after = players()
+        rec["measurements"]["after_close"] = after
+        checks.add(
+            "closing the dialog stops the player",
+            not any(name in ("ffplay", "mpv") for name in after),
+            "no player child",
+            after,
         )
 
 
@@ -4438,6 +4698,19 @@ def scenario_tool_pdf_pages(h, rec, checks):
             "5 PNGs >= 2400 px wide",
             [(record.get("image", {}).get("width"), record.get("image", {}).get("height")) for record in records[:3]],
         )
+        folder = os.path.realpath(os.path.join(session.workdir, "report-5-pages"))
+        checks.add(
+            "the page images are grouped in a source-named folder",
+            outputs and all(os.path.dirname(os.path.realpath(p)) == folder for p in outputs),
+            "report-5-pages/",
+            [os.path.dirname(p) for p in outputs],
+        )
+        checks.add(
+            "the page names drop the repeated source stem",
+            all(not os.path.basename(p).startswith("report-5-pages-") for p in outputs),
+            "001.png, 002.png, ...",
+            [os.path.basename(p) for p in outputs],
+        )
 
 
 def scenario_convert_image(h, rec, checks):
@@ -4707,6 +4980,17 @@ def _check_merged(session, checks, records, outputs):
 def _check_split(session, checks, records, outputs):
     pdfs = [record for record in records if record.get("kind") == "pdf"]
     checks.add("split writes one PDF per page", len(pdfs) == 5, 5, [record["name"] for record in records])
+    checks.add(
+        "the split pages are grouped in a source-named folder",
+        outputs
+        and all(
+            os.path.dirname(os.path.realpath(path))
+            == os.path.realpath(os.path.join(session.workdir, "report-5-pages"))
+            for path in outputs
+        ),
+        "report-5-pages/",
+        [os.path.dirname(path) for path in outputs],
+    )
     checks.add(
         "every split file is a single page",
         all(record.get("pdf", {}).get("Pages") == "1" for record in pdfs),
@@ -5295,7 +5579,9 @@ SCENARIOS = [
     ("tool-video-speed", scenario_tool_video_speed),
     ("tool-video-frames", scenario_tool_video_frames),
     ("tool-video-split", scenario_tool_video_split),
+    ("multi-file-videos", scenario_multi_file_videos),
     ("tool-video-redact", scenario_tool_video_redact),
+    ("audio-playback", scenario_audio_playback),
     ("tool-audio-normalize", scenario_tool_audio_normalize),
     ("tool-audio-trim", scenario_tool_audio_trim),
     ("tool-audio-channels", scenario_tool_audio_channels),

@@ -424,6 +424,8 @@ export function mockMediaInfo(path: string): MediaInfo {
       duration: 10,
       width: portrait ? 1080 : 1280,
       height: portrait ? 1920 : 720,
+      fps: 30,
+      channels: 2,
       has_audio: !path.includes('silent'),
       has_video: true,
       format: ext,
@@ -434,6 +436,8 @@ export function mockMediaInfo(path: string): MediaInfo {
       duration: path.includes('30s') ? 30 : 14.1,
       width: 0,
       height: 0,
+      fps: 0,
+      channels: path.includes('stereo') ? 2 : 1,
       has_audio: true,
       has_video: false,
       format: ext,
@@ -444,6 +448,8 @@ export function mockMediaInfo(path: string): MediaInfo {
     duration: 0,
     width: landscape ? 4000 : 2000,
     height: landscape ? 3000 : 3000,
+    fps: 0,
+    channels: 0,
     has_audio: false,
     has_video: false,
     format: ext,
@@ -552,8 +558,9 @@ export function mockCollageLayout(paths: string[], params: Record<string, unknow
   const height = Math.max(2, Math.round(width / ratio));
   const requestedCols = Math.max(1, Math.min(6, Number(params.columns ?? 2) || 2));
   const requestedRows = Math.max(0, Math.min(6, Number(params.rows ?? 0) || 0));
-  const columns =
-    style === 'row' ? count : style === 'column' ? 1 : Math.max(1, Math.min(count, requestedCols));
+  // Spare cells stay background: the engine does not clamp the column count to the
+  // picture count, so a 2-picture collage with 3 columns draws two thirds of the row.
+  const columns = style === 'row' ? count : style === 'column' ? 1 : requestedCols;
   const rows =
     style === 'row'
       ? 1

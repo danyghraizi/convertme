@@ -20,6 +20,10 @@ use std::path::{Path, PathBuf};
 
 /// `Snapshot` refuses to write more than this many stills in one job.
 const MAX_FRAMES: usize = 200;
+/// The interval/fps mode can write every frame of a short clip. It is one ffmpeg
+/// pass, so the ceiling is much higher than the per-time list's; it still exists so
+/// a long clip cannot fill a disk with PNGs.
+const MAX_ALL_FRAMES: usize = 2000;
 
 /// Remove a silent lead-in and tail, not the pauses inside the take: `stop_periods=1`
 /// trims the trailing run only. `silencedetect` on the fixture (1 s each end) leaves
@@ -786,9 +790,16 @@ fn snapshot(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let rate = interval
         .map(|i| 1.0 / i)
         .or(fps)
-        .map(|r| r.clamp(0.01, 60.0))
+        .map(|r| r.clamp(0.01, 240.0))
         .unwrap_or(1.0);
     let info = probe(cx, &job.source)?;
+    let expected = (info.duration * rate).ceil();
+    if expected > MAX_ALL_FRAMES as f64 + 1.0 {
+        return Err(invalid(format!(
+            "every frame would write {expected:.0} images; at most {MAX_ALL_FRAMES} \
+             fit in one job — use an interval or trim the clip"
+        )));
+    }
     let pattern = cx.out("frame-%03d.png");
     cx.ctx.set_stage("saving frames");
 
@@ -798,7 +809,13 @@ fn snapshot(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
         .arg(&job.source)
         .arg("-vf")
         .arg(format!("fps={rate}"))
-        .args(["-frames:v", "200", "-an", "-f", "image2"])
+        .args([
+            "-frames:v",
+            &MAX_ALL_FRAMES.to_string(),
+            "-an",
+            "-f",
+            "image2",
+        ])
         .arg(&pattern);
     run_ffmpeg(cmd, cx, Budget::Long, info.duration, 0.0, 1.0)?;
 
@@ -1357,7 +1374,18 @@ fn channels_params(job: &Job) -> Result<(u32, f64, f64), JobError> {
         return Err(invalid("channels must be 1 (mono) or 2 (stereo)"));
     }
     let gain = |key: &str| num_param(p, key).unwrap_or(100.0).clamp(0.0, 200.0);
-    Ok((count as u32, gain("left_volume"), gain("right_volume")))
+    let count = count as u32;
+    // A mono output has one control. `volume` is that control; older requests carry
+    // `left_volume` and keep working. For a stereo source mixed to mono the same
+    // volume applies to both channels, which the two hidden gains could not express.
+    let (left, right) = match (count, num_param(p, "volume")) {
+        (1, Some(volume)) => {
+            let volume = volume.clamp(0.0, 200.0);
+            (volume, volume)
+        }
+        _ => (gain("left_volume"), gain("right_volume")),
+    };
+    Ok((count, left, right))
 }
 
 fn channels_param(job: &Job) -> Result<u32, JobError> {
@@ -1720,6 +1748,10 @@ pub struct MediaFacts {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
+    /// The first video stream's average frame rate; 0 for audio and stills.
+    pub fps: f64,
+    /// Channels in the source audio stream; 1 for a mono recording, 0 without audio.
+    pub audio_channels: u32,
     pub has_audio: bool,
     pub has_video: bool,
     pub format: String,
@@ -1748,6 +1780,8 @@ pub fn media_info(tools: &crate::Toolset, path: &Path) -> Result<MediaFacts, Job
         duration: info.duration,
         width: info.width,
         height: info.height,
+        fps: info.fps,
+        audio_channels: info.audio_channels,
         has_audio: info.has_audio,
         has_video: info.has_video,
         format,
@@ -1846,6 +1880,8 @@ fn image_facts(path: &Path) -> Option<MediaFacts> {
         duration: 0.0,
         width,
         height,
+        fps: 0.0,
+        audio_channels: 0,
         has_audio: false,
         has_video: false,
         format: ext,
@@ -1860,6 +1896,9 @@ struct MediaInfo {
     has_video: bool,
     width: u32,
     height: u32,
+    /// Average frame rate of the first video stream (`avg_frame_rate`, or
+    /// `r_frame_rate` when a container omits the average).
+    fps: f64,
     /// Input channel count, so the Channels dialog knows whether to duplicate or mix.
     audio_channels: u32,
     /// Input sample rate, used as the join's common rate when it must re-encode.
@@ -1881,13 +1920,22 @@ fn probe_argv(ffprobe: &Path, path: &Path) -> Cmd {
             "-v",
             "error",
             "-show_entries",
-            "format=duration,size:stream=codec_type,channels,sample_rate,width,height",
+            "format=duration,size:stream=codec_type,channels,sample_rate,width,height,avg_frame_rate,r_frame_rate",
             "-of",
             "json",
         ])
         .arg(path)
         .stdout_piped()
         .budget(Budget::Short)
+}
+
+/// `"30000/1001"` or `"30"` → frames per second. A zero denominator is 0.
+fn parse_rate(text: &str) -> Option<f64> {
+    let (num, den) = text.split_once('/')?;
+    let num: f64 = num.trim().parse().ok()?;
+    let den: f64 = den.trim().parse().ok()?;
+    let rate = num / den;
+    rate.is_finite().then_some(rate).filter(|rate| *rate > 0.0)
 }
 
 fn parse_probe_json(stdout: &str) -> Result<MediaInfo, JobError> {
@@ -1928,6 +1976,11 @@ fn parse_probe_json(stdout: &str) -> Result<MediaInfo, JobError> {
                     info.has_video = true;
                     info.width = stream["width"].as_u64().unwrap_or(0) as u32;
                     info.height = stream["height"].as_u64().unwrap_or(0) as u32;
+                    info.fps = stream["avg_frame_rate"]
+                        .as_str()
+                        .and_then(parse_rate)
+                        .or_else(|| stream["r_frame_rate"].as_str().and_then(parse_rate))
+                        .unwrap_or(0.0);
                 }
                 _ => {}
             }
@@ -2868,6 +2921,37 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_all_frames_uses_the_native_frame_rate() {
+        let Some(env) = Env::new() else { return };
+        let info = probe(&env.context(), &env.video()).expect("probe");
+        assert!(
+            (info.fps - 30.0).abs() < 0.5,
+            "the fixture is 30 fps, ffprobe said {}",
+            info.fps
+        );
+        let job = tool_job(&env.video(), ToolId::Snapshot, json!({ "fps": 30 }));
+        let artifacts = run_job(&env, &job);
+        assert!(
+            (59..=61).contains(&artifacts.len()),
+            "a 2 s 30 fps clip should write about 60 frames, wrote {}",
+            artifacts.len()
+        );
+        let first = std::fs::read(&artifacts[0]).expect("frame bytes");
+        assert!(first.starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn probe_reads_a_fractional_frame_rate() {
+        let info = parse_probe_json(
+            r#"{"format":{"duration":"2.0"},
+                "streams":[{"codec_type":"video","width":1920,"height":1080,
+                            "avg_frame_rate":"30000/1001"}]}"#,
+        )
+        .expect("parse");
+        assert!((info.fps - 29.970).abs() < 0.01, "fps {}", info.fps);
+    }
+
+    #[test]
     fn speed_two_halves_the_duration() {
         let Some(env) = Env::new() else { return };
         let job = tool_job(&env.video(), ToolId::Speed, json!({ "factor": 2.0 }));
@@ -2970,6 +3054,27 @@ mod tests {
         assert!(
             (4.5..=7.5).contains(&difference),
             "50 % left measured {difference:.2} dB below right"
+        );
+    }
+
+    #[test]
+    fn channels_mono_volume_is_one_control_for_the_mix() {
+        let Some(env) = Env::new() else { return };
+        let run = |volume: f64| {
+            let job = tool_job(
+                &env.stereo_wav(),
+                ToolId::Channels,
+                json!({ "channels": 1, "volume": volume }),
+            );
+            let artifacts = run_job(&env, &job);
+            env.rms_db(&artifacts[0], None, 1.0)
+        };
+        let full = run(100.0);
+        let half = run(50.0);
+        let drop = full - half;
+        assert!(
+            (4.5..=7.5).contains(&drop),
+            "volume 50 should be about 6 dB below 100, measured {drop:.2} dB"
         );
     }
 

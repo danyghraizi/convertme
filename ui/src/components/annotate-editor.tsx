@@ -61,6 +61,8 @@ const HANDLES: Corner[] = ['nw', 'ne', 'sw', 'se'];
 
 const DEFAULT_STROKE = 6;
 const DEFAULT_TEXT = 40;
+/** The caption's free-size ceiling; the engine accepts the same bound. */
+const MAX_TEXT_SIZE = 2000;
 /** The engine's fallback for a text shape saved without a size (older values). */
 const LEGACY_TEXT = 32;
 const MIN_PX = 6;
@@ -107,6 +109,8 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   const [strokeSize, setStrokeSize] = createSignal(DEFAULT_STROKE);
   const [textSize, setTextSize] = createSignal(DEFAULT_TEXT);
   const [font, setFont] = createSignal<FontFamily>('sans');
+  // The value the next badge gets. Empty means "carry on from the highest number".
+  const [nextBadge, setNextBadge] = createSignal('');
   const [ink, setInk] = createSignal(props.color);
   const [editor, setEditor] = createSignal<TextEditor | null>(null);
   const [canUndo, setCanUndo] = createSignal(false);
@@ -131,6 +135,16 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   const shapes = (): AnnotateShape[] => asShapes(props.value) as AnnotateShape[];
   const shown = (): AnnotateShape[] => live() ?? shapes();
 
+  /**
+   * The marks the SVG draws. The shape being edited inline is omitted: it is replaced
+   * by the textarea, and drawing both produced the ghosted double text on double-click.
+   */
+  const renderedShapes = (): AnnotateShape[] => {
+    const edit = editor();
+    const list = shown();
+    return edit && edit.index !== null ? list.filter((_, index) => index !== edit.index) : list;
+  };
+
   const selectedShape = createMemo<AnnotateShape | null>(() => {
     const index = selected();
     if (index === null) return null;
@@ -144,11 +158,11 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
   });
 
   const sizeLabel = () => (textContext() ? 'Text size' : 'Stroke');
-  const sizeMax = () => (textContext() ? 200 : 64);
+  const sizeMax = () => (textContext() ? MAX_TEXT_SIZE : 64);
   const sizeValue = () => {
     const shape = selectedShape();
     if (shape) {
-      if (shape.kind === 'text') return clamp(shape.size ?? LEGACY_TEXT, 1, 200);
+      if (shape.kind === 'text') return clamp(shape.size ?? LEGACY_TEXT, 1, MAX_TEXT_SIZE);
       if (shape.kind === 'number') return strokeSize();
       return clamp(shape.size ?? 4, 1, 64);
     }
@@ -269,6 +283,25 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
       if (Number.isFinite(value) && value > highest) highest = value;
     }
     return String(highest + 1);
+  }
+
+  /** The badge the next click places: the number the user chose, or the auto count. */
+  function chosenNumber(): string {
+    const typed = nextBadge().trim();
+    return typed || nextNumber();
+  }
+
+  /**
+   * The Number field is always mounted so the toolbar never changes height (and the
+   * canvas never jumps) when a tool is chosen. It edits the selected badge in Select,
+   * and the next badge's value while the Number tool is active.
+   */
+  type DigitMode = 'selected' | 'next' | 'hidden';
+  function digitMode(): DigitMode {
+    const shape = selectedShape();
+    if (tool() === 'select' && shape?.kind === 'number') return 'selected';
+    if (tool() === 'number') return 'next';
+    return 'hidden';
   }
 
   function strokeWidth(shape: AnnotateShape): number {
@@ -431,7 +464,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
       const oldWidth = Math.max(original.width, 1e-6);
       const oldHeight = Math.max(original.height, 1e-6);
       const scale = Math.max((right - left) / oldWidth, (bottom - top) / oldHeight);
-      const size = clamp(Math.round((shape.size ?? LEGACY_TEXT) * scale), 1, 200);
+      const size = clamp(Math.round((shape.size ?? LEGACY_TEXT) * scale), 1, MAX_TEXT_SIZE);
       const measured = textBox(shape.text ?? '', size, shape.font, shape.x, shape.y);
       const newWidth = measured.w;
       const newHeight = measured.h;
@@ -510,7 +543,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
       }
       return;
     }
-    const size = clamp(current.size, 1, 200);
+    const size = clamp(current.size, 1, MAX_TEXT_SIZE);
     const box = textBox(value, size, current.font, current.x, current.y);
     if (current.index !== null) {
       const list = shapes();
@@ -644,7 +677,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
       shape = {
         kind: 'number',
         ...defaultNumberBox(p),
-        text: nextNumber(),
+        text: chosenNumber(),
         color: colour,
       };
     } else {
@@ -764,6 +797,10 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
     const next = [...shapes(), shape];
     commit(next);
     setSelected(next.length - 1);
+    if (shape.kind === 'number') {
+      const placed = Number.parseInt(shape.text ?? '', 10);
+      if (Number.isFinite(placed)) setNextBadge(String(placed + 1));
+    }
     setNote('');
   }
 
@@ -974,7 +1011,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
         );
       }
       case 'text': {
-        const size = clamp(shape.size ?? LEGACY_TEXT, 1, 200);
+        const size = clamp(shape.size ?? LEGACY_TEXT, 1, MAX_TEXT_SIZE);
         return (
           <text
             class={className}
@@ -1010,11 +1047,20 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
       }
       default: {
         const angle = Math.atan2(y2 - y1, x2 - x1);
-        const head = clamp(0.03 * Math.min(width, height), 8, 48);
+        // Mirrors `draw_command`: the head grows with the stroke, and the lines use
+        // round caps/joins so three thick strokes meeting at the tip do not leave
+        // wedge-shaped gaps there.
+        const length = Math.hypot(x2 - x1, y2 - y1);
+        const ceiling = Math.max(1, Math.min(width, height) * 0.25);
+        const head = Math.max(
+          1,
+          Math.min(stroke * 3.5, ceiling, Math.max(1, length * 0.8)),
+        );
         const ax = x2 - head * Math.cos(angle + 0.45);
         const ay = y2 - head * Math.sin(angle + 0.45);
         const bx = x2 - head * Math.cos(angle - 0.45);
         const by = y2 - head * Math.sin(angle - 0.45);
+        const cap = { 'stroke-linecap': 'round', 'stroke-linejoin': 'round' } as const;
         return (
           <>
             <line
@@ -1026,6 +1072,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
               y2={y2}
               stroke={colour}
               stroke-width={stroke}
+              {...cap}
             />
             <line
               class={className}
@@ -1036,6 +1083,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
               y2={ay}
               stroke={colour}
               stroke-width={stroke}
+              {...cap}
             />
             <line
               class={className}
@@ -1046,6 +1094,7 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
               y2={by}
               stroke={colour}
               stroke-width={stroke}
+              {...cap}
             />
           </>
         );
@@ -1106,7 +1155,22 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
             disabled={!sizeEnabled()}
             onInput={(event) => applySize(Number(event.currentTarget.value))}
           />
-          <output class="annotate-size-value">{Math.round(sizeValue())}</output>
+          <input
+            class="annotate-size-value"
+            type="number"
+            aria-label="Size value"
+            min="1"
+            max={sizeMax()}
+            step="1"
+            value={Math.round(sizeValue())}
+            disabled={!sizeEnabled()}
+            onInput={(event) => {
+              const value = event.currentTarget.valueAsNumber;
+              if (Number.isFinite(value)) {
+                applySize(clamp(Math.round(value), 1, sizeMax()));
+              }
+            }}
+          />
         </label>
         <label class="annotate-control annotate-font">
           <span>Font</span>
@@ -1119,31 +1183,39 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
             <For each={FONTS}>{(item) => <option value={item.id}>{item.label}</option>}</For>
           </select>
         </label>
-        <Show when={selectedShape()?.kind === 'number' ? selectedShape() : null}>
-          {(shape) => (
-            <label class="annotate-control annotate-digit">
-              <span>Number</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                aria-label="Number label"
-                maxLength={3}
-                value={shape().text ?? ''}
-                onInput={(event) => {
-                  const digits = event.currentTarget.value.replace(/[^0-9]/g, '').slice(0, 3);
-                  event.currentTarget.value = digits;
-                  editDigit(digits);
-                }}
-                onBlur={(event) => {
-                  if (!event.currentTarget.value) {
-                    event.currentTarget.value = '1';
-                    editDigit('1');
-                  }
-                }}
-              />
-            </label>
-          )}
-        </Show>
+        <label
+          class="annotate-control annotate-digit"
+          style={{ visibility: digitMode() === 'hidden' ? 'hidden' : 'visible' }}
+        >
+          <span>Number</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            aria-label={digitMode() === 'selected' ? 'Number label' : 'Next number'}
+            maxLength={3}
+            disabled={digitMode() === 'hidden'}
+            placeholder={nextNumber()}
+            value={
+              digitMode() === 'selected'
+                ? (selectedShape()?.text ?? '')
+                : digitMode() === 'next'
+                  ? nextBadge()
+                  : ''
+            }
+            onInput={(event) => {
+              const digits = event.currentTarget.value.replace(/[^0-9]/g, '').slice(0, 3);
+              event.currentTarget.value = digits;
+              if (digitMode() === 'selected') editDigit(digits);
+              else setNextBadge(digits);
+            }}
+            onBlur={(event) => {
+              if (digitMode() === 'selected' && !event.currentTarget.value) {
+                event.currentTarget.value = '1';
+                editDigit('1');
+              }
+            }}
+          />
+        </label>
         <div class="annotate-actions">
           <button type="button" class="annotate-tool" onClick={undo} disabled={!canUndo()}>
             Undo
@@ -1207,8 +1279,11 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              <For each={shown()}>{(shape) => drawShape(shape)}</For>
-              <Show when={draft()}>{(shape) => drawShape(shape())}</Show>
+              <For each={renderedShapes()}>{(shape) => drawShape(shape)}</For>
+              {/* `keyed`: a draft is a new object on every pointer move, and an
+                  unkeyed Show compares only truthiness, so its child ran once and
+                  the rectangle stayed zero-sized until pointerup. */}
+              <Show when={draft()} keyed>{(shape) => drawShape(shape)}</Show>
             </svg>
             <Show when={editor()}>
               {(state) => (
@@ -1250,17 +1325,19 @@ export default function AnnotateEditor(props: AnnotateEditorProps) {
                 />
               )}
             </Show>
-            <Show when={selectedShape()}>
+            <Show when={tool() === 'select' && !editor() ? selectedShape() : null}>
               {(shape) => {
-                const box = hitBox(shape());
+                // `hitBox` is read inside the expressions: a plain local would be
+                // computed once and leave the ring behind while the shape moves.
+                const box = (): Bounds => hitBox(shape());
                 return (
                   <span
                     class="annotate-selection"
                     style={{
-                      left: `${box.left * 100}%`,
-                      top: `${box.top * 100}%`,
-                      width: `${box.width * 100}%`,
-                      height: `${box.height * 100}%`,
+                      left: `${box().left * 100}%`,
+                      top: `${box().top * 100}%`,
+                      width: `${box().width * 100}%`,
+                      height: `${box().height * 100}%`,
                     }}
                   >
                     <Show when={tool() === 'select'}>

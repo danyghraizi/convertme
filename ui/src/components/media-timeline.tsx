@@ -318,7 +318,7 @@ export default function MediaTimeline(props: MediaTimelineProps) {
               type="range"
               aria-label="Trim start"
               min={0}
-              max={Math.max(0, props.end - FRAME)}
+              max={Math.max(0, props.duration)}
               step={FRAME}
               value={props.start}
               onInput={(event) => setStart(event.currentTarget.valueAsNumber)}
@@ -329,7 +329,7 @@ export default function MediaTimeline(props: MediaTimelineProps) {
             <input
               type="range"
               aria-label="Trim end"
-              min={Math.min(props.duration, props.start + FRAME)}
+              min={0}
               max={Math.max(0, props.duration)}
               step={FRAME}
               value={props.end}

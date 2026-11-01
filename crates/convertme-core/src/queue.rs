@@ -366,11 +366,9 @@ fn execute(shared: &Arc<Shared>, job: Job) {
 
     match result {
         Ok(outputs) => {
-            let fallback = outputs.iter().any(|p| {
-                p.parent()
-                    .map(|d| d == naming::fallback_dir())
-                    .unwrap_or(false)
-            });
+            // With a source-named output folder, a file's parent is that folder, not
+            // the destination root; ask the same helper the publish step used.
+            let (_, fallback) = publish::publish_dir_for(&job.source);
             let primary = outputs.first().cloned();
             let _ = shared.store.lock().finish(
                 &id,
@@ -461,6 +459,42 @@ fn publish_artifacts(
     let out_root = work.out();
     let (dest_dir, _) = publish::publish_dir_for(&job.source);
     let suffix = job.intent.tool_id().map(|t| t.as_str());
+    let source_stem = job
+        .source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "output".into());
+    // Several files from one source go into a folder named after it: split parts,
+    // saved frames and exported pages are one result, not a dozen loose files beside
+    // the original. A directory artifact (an extracted archive) is one result and is
+    // published on its own, as before.
+    let file_count = artifacts
+        .iter()
+        .filter(|artifact| {
+            !std::fs::metadata(artifact)
+                .map(|meta| meta.is_dir())
+                .unwrap_or(false)
+        })
+        .count();
+    let folder: Option<PathBuf> = if file_count > 1 {
+        let mut path = dest_dir.join(&source_stem);
+        if path.exists() && !path.is_dir() {
+            // A file already owns that name; keep the folder and the file apart.
+            let name = match suffix {
+                Some(tool) => format!("{source_stem}-{tool}"),
+                None => format!("{source_stem}-out"),
+            };
+            path = dest_dir.join(name);
+        }
+        Some(path)
+    } else {
+        None
+    };
+    if let Some(folder) = &folder {
+        // `publish_file` refuses a destination whose directory does not exist yet.
+        std::fs::create_dir_all(folder)
+            .map_err(|e| JobError::io("creating the output folder", &e))?;
+    }
     let mut published = Vec::new();
 
     for artifact in artifacts {
@@ -491,16 +525,29 @@ fn publish_artifacts(
             let published_path = publish::publish_dir(&artifact, &dest_dir.join(name))?;
             published.push(published_path);
         } else {
-            let ext = artifact
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase())
-                .or_else(|| job.intent.output_ext().map(|e| e.to_string()))
-                .unwrap_or_else(|| "bin".into());
-            let desired = naming::resolve_output(&job.source, &ext, overwrite, suffix);
-            let desired = if desired.parent() != Some(dest_dir.as_path()) {
-                dest_dir.join(desired.file_name().unwrap_or_default())
+            let desired = if let Some(folder) = &folder {
+                // Inside the source-named folder the stem is redundant:
+                // `clip-.../part-001.mp4`, not `clip-.../clip-...-part-001.mp4`.
+                let original = artifact.file_name().unwrap_or_default();
+                let name = original
+                    .to_string_lossy()
+                    .strip_prefix(&format!("{source_stem}-"))
+                    .filter(|rest| !rest.is_empty())
+                    .map(std::ffi::OsString::from)
+                    .unwrap_or_else(|| original.to_os_string());
+                folder.join(name)
             } else {
-                desired
+                let ext = artifact
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                    .or_else(|| job.intent.output_ext().map(|e| e.to_string()))
+                    .unwrap_or_else(|| "bin".into());
+                let desired = naming::resolve_output(&job.source, &ext, overwrite, suffix);
+                if desired.parent() != Some(dest_dir.as_path()) {
+                    dest_dir.join(desired.file_name().unwrap_or_default())
+                } else {
+                    desired
+                }
             };
             // Belt and braces: a published path may never be the source.
             if naming::same_path(&desired, &job.source) {
@@ -645,6 +692,32 @@ mod tests {
     }
 
     #[test]
+    fn several_outputs_publish_into_a_folder_named_after_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.jpg");
+        std::fs::write(&src, b"source-bytes").unwrap();
+        let (q, rx) = queue_with(Arc::new(Many), dir.path().join("tmp"));
+        q.submit(Job::new(src.clone(), Intent::convert("WEBP").unwrap()))
+            .unwrap();
+        let Event::Finished { outputs, .. } =
+            wait_for(&rx, |e| matches!(e, Event::Finished { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(outputs.len(), 3);
+        for (index, output) in outputs.iter().enumerate() {
+            assert_eq!(output.parent(), Some(dir.path().join("photo").as_path()));
+            assert_eq!(
+                output.file_name().and_then(|n| n.to_str()),
+                Some(format!("part-{:03}.webp", index + 1).as_str())
+            );
+            assert_eq!(std::fs::read(output).unwrap(), b"part");
+        }
+        assert_eq!(std::fs::read(&src).unwrap(), b"source-bytes");
+        q.shutdown();
+    }
+
+    #[test]
     fn duplicate_submit_returns_the_live_id() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("a.png");
@@ -699,6 +772,20 @@ mod tests {
         assert_eq!(error.code, ErrorCode::EngineFailed);
         assert_eq!(error.stderr_tail.as_deref(), Some("tail"));
         q.shutdown();
+    }
+
+    struct Many;
+
+    impl EngineRunner for Many {
+        fn run(&self, _job: &Job, work: &WorkDir, _ctx: &JobCtx) -> Result<Vec<PathBuf>, JobError> {
+            let mut out = Vec::new();
+            for index in 1..=3 {
+                let path = work.out().join(format!("photo-part-{index:03}.webp"));
+                std::fs::write(&path, b"part").unwrap();
+                out.push(path);
+            }
+            Ok(out)
+        }
     }
 
     struct Slow {

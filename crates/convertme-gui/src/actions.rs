@@ -260,8 +260,16 @@ pub fn toggle_preview(app: &tauri::AppHandle, path: &Path) -> Result<(), String>
     );
     if let Some(window) = app.get_webview_window("preview") {
         if window.is_visible().unwrap_or(false) {
+            // Hiding a webview does not run its cleanup; a clip started here must not
+            // keep playing behind a hidden preview window.
+            if let Some(state) = app.try_state::<crate::state::AppState>() {
+                state.audio.stop();
+            }
             window.hide().map_err(|e| e.to_string())?;
             return Ok(());
+        }
+        if let Some(state) = app.try_state::<crate::state::AppState>() {
+            state.audio.stop();
         }
         window
             .navigate(

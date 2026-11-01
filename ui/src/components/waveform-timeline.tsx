@@ -3,6 +3,7 @@ import * as ipc from '../ipc';
 import { formatTimecode } from '../format';
 import type { WaveformData } from '../types';
 import './waveform-timeline.css';
+import { PauseGlyph, PlayGlyph } from './play-glyph';
 
 /** A range on the waveform: a trim selection, a bleep, or a channel's own row. */
 export interface WaveRange {
@@ -29,6 +30,12 @@ interface WaveformTimelineProps {
   gainRight?: number;
   /** Hide the transport where the dialog has its own Play Output row. */
   transport?: boolean;
+  /** The dialog owns the clock (normalize/channels/bleep): draw this playhead. */
+  playhead?: number;
+  /** A click on the waveform should seek the dialog's own preview. */
+  onSeek?: (seconds: number) => void;
+  /** One output lane labelled M, for a mono mix. */
+  mono?: boolean;
 }
 
 const BUCKETS = 900;
@@ -77,6 +84,9 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
     return props.duration > 0 ? props.duration : fromData;
   };
 
+  /** The dialog's clock when it owns playback, otherwise this component's own. */
+  const shownPlayhead = (): number => props.playhead ?? playhead();
+
   function secondsAt(event: PointerEvent): number {
     const rect = surface?.getBoundingClientRect();
     if (!rect || rect.width === 0) return 0;
@@ -85,7 +95,20 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
   }
 
   function onPointerDown(event: PointerEvent): void {
-    if (props.mode !== 'bleep' || duration() === 0) return;
+    // The remove button inside a bleep range is a control, not a point on the
+    // waveform. Capturing the pointer on the surface made its click land nowhere.
+    if ((event.target as HTMLElement).closest('button')) return;
+    if (duration() === 0) return;
+    if (props.mode === 'trim') {
+      // Click anywhere on the waveform to move the cursor there (and stop the sound,
+      // which would otherwise keep playing from the old position).
+      stopPlayback();
+      void ipc.stopPreview();
+      if (props.onSeek) props.onSeek(secondsAt(event));
+      else setPlayhead(secondsAt(event));
+      return;
+    }
+    if (props.mode !== 'bleep') return;
     surface?.setPointerCapture(event.pointerId);
     const at = secondsAt(event);
     setDrag({ anchor: at, current: at });
@@ -105,8 +128,11 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
     if (!current) return;
     const start = Math.min(current.anchor, current.current);
     const end = Math.max(current.anchor, current.current);
-    // A click without a drag is a click, not a one-millisecond bleep.
-    if (end - start < 0.05) return;
+    // A click without a drag seeks; only a real drag draws a one-millisecond bleep.
+    if (end - start < 0.05) {
+      props.onSeek?.(current.current);
+      return;
+    }
     props.onRanges([...props.ranges, { start, end }].sort((a, b) => a.start - b.start));
   }
 
@@ -134,28 +160,37 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
    */
   async function togglePlay(): Promise<void> {
     const path = props.path;
-    if (!path || playing() || duration() <= 0) return;
-    const from = playhead();
-    startPlayhead = from >= duration() - 0.05 ? 0 : from;
+    if (!path || duration() <= 0) return;
+    if (playing()) {
+      stopPlayback();
+      void ipc.stopPreview();
+      return;
+    }
+    // A trim preview starts where the selection starts and stops where it ends.
+    // Clicking Play after a pause resumes at the cursor.
+    const span = props.range;
+    const low = span ? Math.max(0, span.start) : 0;
+    const high = span ? Math.min(duration(), span.end) : duration();
+    let from = shownPlayhead();
+    if (from < low - 0.01 || from >= high - 0.05) from = low;
+    startPlayhead = Math.max(low, Math.min(from, high));
     setPlayhead(startPlayhead);
     setPlayFailure('');
     setPlaying(true);
     startedAt = performance.now();
     timer = window.setInterval(() => {
       const next = startPlayhead + (performance.now() - startedAt) / 1000;
-      if (next >= duration()) {
-        setPlayhead(duration());
+      if (next >= high) {
+        setPlayhead(high);
         stopPlayback();
+        void ipc.stopPreview();
         return;
       }
       setPlayhead(next);
     }, 50);
     const token = ++playToken;
     try {
-      await ipc.playPreview(path);
-      if (playToken !== token) return;
-      // Resolved means the sink played to the end (immediately in the dev mock).
-      setPlayhead(duration());
+      await ipc.playPreview(path, startPlayhead);
     } catch (cause) {
       if (playToken !== token) return;
       setPlayFailure(
@@ -165,8 +200,7 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
             ? cause.message
             : 'The preview could not be played',
       );
-    } finally {
-      if (playToken === token) stopPlayback();
+      stopPlayback();
     }
   }
 
@@ -182,6 +216,8 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
 
   onCleanup(() => {
     clearTimer();
+    // Closing the dialog must not leave a player running behind it.
+    void ipc.stopPreview();
   });
 
   /**
@@ -207,6 +243,7 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
       return { bars, step: 100 / bars.length, top };
     };
     if (props.channels) {
+      if (props.mono) return [build(props.channels.left, props.gainLeft ?? 100, 20)];
       return [
         build(props.channels.left, props.gainLeft ?? 100, 10),
         build(props.channels.right, props.gainRight ?? 100, 30),
@@ -321,22 +358,24 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
           </Show>
           <span
             class="waveform-playhead"
-            style={{ left: `${(playhead() / Math.max(duration(), 0.001)) * 100}%` }}
+            style={{ left: `${(shownPlayhead() / Math.max(duration(), 0.001)) * 100}%` }}
           />
         </Show>
         <Show when={props.channels}>
-          <span class="waveform-lane-label" style={{ top: '10%' }}>
-            L
+          <span class="waveform-lane-label" style={{ top: props.mono ? '55%' : '10%' }}>
+            {props.mono ? 'M' : 'L'}
           </span>
-          <span class="waveform-lane-label" style={{ top: '55%' }}>
-            R
-          </span>
+          <Show when={!props.mono}>
+            <span class="waveform-lane-label" style={{ top: '55%' }}>
+              R
+            </span>
+          </Show>
         </Show>
       </div>
       <div class="waveform-legend">
         <span class="waveform-time">0:00</span>
         <Show when={data()?.truncated}>
-          <span class="waveform-note">first 10 minutes shown</span>
+          <span class="waveform-note">only the first part of this recording is shown</span>
         </Show>
         <span class="waveform-time">{formatTimecode(duration())}</span>
       </div>
@@ -376,14 +415,16 @@ export default function WaveformTimeline(props: WaveformTimelineProps) {
           <button
             type="button"
             class="timeline-button waveform-play"
-            aria-label={playing() ? 'Playing' : 'Play'}
-            disabled={playing()}
+            aria-label={playing() ? 'Pause' : 'Play'}
+            disabled={duration() <= 0}
             onClick={() => void togglePlay()}
           >
-            {playing() ? 'Playing…' : '▶'}
+            <Show when={playing()} fallback={<PlayGlyph />}>
+              <PauseGlyph />
+            </Show>
           </button>
           <span class="waveform-timecode">
-            {formatTimecode(playhead())}
+            {formatTimecode(shownPlayhead())}
             <span class="waveform-timecode-total"> / {formatTimecode(duration())}</span>
           </span>
           <Show when={playFailure()}>

@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import * as ipc from '../ipc';
 import BackgroundPreview from './background-preview';
 import CollagePreview from './collage-preview';
 import CompressPreview from './compress-preview';
@@ -249,6 +250,8 @@ export default function ToolModal(props: ToolModalProps) {
     onCleanup(() => {
       document.removeEventListener('keydown', onKeyDown);
       document.body.style.overflow = previous;
+      // Closing the sheet stops any preview player it started.
+      void ipc.stopPreview();
     });
   });
 

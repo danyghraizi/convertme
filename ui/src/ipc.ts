@@ -540,9 +540,16 @@ export async function audioPreview(
   return str(await invoke('audio_preview', { path, tool, params }));
 }
 
-export async function playPreview(path: string): Promise<void> {
+/** Start the shared audio sink at `start` seconds; a second Play replaces the first. */
+export async function playPreview(path: string, start = 0): Promise<void> {
   if (isMock()) return;
-  await invoke('play_preview', { path });
+  await invoke('play_preview', { path, start });
+}
+
+/** Stop the shared audio sink (pause/close). */
+export async function stopPreview(): Promise<void> {
+  if (isMock()) return;
+  await invoke('stop_preview');
 }
 
 export async function bleepPreview(
@@ -626,6 +633,8 @@ function readMediaInfo(value: unknown): MediaInfo {
     duration: typeof o.duration === 'number' ? o.duration : 0,
     width: typeof o.width === 'number' ? o.width : 0,
     height: typeof o.height === 'number' ? o.height : 0,
+    fps: typeof o.fps === 'number' ? o.fps : 0,
+    channels: typeof o.channels === 'number' ? o.channels : 0,
     has_audio: o.has_audio === true,
     has_video: o.has_video === true,
     format: str(o.format),

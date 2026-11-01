@@ -727,7 +727,8 @@ export default function App() {
             <span class="activity-summary">{activitySummary()}</span>
             <Show when={historyRows().length > 0}>
               <span class="activity-spark" aria-hidden="true">
-                <For each={historyRows().slice(0, 12).reverse()}>
+                {/* History is newest-first: the dot on the left is the latest job. */}
+                <For each={historyRows().slice(0, 12)}>
                   {(row) => <span class="spark-dot" data-status={row.status} />}
                 </For>
               </span>

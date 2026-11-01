@@ -292,6 +292,10 @@ export interface MediaInfo {
   duration: number;
   width: number;
   height: number;
+  /** Average frame rate of the video stream; 0 for audio and stills. */
+  fps: number;
+  /** Channels in the audio stream; 1 for mono, 0 without audio. */
+  channels: number;
   has_audio: boolean;
   has_video: boolean;
   format: string;

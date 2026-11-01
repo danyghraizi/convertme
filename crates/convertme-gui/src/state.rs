@@ -36,6 +36,8 @@ pub struct AppState {
     pub drag: Mutex<Option<Box<dyn DragSurface>>>,
     /// Receiving end of the queue's event channel, taken once by the bridge thread.
     pub events: Mutex<Option<crossbeam_channel::Receiver<Event>>>,
+    /// The one controllable audio player; a second Play replaces the first.
+    pub audio: crate::audio::AudioSink,
 }
 
 #[derive(Debug, Clone, Default)]

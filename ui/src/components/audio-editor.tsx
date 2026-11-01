@@ -1,6 +1,8 @@
-import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import * as ipc from '../ipc';
 import { asNumber } from '../fields';
+import { formatTimecode } from '../format';
+import { PauseGlyph, PlayGlyph } from './play-glyph';
 import WaveformTimeline, { type WaveRange } from './waveform-timeline';
 import './audio-editor.css';
 import type { FieldValue, MediaInfo } from '../types';
@@ -56,9 +58,10 @@ export default function AudioEditor(props: AudioEditorProps) {
   const [measured, setMeasured] = createSignal<number | null>(null);
   const [previewReady, setPreviewReady] = createSignal('');
   const [previewPlaying, setPreviewPlaying] = createSignal(false);
-  const [previewLabel, setPreviewLabel] = createSignal('Output');
+  const [previewLabel, setPreviewLabel] = createSignal('');
   const [previewBusy, setPreviewBusy] = createSignal(false);
   const [previewError, setPreviewError] = createSignal('');
+  const [previewPosition, setPreviewPosition] = createSignal(0);
   /** The bridge rejects with a plain string; that sentence is the whole message. */
   const rejection = (cause: unknown): string =>
     typeof cause === 'string'
@@ -66,32 +69,105 @@ export default function AudioEditor(props: AudioEditorProps) {
       : cause instanceof Error
         ? cause.message
         : 'The preview failed';
-  // "Play Output" must play. The window never decodes audio itself: WebKitGTK's media
-  // stack crashed the process on Play, so the produced file is handed to the system's
-  // sound sink by the backend, which resolves when playback ends.
-  async function play(path: string, label: string): Promise<void> {
+  // Playback is one shared external sink: the web view never decodes audio. The sink
+  // is started at a position and stopped by `stop_preview`; this dialog advances its
+  // own clock, so Pause resumes exactly where it stopped and a trim stops at its end.
+  let previewTimer: number | undefined;
+  let previewStarted = 0;
+  let previewFrom = 0;
+  let previewStopAt = 0;
+  /** A render that finishes after another preview was started must not play. */
+  let previewRequest = 0;
+
+  function clearPreviewClock(): void {
+    if (previewTimer !== undefined) {
+      window.clearInterval(previewTimer);
+      previewTimer = undefined;
+    }
+  }
+
+  function stopPreview(): void {
+    previewRequest += 1;
+    clearPreviewClock();
+    setPreviewPlaying(false);
+    void ipc.stopPreview();
+  }
+
+  /** A click on the waveform seeks the produced preview (not just a marker). */
+  function seekPreview(seconds: number): void {
+    if (previewPlaying()) stopPreview();
+    setPreviewPosition(Math.min(duration(), Math.max(0, seconds)));
+  }
+
+  function startPreviewClock(from: number, stopAt: number): void {
+    previewFrom = from;
+    previewStopAt = stopAt;
+    previewStarted = performance.now();
+    setPreviewPosition(from);
+    clearPreviewClock();
+    previewTimer = window.setInterval(() => {
+      const next = previewFrom + (performance.now() - previewStarted) / 1000;
+      if (next >= previewStopAt) {
+        setPreviewPosition(previewStopAt);
+        stopPreview();
+        return;
+      }
+      setPreviewPosition(next);
+    }, 100);
+  }
+
+  /** A label is playing when the sink and the button's own label agree. */
+  const isPlaying = (label: string): boolean =>
+    previewPlaying() && previewLabel() === label;
+
+  async function play(path: string, label: string, start: number, stopAt: number): Promise<void> {
     setPreviewLabel(label);
-    setPreviewReady('');
     setPreviewError('');
     setPreviewPlaying(true);
     try {
-      await ipc.playPreview(path);
-      // The sink finished: only now is the produced preview "ready".
-      setPreviewReady(label);
+      await ipc.playPreview(path, start);
+      startPreviewClock(start, stopAt);
     } catch (cause) {
       setPreviewError(rejection(cause));
-    } finally {
       setPreviewPlaying(false);
     }
   }
 
-  /** A preview button's label: rendering while producing, playing while heard. */
-  const previewButtonText = (idle: string): string =>
-    previewPlaying() ? 'Playing…' : previewBusy() ? 'Rendering…' : idle;
+  /**
+   * One button per version. Pressing the active label pauses; pressing another label
+   * switches. The sink is shared, so the previous player is stopped either way.
+   */
+  function toggle(path: string | null, label: string, start = 0, stopAt = duration()): void {
+    if (!path) return;
+    if (isPlaying(label)) {
+      stopPreview();
+      return;
+    }
+    previewRequest += 1;
+    // The position is shared by every version: switching Original ↔ With Bleeps at
+    // 0:07 must continue at 0:07, not jump back to the start.
+    const from = previewPosition() < stopAt - 0.05 ? previewPosition() : start;
+    void play(path, label, from, stopAt);
+  }
+
+  onCleanup(stopPreview);
 
   const duration = (): number => info()?.duration ?? 0;
   const start = (): number => asNumber(props.values.start ?? 0);
   const end = (): number => asNumber(props.values.end ?? 0);
+  /** The chosen output layout, and whether the source itself is mono. */
+  const monoOutput = (): boolean => String(props.values.channels ?? '2') === '1';
+  const sourceMono = (): boolean => (info()?.channels ?? 0) === 1;
+  const gainLeft = (): number =>
+    asNumber(monoOutput() ? (props.values.volume ?? 100) : (props.values.left_volume ?? 100));
+  const gainRight = (): number => asNumber(props.values.right_volume ?? 100);
+  /** A mono source feeding stereo is the same signal on both rows, as the engine does. */
+  const laneData = () => {
+    const data = channels();
+    if (!data) return null;
+    if (sourceMono() && !monoOutput()) return { left: data.left, right: data.left };
+    return data;
+  };
 
   const extras = (): Record<string, unknown> =>
     props.tool === 'bleep' && ranges().length > 0 ? { ranges: ranges() } : {};
@@ -108,7 +184,8 @@ export default function AudioEditor(props: AudioEditorProps) {
     setPeaks([]);
     setMeasured(null);
     setPreviewReady('');
-    setPreviewPlaying(false);
+    stopPreview();
+    setPreviewPosition(0);
     setPreviewError('');
     void ipc
       .mediaInfo(path)
@@ -126,7 +203,8 @@ export default function AudioEditor(props: AudioEditorProps) {
     if (props.resetToken < 0) return;
     setRanges([]);
     setPreviewReady('');
-    setPreviewPlaying(false);
+    stopPreview();
+    setPreviewPosition(0);
     setPreviewError('');
   });
 
@@ -219,14 +297,21 @@ export default function AudioEditor(props: AudioEditorProps) {
   async function playOutput(tool: string): Promise<void> {
     const path = props.path;
     if (!path || previewBusy()) return;
+    if (isPlaying('Output')) {
+      stopPreview();
+      return;
+    }
+    const token = ++previewRequest;
     setPreviewBusy(true);
     setPreviewReady('');
     setPreviewError('');
     try {
       const produced = await ipc.audioPreview(path, tool, paramsFor());
-      await play(produced, 'Output');
+      if (token !== previewRequest) return;
+      setPreviewReady('Output');
+      const from = previewPosition() < duration() - 0.05 ? previewPosition() : 0;
+      await play(produced, 'Output', from, duration());
     } catch (cause) {
-      // The bridge rejects with a plain string; that sentence is the whole message.
       setPreviewError(rejection(cause));
     } finally {
       setPreviewBusy(false);
@@ -236,12 +321,21 @@ export default function AudioEditor(props: AudioEditorProps) {
   async function playBleeps(): Promise<void> {
     const path = props.path;
     if (!path || previewBusy()) return;
+    if (isPlaying('With Bleeps')) {
+      stopPreview();
+      return;
+    }
+    const token = ++previewRequest;
     setPreviewBusy(true);
     setPreviewReady('');
     setPreviewError('');
     try {
       const produced = await ipc.bleepPreview(path, paramsFor());
-      await play(produced, 'With Bleeps');
+      if (token !== previewRequest) return;
+      setPreviewReady('With Bleeps');
+      // The bleeped copy has the same length as the source; the clock ends there.
+      const from = previewPosition() < duration() - 0.05 ? previewPosition() : 0;
+      await play(produced, 'With Bleeps', from, duration());
     } catch (cause) {
       setPreviewError(rejection(cause));
     } finally {
@@ -279,6 +373,8 @@ export default function AudioEditor(props: AudioEditorProps) {
             ranges={[]}
             onRanges={() => undefined}
             transport={false}
+            playhead={previewPosition()}
+            onSeek={seekPreview}
           />
           <div class="audio-preview-row">
             <button
@@ -287,7 +383,16 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy()}
               onClick={() => void playOutput('normalize')}
             >
-              {previewButtonText('Play Output')}
+              <Show when={previewBusy()} fallback={
+                <>
+                  <Show when={isPlaying('Output')} fallback={<PlayGlyph />}>
+                    <PauseGlyph />
+                  </Show>
+                  Output
+                </>
+              }>
+                Rendering…
+              </Show>
             </button>
             <span class="audio-measured">
               {measured() === null
@@ -315,12 +420,15 @@ export default function AudioEditor(props: AudioEditorProps) {
             path={props.path}
             duration={duration()}
             mode="channels"
-            channels={channels()}
-            gainLeft={asNumber(props.values.left_volume ?? 100)}
-            gainRight={asNumber(props.values.right_volume ?? 100)}
+            channels={laneData()}
+            mono={monoOutput()}
+            gainLeft={gainLeft()}
+            gainRight={gainRight()}
             ranges={[]}
             onRanges={() => undefined}
             transport={false}
+            playhead={previewPosition()}
+            onSeek={seekPreview}
           />
           <div class="audio-preview-row">
             <button
@@ -329,7 +437,16 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy()}
               onClick={() => void playOutput('channels')}
             >
-              {previewButtonText('Play Output')}
+              <Show when={previewBusy()} fallback={
+                <>
+                  <Show when={isPlaying('Output')} fallback={<PlayGlyph />}>
+                    <PauseGlyph />
+                  </Show>
+                  Output
+                </>
+              }>
+                Rendering…
+              </Show>
             </button>
             <Show when={previewReady()}>
               <p class="field-help" role="status">
@@ -403,6 +520,23 @@ export default function AudioEditor(props: AudioEditorProps) {
               </svg>
             </Show>
           </div>
+          <div class="audio-preview-row">
+            <button
+              type="button"
+              class="button button-quiet"
+              onClick={() => toggle(props.path, 'Audio')}
+            >
+              <Show when={isPlaying('Audio')} fallback={<PlayGlyph />}>
+                <PauseGlyph />
+              </Show>
+              Audio
+            </button>
+            <span class="audio-measured">
+              {previewPlaying() && previewLabel() === 'Audio'
+                ? `${formatTimecode(previewPosition())} / ${formatTimecode(duration())}`
+                : ''}
+            </span>
+          </div>
         </div>
       </Show>
 
@@ -415,16 +549,19 @@ export default function AudioEditor(props: AudioEditorProps) {
             mode="bleep"
             ranges={ranges()}
             onRanges={setRanges}
+            transport={false}
+            playhead={previewPosition()}
+            onSeek={seekPreview}
           />
           <div class="audio-preview-row">
             <button
               type="button"
               class="button button-quiet"
-              disabled={previewPlaying()}
-              onClick={() => {
-                if (props.path) void play(props.path, 'Original');
-              }}
+              onClick={() => toggle(props.path, 'Original')}
             >
+              <Show when={isPlaying('Original')} fallback={<PlayGlyph />}>
+                <PauseGlyph />
+              </Show>
               Original
             </button>
             <button
@@ -433,9 +570,21 @@ export default function AudioEditor(props: AudioEditorProps) {
               disabled={previewBusy() || ranges().length === 0}
               onClick={() => void playBleeps()}
             >
-              {previewButtonText('With Bleeps')}
+              <Show
+                when={!previewBusy()}
+                fallback={<>Rendering…</>}
+              >
+                <Show when={isPlaying('With Bleeps')} fallback={<PlayGlyph />}>
+                  <PauseGlyph />
+                </Show>
+                With Bleeps
+              </Show>
             </button>
-            <span class="audio-measured">{previewLabel()}</span>
+            <span class="audio-measured">
+              {previewPlaying()
+                ? `${previewLabel()} · ${formatTimecode(previewPosition())} / ${formatTimecode(duration())}`
+                : previewLabel()}
+            </span>
           </div>
           <Show when={previewReady()}>
             <p class="field-help" role="status">

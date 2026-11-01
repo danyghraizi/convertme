@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   TAU,
+  backgroundWindow,
+  collageCellBox,
   indexForPoint,
   layoutRing,
   polarToCartesian,
@@ -142,4 +144,42 @@ test('neighbouring wedge edges lie on the same radial line', () => {
   const cross = innerEdge[0] * outerEdge[1] - innerEdge[1] * outerEdge[0];
   // rounding to 0.01 at r=190 leaves a cross product around 0.3
   assert.ok(Math.abs(cross) < 1, `edges not collinear: ${cross}`);
+});
+
+test('background window starts at the cover offset, not the source origin', () => {
+  // A 2:1 picture on a square canvas: the cover window is 100x100 at x=50.
+  const win = backgroundWindow(200, 100, 100, 100, 1, 0, 0)!;
+  const sourceX = win.baseX + win.cropX;
+  assert.equal(win.baseX, 50);
+  assert.equal(win.baseY, 0);
+  assert.equal(win.visW, 100);
+  assert.equal(sourceX, 50, 'a 1:1 crop of a 2:1 source starts halfway across');
+  assert.equal(win.baseX + win.cropX + win.visW, 150, 'and is 100 wide');
+});
+
+test('background pan moves the visible window inside the cover', () => {
+  // zoom 2 leaves a 50 px band: pan +100 pins the window to the left edge.
+  const centre = backgroundWindow(200, 100, 100, 100, 2, 0, 0)!;
+  const right = backgroundWindow(200, 100, 100, 100, 2, 100, 0)!;
+  const left = backgroundWindow(200, 100, 100, 100, 2, -100, 0)!;
+  assert.equal(centre.baseX + centre.cropX, 75);
+  assert.equal(right.baseX + right.cropX, 50);
+  assert.equal(left.baseX + left.cropX, 100);
+});
+
+test('a collage cell box matches the engine pan at both ends', () => {
+  // The engine test: 200x100 red/blue source, 1024 cell, zoom 2, sample at x=256.
+  // In display units (cell 512): one source px is 10.24 display px.
+  const centred = collageCellBox(512, 512, 200, 100, 2, 0, 0, 'crop')!;
+  const panned = collageCellBox(512, 512, 200, 100, 2, 100, 0, 'crop')!;
+  const scale = centred.width / 200;
+  const sample = (box: typeof centred, x: number) => (x - box.left) / scale;
+  assert.equal(centred.width, 2048);
+  assert.equal(centred.height, 1024);
+  assert.ok(sample(centred, 128) < 100, 'centred shows the red half');
+  assert.ok(sample(panned, 128) > 100, 'pan +100 shows the blue half');
+  const contained = collageCellBox(512, 512, 100, 200, 1, 0, 0, 'contain')!;
+  assert.equal(contained.width, 256, 'contain keeps the source aspect');
+  assert.equal(contained.height, 512);
+  assert.equal(contained.left, 128, 'and centres the picture in the cell');
 });

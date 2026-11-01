@@ -90,7 +90,7 @@ export const FALLBACK_TOOLS: Record<string, Segment[]> = {
       'Arrange several images into one composition.',
       'Create a collage',
       'Create Collage',
-      ['Grid, row, column, and featured layouts', 'Set final dimensions, spacing, corners, and background'],
+      ['Grid and featured layouts with any rows and columns', 'Set final dimensions, spacing, corners, and background'],
     ),
     ref(
       'redact',

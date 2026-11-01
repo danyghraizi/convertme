@@ -621,7 +621,7 @@ pub static TOOLS: &[Tool] = &[
         "Arrange several images into one composition.",
         ImageMagick,
         [
-            "Grid, row, column, and featured layouts",
+            "Grid and featured layouts with any rows and columns",
             "Set final dimensions, spacing, corners, and background"
         ],
         None

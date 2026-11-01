@@ -1,5 +1,6 @@
 import { Show, createEffect, createMemo, createSignal } from 'solid-js';
 import * as ipc from '../ipc';
+import { backgroundWindow as backgroundCrop } from '../geometry';
 import './background-preview.css';
 
 /**
@@ -214,23 +215,17 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
    */
   const backgroundWindow = createMemo(() => {
     const size = backdropSize();
-    if (!size || !(size.w > 0) || !(size.h > 0)) return null;
     const canvas = canvasSize();
-    if (!(canvas.w > 0) || !(canvas.h > 0)) return null;
-    const zoom = clamp(props.imageZoom, 1, 3);
-    const target = canvas.w / canvas.h;
-    const source = size.w / size.h;
-    const baseW = source > target ? size.h * target : size.w;
-    const baseH = source > target ? size.h : size.w / target;
-    const visW = Math.min(size.w, Math.max(1, Math.round(baseW / zoom)));
-    const visH = Math.min(size.h, Math.max(1, Math.round(baseH / zoom)));
-    const freeX = Math.max(0, baseW - visW);
-    const freeY = Math.max(0, baseH - visH);
-    const shiftX = (clamp(finite(props.imageX, 0), -100, 100) / 100) * (freeX / 2);
-    const shiftY = (clamp(finite(props.imageY, 0), -100, 100) / 100) * (freeY / 2);
-    const cropX = Math.min(freeX, Math.max(0, Math.round(freeX / 2 - shiftX)));
-    const cropY = Math.min(freeY, Math.max(0, Math.round(freeY / 2 - shiftY)));
-    return { baseW, baseH, visW, cropX, cropY };
+    if (!size || !(size.w > 0) || !(size.h > 0)) return null;
+    return backgroundCrop(
+      size.w,
+      size.h,
+      canvas.w,
+      canvas.h,
+      clamp(props.imageZoom, 1, 3),
+      finite(props.imageX, 0),
+      finite(props.imageY, 0),
+    );
   });
 
   /**
@@ -244,17 +239,23 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
   const fillGeometry = createMemo(() => {
     const win = backgroundWindow();
     const display = layout();
-    if (!win || !(display.canvasW > 0) || !(win.visW > 0)) {
+    const size = backdropSize();
+    if (!win || !size || !(display.canvasW > 0) || !(win.visW > 0)) {
       // Without the picture's own size only a cover fit is honest; the file is still
       // composed by the engine, so the dialog must not stall on this.
       return { width: '100%', height: '100%', left: '0', top: '0' };
     }
+    // One source pixel is `s` display pixels wide: the engine stretches the visible
+    // window to the canvas. Draw the whole picture at that scale and subtract where
+    // the cover window and the pan start in the source. Forcing the source into the
+    // base window's box instead (the old code) stretched non-square pictures and
+    // showed a different region than the file.
     const s = display.canvasW / win.visW;
     return {
-      width: `${(win.baseW * s).toFixed(2)}px`,
-      height: `${(win.baseH * s).toFixed(2)}px`,
-      left: `${(-win.cropX * s).toFixed(2)}px`,
-      top: `${(-win.cropY * s).toFixed(2)}px`,
+      width: `${(size.w * s).toFixed(2)}px`,
+      height: `${(size.h * s).toFixed(2)}px`,
+      left: `${(-(win.baseX + win.cropX) * s).toFixed(2)}px`,
+      top: `${(-(win.baseY + win.cropY) * s).toFixed(2)}px`,
     };
   });
 
@@ -344,16 +345,23 @@ export default function BackgroundPreview(props: BackgroundPreviewProps) {
           }}
         >
           <Show when={props.mode === 'image' && backdrop()}>
-            {/* CSS blur fades to transparent past the element's own edge; the engine
-                keeps the picture's edge colour there. The untouched copy underneath
-                fills that bleed, so a heavy blur does not darken the canvas border. */}
+            {/* CSS blur fades to transparent past the element's own edge. An
+                unblurred copy underneath used to fill that bleed — which painted the
+                sharp picture along the canvas border (the "left part of the
+                background" that stayed readable). A slightly enlarged copy with the
+                same blur keeps the border opaque without ever showing sharp pixels:
+                the fade happens outside the canvas. */}
             <img
               class="background-image background-bleed"
               src={backdrop()}
               alt=""
               aria-hidden="true"
               draggable={false}
-              style={fillGeometry()}
+              style={{
+                ...fillGeometry(),
+                filter: fillBlur() > 0 ? `blur(${fillBlur().toFixed(2)}px)` : 'none',
+                transform: fillBlur() > 0 ? 'scale(1.25)' : 'none',
+              }}
             />
             <img
               class="background-image background-fill-image"

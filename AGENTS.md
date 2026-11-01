@@ -40,6 +40,15 @@ the failures that produced each rule, is `docs/LESSONS.md`.
   `preview.tsx`. Audio plays through `play_preview` (a headless `ffplay`/`mpv`/`paplay`/
   `pw-play`/`aplay` sink); video walks the `video_frames` still sequence. Playback speed
   scales the playhead rate.
+- An annotation draft is `<Show when={draft()} keyed>`; an unkeyed Show re-runs its child
+  only when truthiness changes and leaves a zero-size rectangle until pointerup. The
+  selection ring reads `hitBox(shape())` inside the JSX and is gated to Select. The Number
+  field is always mounted (stable toolbar height) and sets the next badge.
+- An arrow's head scales with its stroke (3.5×, bounded) and all three lines use round
+  caps/joins in the SVG and MVG; a fixed head plus butt caps breaks the tip at wide
+  strokes. A caption is free-sized to 2000 px and typed in a number input.
+- While an inline editor is open, omit the shape being edited from the SVG and hide the
+  selection ring; drawing both is the double-click ghost.
 - The front end never decodes audio or video: WebKitGTK's media stack crashed the process.
   Video playback walks the `video_frames` sequence; a produced audio preview plays through
   the system sink in `play_preview`, without opening a desktop app.
@@ -75,6 +84,24 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - Crop with absolute offsets, never `-gravity center` with signed offsets (it clips).
 - Bound intermediates: crop the source, then scale to the canvas; never upscale to
   `zoom × canvas`. Compose at depth 8.
+- A blur redaction is an expanded crop → blur → crop back → composite per box. `-region`
+  plus `-blur` costs canvas-wide time (207 s on 48 MP; 13 s with patches).
+- A cover crop has an origin: add `(source - base)/2` to the pan offset when the
+  picture's aspect differs from the canvas. The browser draws the whole source at
+  `canvasWidth / visW`, never stretched into the base box (`ui/src/geometry.ts`).
+- A video still comes from `filmstrip(source, 1)`, a PDF still from its page render, and
+  only a still comes from the image thumbnailer (`still_for`). ImageMagick on a video
+  walks the clip (~28 s) and fails.
+- The waveform is a 1 kHz, six-hour overview with 2000 buckets and a real truncation flag;
+  a short file must not show the "part shown" note.
+- Audio playback is one shared sink (`audio.rs`): starting a play stops the previous one,
+  `stop_preview` kills the child, and every sheet's cleanup calls it. Never spawn a
+  player and await it, and never fall back to a desktop opener (it cannot be stopped).
+- Several files from one job are one result: publish them into `<source stem>/` (names
+  without the repeated stem) and treat a directory artifact as one output. The e2e
+  harness recurses into that folder; a folder named `<stem>-out` is still one artifact.
+- A snapshot's all-frames mode sends `fps` (the clip's average rate), not thousands of
+  times; the UI and engine ceiling is 2000 frames.
 - Masks apply to the layer the control names (rounding is the photo's, not the canvas's).
 - A tonal slider's direction is measured on a ramp at +N/−N (highlights, whites, blacks,
   shadows, hue range, dehaze magnitude). A sign is not implied by the label.
@@ -121,6 +148,28 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 ## Front-end state
 
 - Effects that write state compare against `untrack`ed values.
+- Time sliders that show the same quantity (trim start/end, playhead) share one
+  `0..duration` axis; a slider whose min/max follows another handle is a hidden second
+  scale.
+- A transport plays the selection it is drawn over: trim audio starts at the trim start
+  and stops at its end; the button toggles Play/Pause. A control inside an editable
+  surface (the bleep ×) must be excluded from the surface's pointerdown/capture.
+- One clock per preview: a waveform over a dialog-owned preview takes `playhead` and
+  reports `onSeek`; clicking stops the sink and sets the position the next Play uses.
+  Never draw a marker from a second internal clock.
+- A mono source shows one lane labelled M; a mono output has one **Volume** field applied
+  to both source channels. Stereo keeps Left/Right. The media facts carry the channel
+  count.
+- Transport buttons keep their subject label and prefix a play/pause glyph; the visible
+  text does not change with state.
+- A fixed-aspect preview is centred with `margin-inline: auto`; measure both gaps.
+- A debounced engine preview needs one request in flight, latest-wins, plus a live layer:
+  the collage draws the selected cell from its thumbnail with `collageCellBox` and drops
+  it when a render containing the current transforms lands. Restarting the debounce per
+  pointer move means no render until the pointer stops.
+- Collage Rows/Columns always drive the layout (Style is Grid/Featured). Do not add a
+  mode whose counts are ignored.
+- Activity dots are newest-first: history is already sorted, so do not reverse it.
 - User-edited lists keep stable identities (store with ids, mutate items); sort copies for
   display, never the list being edited. While a row is being *typed into*, key it by
   index (`<Index>`) and commit on `change` — replacing the object on every keystroke

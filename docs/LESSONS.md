@@ -1228,3 +1228,321 @@ the photo's own colour in the composite — not just that a file was written.
 **Evidence.** `background_blur_changes_only_the_background_layer` uses a black-and-white
 checkerboard backdrop and requires the photo centre to stay `255/0/0`; the real-window
 `tool-image-background` run samples `(237,140,76)` in the file.
+
+## 83. A Solid `<Show>` is a mount switch, not a reactive binding
+
+**Trap.** The annotation draft was `<Show when={draft()}>{(shape) =>
+drawShape(shape())}</Show>`. A non-keyed `Show` memoises on *truthiness*
+(`equals: (a, b) => !a === !b`), so when the draft went from one object to the next the
+child was never re-invoked. `drawShape` ran once at pointerdown, when the rectangle was
+0×0, and the rectangle appeared only when pointerup committed it — reported as "the
+preview only shows the result after I finish".
+
+**Rule.** A value that changes shape-by-shape while a gesture is active must be `keyed`
+(`<Show when={draft()} keyed>`), or the reactive read must happen *inside* a JSX
+expression. A local `const box = hitBox(shape())` outside the JSX is computed once; the
+same bug left the selection ring behind while a shape was dragged.
+
+**Evidence.** `ui-shots.py` now samples the draft mid-drag: the rectangle has a non-zero
+`getBoundingClientRect()` while the pointer is down, and the selection ring follows a
+40 px move in Select.
+
+## 84. Crop before the blur; `-region` is not a cheap mask
+
+**Trap.** A blur redaction emitted `-region WxH+X+Y -blur 0xS +region` per box. On a
+48 MP JPEG that cost 207 s through the app (181.9 s in `magick` alone) with the app's
+`MAGICK_THREAD_LIMIT=2`; the user reported redaction as unusably slow in both styles.
+
+**Rule.** For a still, build each blurred box as an expanded crop (`+clone -crop …`),
+blur the crop, crop back to the box, and composite it at the box origin. Blur cost is
+then proportional to the box, not the canvas. Keep the sigma formula shared with the
+preview.
+
+**Evidence.** Same 48 MP file, same boxes: **13.3 s** (15.6× faster) end-to-end; a
+5000×3750 PNG went 48 s → 5.7 s. The solid style is unchanged at ~1.8–2.6 s.
+
+## 85. A cover crop has an origin
+
+**Trap.** The background image was cropped with `baseW = bg_h × target`, `baseH = bg_h`
+… and then the pan offset was applied to the **source** as if the cover window started
+at (0,0). Whenever the picture's aspect differed from the canvas, the file showed a
+different region from the dialog: the preview's card edges and title were replaced by a
+plain area, and zoom/placement looked ignored.
+
+**Rule.** Compute the cover window's origin in the source (`(sourceW - baseW)/2` or
+`(sourceH - baseH)/2`) and add it to the crop offset. The UI draws the *whole* source at
+`canvasWidth / visW` and subtracts the same origin; forcing the source into the base
+window's box stretches a non-square picture.
+
+**Evidence.** `add_background_image_crop_starts_at_the_cover_window` (red/blue 200×100
+backdrop on a 1:1 canvas: corner is blue at the base origin, red at the source origin);
+`geometry.test.ts` pins the same offsets; a real job with zoom 2, x −6, y −67 now shows
+the same POSTER card the dialog shows.
+
+## 86. A control that cannot change the result is a bug, not a hint
+
+**Trap.** Collage exposed Style = Grid/Row/Column/Featured *and* Rows/Columns. Row and
+Column ignored both counts by construction, so the dialog offered two controls that
+provably did nothing in the selected mode ("Rows and Columns here do not make much
+sense if we can't really change the collage").
+
+**Rule.** Keep one representation of the layout. Row and Column are the grid with a
+fixed count, so they were removed from the dialog (the engine still accepts them for
+old requests); Grid/Featured always obey Rows/Columns, and 0 = auto. Spare cells stay
+background, including when columns exceed the picture count.
+
+**Evidence.** `ui-shots.py`: 2 pictures, columns 2 → cells 0.5 wide; columns 3 → 0.333;
+rows 2 → height 0.5; readout `3 × 2 cells`.
+
+## 87. A debounced engine preview needs a live layer
+
+**Trap.** Every pan move restarted a 200 ms debounce, and the whole collage was
+recomposed by ImageMagick, so no render happened until the pointer stopped — the user
+saw "it only updates after I finish", then a long wait.
+
+**Rule.** One request in flight, latest-wins (a change during a render queues exactly
+one follow-up). While the engine catches up, draw the selected cell from its thumbnail
+with the *same* crop formula as the composer (`collageCellBox`), and drop the live layer
+only when a render containing the current transforms lands. The live layer is a bridge,
+never the saved result.
+
+**Evidence.** `ui-shots.py` samples inside the 120 ms window: `.collage-live` is present
+with a non-empty width while the pointer is down, and disappears after the render.
+
+## 88. A blurred layer must not reveal a sharp copy underneath
+
+**Trap.** CSS `filter: blur()` fades to transparent at the element's own edge. An
+unblurred "bleed" copy underneath filled that edge — and along the canvas border it
+showed the sharp picture, so a blurred document background still had readable text on
+the left ("I can still see the left part of the background").
+
+**Rule.** The underlay must be blurred too, and larger than the canvas so its own fade
+lands outside the visible area. Never place an unfiltered copy under a filtered one.
+
+**Evidence.** Real-window preview at blur 50 on `screenshot-text.png`: the left-edge
+text strip is gone; the saved file is unchanged (the engine blurs before resizing).
+
+## 89. History dots read newest-first
+
+**Trap.** The activity spark took `historyRows().slice(0, 12).reverse()`. History is
+stored newest-first, so the reverse put the oldest job on the left and the newest on the
+right; the user expects the dot next to "Activity" to be the latest.
+
+**Rule.** Do not reverse a list that is already in the order being shown. If the UI
+wants a different order, sort at the source and name it.
+
+**Evidence.** `ui/src/app.tsx` renders `slice(0, 12)`; the mock's first row is the
+newest.
+
+## 90. An arrow head is a function of the stroke, and its tip needs a cap
+
+**Trap.** The arrow drew three butt-capped lines meeting at the tip, with a head length
+fixed at `clamp(0.03 × min(w,h), 8, 48)`. At stroke 13 and above the flat ends met at
+three different angles and left wedge-shaped gaps: the tip read as broken. At stroke 64
+the head was shorter than the stroke itself.
+
+**Rule.** Scale the head with the stroke (`3.5 × stroke`, bounded by a quarter of the
+short side and 80 % of the arrow's length) and give all three lines
+`stroke-linecap: round` / `stroke-linejoin: round` (MVG accepts both). The SVG overlay
+and `draw_command` use the same formula, so the dialog and the file agree.
+
+**Evidence.** `annotate_arrow_uses_round_caps_and_a_large_text_is_allowed` asserts the
+command carries both cap/join settings and a 140 px head for a 40 px stroke;
+`ui-shots.py` checks the three SVG lines at stroke 13; stroke 64 renders a solid head.
+
+## 91. A text size is free, not a slider's range
+
+**Trap.** Caption sizes were capped at 200 in the engine and in the editor, and the
+slider's value was a read-only output. A title on a 3000 px poster could not exceed the
+old cap, and a number could only be dragged, not typed.
+
+**Rule.** Let the engine accept a caption up to 2000 px and put a number input beside
+the slider. Strokes stay 1..64, numbers keep their box-derived badge, and the caption's
+resize handles scale the size (not the box) up to the same ceiling.
+
+**Evidence.** `annotate_accepts_a_text_above_the_old_cap` (600 px caption changes the
+picture); `ui-shots.py` types 300 and sees a `font-size=300` node and `max=2000`.
+
+## 92. An inline editor replaces the mark, it does not sit over it
+
+**Trap.** Double-clicking a text annotation opened a `<textarea>` at the text's box while
+the SVG text stayed rendered underneath. The result looked like two overlapping texts,
+plus the selection ring around the box; the report called it a double-click bug.
+
+**Rule.** While the inline editor is open, omit the shape it edits from the SVG, hide the
+selection ring, and disable text selection on the canvas. The textarea is the only copy
+until Enter or blur commits it.
+
+**Evidence.** `ui-shots.py`: double-click opens the editor with no `text` node for the
+edited string and no `.annotate-selection`; Escape restores the mark.
+
+## 93. A video has no still for ImageMagick
+
+**Trap.** The selection strip built each card with the image thumbnailer. For a video
+that means ImageMagick walking the file: 27–28 s per clip, then "storing a thumbnail:
+No such file or directory". Three selected videos left the app on "Reading files" for
+over a minute with no cards — reported as "the selection does not show them".
+
+**Rule.** One `still_for` decides a card's still: a PDF goes to its page renderer, a
+video to `filmstrip(source, 1)` (ffmpeg seeks, 32 ms), everything else to the image
+thumbnailer. The dialog preview command and the selection analysis use that same
+function, so a new category cannot get the wrong decoder in one place only.
+
+**Evidence.** `multi-file-videos`: three clips (AVI/MP4/MKV) reach the strip in 2.2 s,
+all three names are there, and the preview cache holds three `strip-*/frame001.jpg`
+stills.
+
+## 94. Sliders that show the same quantity share one axis
+
+**Trap.** Trim start was `min=0, max=end`, trim end `min=start, max=duration`, and the
+playhead `0..duration`. At start 5.04 / end 9.16 the end handle sat at 82 % and the
+playhead at 91 %, so the same time read differently on two rows — "the playhead is not
+aligned with the trim end".
+
+**Rule.** All time sliders span the clip (`0..duration`); the handlers clamp the values
+so handles cannot cross. A slider whose range follows another control is a second,
+invisible scale.
+
+**Evidence.** `ui-shots`: start/end/playhead all `min=0, max=10`; end and playhead at
+9.16 both report fraction 0.916. `tool-video-trim` reads the same min/max from AT-SPI.
+
+## 95. "All frames" is the engine's fps mode, with a stated ceiling
+
+**Trap.** The frames dialog only offered per-moment chips; the engine already had an
+`fps`/`interval` snapshot mode but the dialog never sent it.
+
+**Rule.** Send `fps = the clip's own average frame rate` (ffprobe's
+`avg_frame_rate`) from an **All frames (N)** button, show the count on the primary
+action, and disable the button (with a reason) above the engine's ceiling. The engine
+writes one ffmpeg pass and errors clearly when `duration × rate` exceeds the cap; the
+UI constant and the engine constant are the same number.
+
+**Evidence.** `snapshot_all_frames_uses_the_native_frame_rate` (2 s at 30 fps → 60
+PNGs); `probe_reads_a_fractional_frame_rate`; `ui-shots` shows "All frames (300)" and
+"Save 300 Frames" for the 10 s mock clip, with the chips hidden and restorable.
+
+## 96. Several outputs from one source are one result
+
+**Trap.** Split parts, saved frames and exported PDF pages were published as a pile of
+files beside the original (`clip-part-001.mp4`, `clip-part-002.mp4`, `frame-001.png`,
+…), mixing runs and unrelated results.
+
+**Rule.** When a job returns more than one file (a directory artifact still counts as
+one), publish them into a folder named after the source stem, strip the repeated
+`stem-` prefix from each name, and apply the overwrite policy per file. The primary
+history output stays the first file. The harness must recurse into that folder; a
+folder named `<stem>-out`/`<stem>-extract` is still a single artifact.
+
+**Evidence.** Queue test `several_outputs_publish_into_a_folder_named_after_the_source`;
+app-e2e `tool-video-frames` → `clip-landscape-720p-10s/frame-001.png`,
+`tool-video-split` → `…/part-001.mp4`, `tool-pdf-pages` and the PDF split case →
+`report-5-pages/…`; `quality-audit video-frames` passes.
+
+## 97. A duration cap must be a bounded overview, not a silent stretch
+
+**Trap.** The waveform decoded the first 600 s and *always* said `truncated` when read
+back from the cache, so a 14-second recording claimed "first 10 minutes shown", and a
+two-hour recording drew its first ten minutes stretched across the whole axis. The
+dialog was lying about both the file and what it displayed.
+
+**Rule.** Decode at a rate that makes hours cheap (1 kHz), cover up to six hours, and
+store a real truncation flag in the cache. The flag is set only when the decode reached
+the cap, so a short file never claims to be partial. The bucket count is bounded
+(2000) independently of duration: the drawing needs an overview, not one bucket per
+2.5 ms.
+
+**Evidence.** 14.1 s speech: 2000 peaks, `truncated=false`; an 11-minute WAV: 2000
+peaks, `duration_ms=660000`, decoded in 138 ms; the cache round-trip test asserts both
+flag values.
+
+## 98. Audio playback is one sink with a lifecycle, not a fire-and-forget call
+
+**Trap.** `play_preview` spawned a player and **awaited it to completion**. There was no
+stop command, so Pause was impossible, a second preview played over the first, and
+closing the dialog left the sound running.
+
+**Rule.** One shared external sink in app state: starting a play stops the previous
+player and returns immediately, the dialog advances its own clock, and `stop_preview`
+kills the child. The dialog's cleanup and the main window's close hook both stop it.
+Seeking uses `ffplay -ss` / `mpv --start`; the simple sinks refuse a mid-file start
+rather than silently playing from zero. Do not fall back to a desktop opener: it cannot
+be stopped.
+
+**Evidence.** Unit tests pin the player argv and idempotent stop; `audio-playback`
+launches the real window with `SDL_AUDIODRIVER=dummy`, sees an `ffplay` child while
+playing, closes the sheet, and sees no player child afterwards.
+
+## 99. A transport must play the selection it is drawn over
+
+**Trap.** The trim waveform's Play started at 0 and ran to the end of the file, ignoring
+the trim handles; the playhead was not even clickable. The report: "it doesn't stop at
+where I trimmed it nor start from where I trimmed it."
+
+**Rule.** With a selection, Play starts at its start (or the cursor inside it) and the
+clock stops at its end, calling `stop_preview`. Clicking the waveform seeks and stops.
+The button is Play/Pause, not a disabled "Playing…" label.
+
+**Evidence.** `ui-shots`: trim 2–4 s plays at `0:02.35` and stops at `0:04.00`, button
+`Pause` → `▶`.
+
+## 100. A control inside an editable surface needs the first pointer event
+
+**Trap.** The × inside a bleep range sat on the waveform surface. The surface captured
+the pointer on `pointerdown`, so the button's click walked to the surface and the range
+never disappeared.
+
+**Rule.** In the surface's `pointerdown`, ignore events whose target is a button; give
+the button its own stacking order and `pointer-events: auto`. The same rule applies to
+any in-canvas control (page cards, crop handles with their own handlers).
+
+**Evidence.** `ui-shots`: draw a bleep range, press its ×, the range count goes 1 → 0.
+
+## 101. A fixed-aspect preview is centred by its box
+
+**Trap.** The portrait visualizer frame had `width: 100%` and `max-width: 200px`, so it
+sat at the left of a 552 px row.
+
+**Rule.** `margin-inline: auto` on the constrained frame; the measuring check compares
+the left and right gaps, not "it looks centred".
+
+**Evidence.** `ui-shots`: portrait frame 200 px wide, 178 px gap on each side.
+
+## 102. A seek must move the clock that plays, not a second marker
+
+**Trap.** Clicking the normalize waveform moved the waveform's own playhead, while the
+"Output" preview advanced a different clock that always started at 0. The marker showed
+the click and the sound did not follow it — "the playback does not align with it".
+
+**Rule.** A waveform that is drawn over a dialog-owned preview takes the dialog's
+playhead (`playhead` prop) and reports a click through `onSeek`. The dialog's clock is
+the only one: a click stops the sink, sets the position, and Play starts the sink there.
+Bleep drags still create ranges; a click without a drag seeks.
+
+**Evidence.** `ui-shots`: normalize click at 50 % → playhead 0.500; Play starts there and
+reaches 0.564 after 0.9 s; Output shows the pause glyph.
+
+## 103. Mono is one control, not a left channel with a silent right
+
+**Trap.** Channels always drew L and R and always labelled the gain "Left volume"; a
+mono recording showed an empty R lane and "Left volume" 113 %, and the mono mix used
+`left_volume` for one channel only.
+
+**Rule.** The media facts carry the source channel count. A mono source renders one lane
+labelled **M**; a mono output exposes a single **Volume** field (`volume`), applied to
+both source channels before the mono mix. Stereo keeps Left/Right. The engine accepts
+`volume` alongside the old keys.
+
+**Evidence.** `channels_mono_volume_is_one_control_for_the_mix` (50 % is ~6 dB down);
+`ui-shots`: Mono → labels `[Volume]`, lanes `[M]`; Stereo → Left/Right, L/R.
+
+## 104. A transport is an icon and its subject
+
+**Trap.** The audio buttons said "Pause" or "Original" with no play/pause glyph, so a
+version row read like navigation, and the word changed width every state.
+
+**Rule.** Transport buttons keep the subject ("Original", "With Bleeps", "Output",
+"Audio") and prefix a play or pause glyph. The accessible name still says Play/Pause;
+the visible label stays constant. The same glyph pair is used by the waveform transport.
+
+**Evidence.** `ui-shots` reads polygons (play) and rects (pause) on the buttons; only the
+active version carries the pause glyph.

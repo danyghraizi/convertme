@@ -274,16 +274,44 @@ fn treatment_args(
 ) -> Vec<String> {
     let mut args = Vec::new();
     if style == "blur" {
-        // Blur the marked region only: `-region` scopes the next operation. The sigma
-        // grows with the region and with the strength.
+        // Blur the marked region only, but as a cropped patch rather than through
+        // `-region`: `-region WxH+x+y -blur` costs 53 s for two boxes on a 20 MP photo
+        // because it blurs the whole frame behind a mask. A patch grown by the blur's
+        // own reach, blurred, cropped back and composited at the box origin is the same
+        // picture at a fraction of the work.
+        if !boxes.is_empty() {
+            // `-composite` places a patch by its `-geometry` offset, which is measured
+            // from the gravity point: the default centre would move every box towards
+            // the middle of the image.
+            args.push("-gravity".into());
+            args.push("NorthWest".into());
+        }
         for b in boxes {
             let (x, y, bw, bh) = b.pixels(width, height);
             let sigma = image_sigma(bw, bh, strength);
-            args.push("-region".into());
-            args.push(format!("{bw}x{bh}+{x}+{y}"));
+            // A Gaussian reads across its kernel: without real pixels on every side the
+            // patch's own edge bleeds into the result. Three sigma covers the visible
+            // tail. Clamp to the image and remember how far the patch starts before the
+            // box, so the crop-back lands on the box again.
+            let margin = (3.0 * sigma).ceil() as u32;
+            let ex = x.saturating_sub(margin);
+            let ey = y.saturating_sub(margin);
+            let ew = (x + bw + margin).min(width).saturating_sub(ex).max(1);
+            let eh = (y + bh + margin).min(height).saturating_sub(ey).max(1);
+            args.push("(".into());
+            args.push("+clone".into());
+            args.push("-crop".into());
+            args.push(format!("{ew}x{eh}+{ex}+{ey}"));
+            args.push("+repage".into());
             args.push("-blur".into());
             args.push(format!("0x{sigma:.2}"));
-            args.push("+region".into());
+            args.push("-crop".into());
+            args.push(format!("{bw}x{bh}+{}+{}", x - ex, y - ey));
+            args.push("+repage".into());
+            args.push(")".into());
+            args.push("-geometry".into());
+            args.push(format!("+{x}+{y}"));
+            args.push("-composite".into());
         }
     } else {
         let mut draw = String::new();

@@ -12,6 +12,7 @@ pub mod logging;
 
 pub mod actions;
 pub mod app;
+pub mod audio;
 pub mod autostart;
 pub mod cli;
 pub mod commands;

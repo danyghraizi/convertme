@@ -730,6 +730,189 @@ def run_category(
                         failures.append("images/annotate: Number did not place a badge")
                     if not erased or after_erase >= after_number:
                         failures.append("images/annotate: Eraser did not remove the badge")
+
+                    # A drawing tool must not paint the selection ring over the shape it
+                    # just added (the report: "one rectangle is bugged with a selection
+                    # outline"), and the number the user types must be the one placed.
+                    choose_tool("Rectangle")
+                    rect_points = surface_points(
+                        m, ".annotate-frame", [(0.1, 0.12), (0.3, 0.3)]
+                    )
+                    pointer_actions(m, rect_points)
+                    time.sleep(0.3)
+                    ring = m.js(
+                        "return !!document.querySelector('.annotate-selection');"
+                    )
+                    choose_tool("Number")
+                    typed = m.js(
+                        """
+                        const input = document.querySelector(
+                          '.annotate-digit input[aria-label="Next number"]');
+                        if (!input) return false;
+                        const setter = Object.getOwnPropertyDescriptor(
+                          HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, '7');
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                        """
+                    )
+                    badge_at = surface_points(m, ".annotate-frame", [(0.6, 0.35)])[0]
+                    pointer_actions(m, [badge_at, badge_at])
+                    time.sleep(0.4)
+                    badge_text = m.js(
+                        """
+                        const texts = [...document.querySelectorAll(
+                          '.annotate-shapes .annotate-shape')]
+                          .filter((n) => n.tagName.toLowerCase() === 'text')
+                          .map((n) => (n.textContent || '').trim());
+                        return texts.includes('7');
+                        """
+                    )
+                    # Set a numeric annotation property by its accessible name.
+                    def set_annotation_size(value: str) -> bool:
+                        return bool(
+                            m.js(
+                                """
+                                const input = document.querySelector(
+                                  '.annotate-size input.annotate-size-value');
+                                if (!input) return false;
+                                const setter = Object.getOwnPropertyDescriptor(
+                                  HTMLInputElement.prototype, 'value').set;
+                                setter.call(input, %s);
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                return true;
+                                """
+                                % json.dumps(value)
+                            )
+                        )
+
+                    # A thick arrow's head lines must use round caps: butt caps at the
+                    # tip left wedge-shaped gaps at high stroke widths.
+                    choose_tool("Arrow")
+                    set_annotation_size("13")
+                    arrow_points = surface_points(
+                        m, ".annotate-frame", [(0.62, 0.72), (0.9, 0.8)]
+                    )
+                    pointer_actions(m, arrow_points)
+                    time.sleep(0.3)
+                    arrow = m.js(
+                        """
+                        const lines = [...document.querySelectorAll(
+                          '.annotate-shapes line')];
+                        return {
+                          count: lines.length,
+                          round: lines.length > 0 && lines.every((l) =>
+                            l.getAttribute('stroke-linecap') === 'round'
+                            && l.getAttribute('stroke-linejoin') === 'round'),
+                          width: lines.length ? lines[0].getAttribute('stroke-width') : null,
+                        };
+                        """
+                    )
+
+                    # A caption above the old 200 px cap: type the size, place a text,
+                    # commit it, then double-click it. The editor must be the only copy
+                    # on screen (no ghosted SVG text underneath).
+                    choose_tool("Text")
+                    sized = set_annotation_size("300")
+                    size_max = m.js(
+                        """
+                        const input = document.querySelector(
+                          '.annotate-size input.annotate-size-value');
+                        return input ? input.getAttribute('max') : null;
+                        """
+                    )
+                    text_at = surface_points(
+                        m, ".annotate-frame", [(0.5, 0.5)]
+                    )[0]
+                    pointer_actions(m, [text_at, text_at])
+                    time.sleep(0.3)
+                    committed = m.js(
+                        """
+                        const area = document.querySelector('.annotate-text-editor');
+                        if (!area) return false;
+                        const setter = Object.getOwnPropertyDescriptor(
+                          HTMLTextAreaElement.prototype, 'value').set;
+                        setter.call(area, 'Z');
+                        area.dispatchEvent(new Event('input', { bubbles: true }));
+                        area.dispatchEvent(new KeyboardEvent('keydown',
+                          {key: 'Enter', bubbles: true}));
+                        return true;
+                        """
+                    )
+                    time.sleep(0.4)
+                    text_state = m.js(
+                        """
+                        const texts = [...document.querySelectorAll(
+                          '.annotate-shapes text')];
+                        const z = texts.find((n) => (n.textContent || '').trim() === 'Z');
+                        return { present: !!z, size: z ? z.getAttribute('font-size') : null };
+                        """
+                    )
+                    choose_tool("Select")
+                    m.js(
+                        """
+                        const frame = document.querySelector('.annotate-frame');
+                        if (!frame) return false;
+                        const r = frame.getBoundingClientRect();
+                        const event = new MouseEvent('dblclick', {
+                          bubbles: true,
+                          clientX: r.x + r.width * 0.52,
+                          clientY: r.y + r.height * 0.55,
+                        });
+                        frame.dispatchEvent(event);
+                        return true;
+                        """
+                    )
+                    time.sleep(0.4)
+                    editing = m.js(
+                        """
+                        return {
+                          editor: !!document.querySelector('.annotate-text-editor'),
+                          ghost: [...document.querySelectorAll('.annotate-shapes text')]
+                            .some((n) => (n.textContent || '').trim() === 'Z'),
+                          ring: !!document.querySelector('.annotate-selection'),
+                        };
+                        """
+                    )
+
+                    report.append(
+                        {"category": "images", "tool": "annotate-polish",
+                         "dialog": True, "selection_ring_in_draw_tool": bool(ring),
+                         "typed_number": bool(typed), "badge_is_7": bool(badge_text),
+                         "arrow": arrow, "size_typed": bool(sized), "size_max": size_max,
+                         "text": text_state, "editing": editing}
+                    )
+                    if ring:
+                        failures.append(
+                            "images/annotate: a drawing tool painted the selection ring"
+                        )
+                    if not typed:
+                        failures.append("images/annotate: no Next number input")
+                    if not badge_text:
+                        failures.append("images/annotate: the typed number was not placed")
+                    if not arrow or not arrow.get("round") or arrow.get("width") != "13":
+                        failures.append(
+                            "images/annotate: the arrow head is not round-capped"
+                        )
+                    if not sized or str(size_max) != "2000":
+                        failures.append(
+                            "images/annotate: the text size is not free (max "
+                            f"{size_max})"
+                        )
+                    if not (text_state or {}).get("present") or text_state.get("size") != "300":
+                        failures.append(
+                            "images/annotate: a 300 px caption was not placed"
+                        )
+                    if not editing or not editing.get("editor"):
+                        failures.append("images/annotate: double-click opened no editor")
+                    if editing and editing.get("ghost"):
+                        failures.append(
+                            "images/annotate: the edited text is drawn twice"
+                        )
+                    if editing and editing.get("ring"):
+                        failures.append(
+                            "images/annotate: the selection ring shows while editing"
+                        )
                 except RuntimeError as error:
                     failures.append(f"images/annotate: interaction check failed ({error})")
             else:
@@ -820,6 +1003,67 @@ def run_category(
                     )
                     if not (shown or {}).get("canvas"):
                         failures.append("images/add-background: image mode draws no canvas")
+
+                    # The picture must be drawn with its own aspect (the engine
+                    # stretches the *crop*, never the source), and no layer may show
+                    # the sharp picture through the blur.
+                    aspect_clicked = m.js(
+                        """
+                        const field = [...document.querySelectorAll('.modal-fields .field')]
+                          .find((r) => ((r.querySelector('.field-label') || r).innerText || '')
+                            .trim() === 'Canvas ratio');
+                        const button = field && [...field.querySelectorAll('button')]
+                          .find((b) => (b.innerText || '').trim() === '16:9');
+                        if (button) button.click();
+                        return !!button;
+                        """
+                    )
+                    time.sleep(0.5)
+                    layers = m.js(
+                        """
+                        const canvas = document.querySelector('.background-canvas');
+                        const img = document.querySelector('.background-fill-image');
+                        const bleed = document.querySelector('.background-bleed');
+                        if (!canvas || !img) return null;
+                        const c = canvas.getBoundingClientRect();
+                        const r = img.getBoundingClientRect();
+                        return {
+                          sourceRatio: Number((r.width / r.height).toFixed(3)),
+                          canvasRatio: Number((c.width / c.height).toFixed(3)),
+                          fillFilter: getComputedStyle(img).filter,
+                          bleedFilter: bleed ? getComputedStyle(bleed).filter : null,
+                        };
+                        """
+                    )
+                    report.append(
+                        {"category": "images", "tool": "add-background-layers",
+                         "dialog": True, "aspect_clicked": bool(aspect_clicked),
+                         **(layers or {})}
+                    )
+                    if not aspect_clicked:
+                        failures.append("images/add-background: no 16:9 ratio control")
+                    if layers:
+                        # The mock picture is 4032x3024 (4:3), the canvas 16:9.
+                        if abs(layers["sourceRatio"] - 4 / 3) > 0.05:
+                            failures.append(
+                                "images/add-background: the picture is stretched to the"
+                                f" canvas ({layers['sourceRatio']})"
+                            )
+                        if abs(layers["canvasRatio"] - 16 / 9) > 0.06:
+                            failures.append(
+                                "images/add-background: the canvas is not 16:9"
+                                f" ({layers['canvasRatio']})"
+                            )
+                        if not str(layers["fillFilter"]).startswith("blur("):
+                            failures.append(
+                                "images/add-background: the blur never reached the picture"
+                            )
+                        if layers.get("bleedFilter") == "none":
+                            failures.append(
+                                "images/add-background: a sharp copy shows through the blur"
+                            )
+                    else:
+                        failures.append("images/add-background: no picture layer to measure")
                     close_dialog(m)
                 else:
                     failures.append("images/add-background: no dialog")
@@ -883,6 +1127,82 @@ def run_category(
                         failures.append("images/collage: clicking a cell did not select it")
                     if not selected.get("zoom_enabled"):
                         failures.append("images/collage: Zoom stayed disabled after selecting")
+
+                    # Rows/Columns are the layout, not decoration: a column count must
+                    # change the cell geometry the preview draws.
+                    def cell_fractions():
+                        return m.js(
+                            """
+                            const frame = document.querySelector('.collage-frame');
+                            if (!frame) return null;
+                            const f = frame.getBoundingClientRect();
+                            return [...document.querySelectorAll('.collage-cell')].map((c) => {
+                              const b = c.getBoundingClientRect();
+                              return [Number((b.width / f.width).toFixed(3)),
+                                      Number((b.height / f.height).toFixed(3))];
+                            });
+                            """
+                        )
+
+                    before_cells = cell_fractions()
+                    columns_set = set_field_value(m, "Columns", "3")
+                    time.sleep(0.6)
+                    after_columns = cell_fractions()
+                    rows_set = set_field_value(m, "Rows (0 = auto)", "2")
+                    time.sleep(0.6)
+                    after_rows = cell_fractions()
+
+                    # A pan must show feedback while the button is still down: the live
+                    # crop is what the report saw missing until pointerup.
+                    drag_at = surface_points(m, ".collage-cell", [(0.5, 0.5)])[0]
+                    # Select once so the thumbnail the live layer draws is loaded; a
+                    # cold load would otherwise race the sample below.
+                    pointer_actions(m, [drag_at, drag_at])
+                    time.sleep(0.6)
+                    drag_at = surface_points(m, ".collage-cell", [(0.5, 0.5)])[0]
+                    actions = [{"type": "pointerMove", "duration": 0,
+                                "x": drag_at[0], "y": drag_at[1], "origin": "viewport"},
+                               {"type": "pointerDown", "button": 0},
+                               {"type": "pointerMove", "duration": 90,
+                                "x": drag_at[0] + 35, "y": drag_at[1], "origin": "viewport"}]
+                    m.cmd("WebDriver:PerformActions",
+                          {"actions": [{"type": "pointer", "id": "mouse",
+                                        "parameters": {"pointerType": "mouse"},
+                                        "actions": actions}]})
+                    # Sample inside the 120 ms debounce: the composed render has not
+                    # landed yet, so only the live crop can be on screen.
+                    time.sleep(0.04)
+                    live = m.js(
+                        """
+                        const layer = document.querySelector('.collage-live img');
+                        return layer ? { present: true, width: layer.style.width } : { present: false };
+                        """
+                    )
+                    m.cmd("WebDriver:PerformActions",
+                          {"actions": [{"type": "pointer", "id": "mouse",
+                                        "parameters": {"pointerType": "mouse"},
+                                        "actions": [{"type": "pointerUp", "button": 0}]}]})
+                    m.cmd("WebDriver:ReleaseActions")
+                    time.sleep(0.5)
+                    report.append(
+                        {"category": "images", "tool": "collage-grid",
+                         "dialog": True, "before": before_cells,
+                         "after_columns": after_columns, "after_rows": after_rows,
+                         "live_mid_drag": live}
+                    )
+                    if not columns_set:
+                        failures.append("images/collage: no Columns field")
+                    if not (before_cells and after_columns
+                            and after_columns[0][0] < before_cells[0][0] - 0.03):
+                        failures.append(
+                            "images/collage: Columns did not narrow the cells"
+                        )
+                    if not (after_rows and after_rows[0][1] < after_columns[0][1] - 0.03):
+                        failures.append("images/collage: Rows did not shorten the cells")
+                    if not (live or {}).get("present"):
+                        failures.append(
+                            "images/collage: no live crop while the pointer is down"
+                        )
                     close_dialog(m)
                 else:
                     failures.append("images/collage: no cell overlay appeared")
@@ -896,7 +1216,8 @@ def run_category(
             open_category(m, "Video")
             m.js(
                 "const card = [...document.querySelectorAll('.tool-card')]"
-                ".find((c) => c.innerText.trim().startsWith('Crop'));"
+                ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                ".trim().startsWith('Crop'));"
                 "if (card) card.click(); return !!card;"
             )
             if m.wait_for("document.querySelector('.modal')", 6):
@@ -933,6 +1254,488 @@ def run_category(
                 if not (typed or {}).get("found") or after != "640":
                     failures.append(f"video/crop: typing 640 as the width left {after!r}")
                 close_dialog(m)
+            else:
+                failures.append("video/crop: the crop dialog never opened")
+
+            # Trim: all three sliders share the clip's axis. A start/end slider whose
+            # min follows the other handle puts the same time at a different pixel.
+            m.js(
+                "const card = [...document.querySelectorAll('.tool-card')]"
+                ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                ".trim().startsWith('Trim'));"
+                "if (card) card.click(); return !!card;"
+            )
+            if m.wait_for("document.querySelector('input[aria-label=\"Trim start\"]')", 6):
+                def set_slider(label, value):
+                    return m.js(
+                        """
+                        const input = document.querySelector(
+                          'input[aria-label=%s]');
+                        if (!input) return false;
+                        const setter = Object.getOwnPropertyDescriptor(
+                          HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, String(%s));
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                        """
+                        % (json.dumps(label), json.dumps(value))
+                    )
+
+                set_slider("Trim start", 5.0)
+                time.sleep(0.2)
+                set_slider("Trim end", 9.16)
+                time.sleep(0.2)
+                set_slider("Playhead", 9.16)
+                time.sleep(0.3)
+                axes = m.js(
+                    """
+                    const one = (label) => {
+                        const input = document.querySelector(
+                          'input[aria-label="' + label + '"]');
+                        if (!input) return null;
+                        const min = Number(input.min);
+                        const max = Number(input.max);
+                        const value = Number(input.value);
+                        return {
+                          min, max, value,
+                          fraction: max > min ? (value - min) / (max - min) : 0,
+                        };
+                    };
+                    return {
+                      start: one('Trim start'),
+                      end: one('Trim end'),
+                      playhead: one('Playhead'),
+                    };
+                    """
+                )
+                report.append(
+                    {"category": key, "tool": "trim-slider-axis", "dialog": True,
+                     **axes}
+                )
+                if not (
+                    axes.get("end")
+                    and axes.get("playhead")
+                    and abs(axes["end"]["fraction"] - axes["playhead"]["fraction"])
+                    <= 0.01
+                    and axes["start"]["min"] == axes["end"]["min"] == 0
+                    and axes["start"]["max"] == axes["end"]["max"] == axes["playhead"]["max"]
+                ):
+                    failures.append(
+                        "video/trim: the same time sits at a different slider position"
+                    )
+                close_dialog(m)
+            else:
+                failures.append("video/trim: no trim sliders")
+
+            # Save frames: the All-frames button must state its count and drive the
+            # primary action; going back restores the per-frame chips.
+            m.js(
+                "const card = [...document.querySelectorAll('.tool-card')]"
+                ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                ".trim().startsWith('Save frames'));"
+                "if (card) card.click(); return !!card;"
+            )
+            if m.wait_for("document.querySelector('.snapshot-all')", 6):
+                time.sleep(0.4)
+                frames = m.js(
+                    """
+                    const all = document.querySelector('.snapshot-all');
+                    const primary = document.querySelector('[data-testid="primary"]');
+                    return {
+                      label: all ? all.innerText.trim() : null,
+                      disabled: all ? all.disabled : null,
+                      primary: primary ? primary.innerText.trim() : null,
+                    };
+                    """
+                )
+                m.js(
+                    "const b = document.querySelector('.snapshot-all'); if (b) b.click();"
+                )
+                time.sleep(0.4)
+                chosen = m.js(
+                    """
+                    const primary = document.querySelector('[data-testid="primary"]');
+                    const back = [...document.querySelectorAll('.modal button')]
+                      .find((b) => (b.innerText || '').trim()
+                        === 'Choose moments instead');
+                    return {
+                      primary: primary ? primary.innerText.trim() : null,
+                      back: !!back,
+                      chips: !!document.querySelector('.range-chips'),
+                    };
+                    """
+                )
+                m.js(
+                    "const b = [...document.querySelectorAll('.modal button')]"
+                    ".find((x) => (x.innerText || '').trim() === 'Choose moments instead');"
+                    "if (b) b.click();"
+                )
+                time.sleep(0.3)
+                restored = m.js(
+                    "return !!document.querySelector('.range-chips');"
+                )
+                report.append(
+                    {"category": key, "tool": "video-all-frames", "dialog": True,
+                     "button": frames, "after_click": chosen, "chips_restored": restored}
+                )
+                if not (frames or {}).get("label", "").startswith("All frames"):
+                    failures.append("video/frames: no All frames button")
+                if "300" not in ((frames or {}).get("label") or ""):
+                    failures.append(
+                        "video/frames: All frames does not state the frame count"
+                    )
+                if "300" not in ((chosen or {}).get("primary") or ""):
+                    failures.append(
+                        "video/frames: All frames did not set the primary action"
+                    )
+                if (chosen or {}).get("chips") is not False:
+                    failures.append(
+                        "video/frames: the per-frame chips still show in all-frames mode"
+                    )
+                if not (chosen or {}).get("back"):
+                    failures.append("video/frames: no way back to chosen moments")
+                if not restored:
+                    failures.append("video/frames: going back did not restore the chips")
+                close_dialog(m)
+            else:
+                failures.append("video/frames: no All frames button")
+
+        if key == "audio":
+            m.cmd("WebDriver:Navigate", {"url": f"{base}?mock-files=audio"})
+            m.wait_for("document.querySelector('.tool-card')", 10)
+            open_category(m, "Audio")
+
+            def open_tool(prefix: str) -> bool:
+                return bool(
+                    m.js(
+                        "const card = [...document.querySelectorAll('.tool-card')]"
+                        ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                        f".trim().startsWith({json.dumps(prefix)}));"
+                        "if (card) card.click(); return !!card;"
+                    )
+                )
+
+            def set_range(label: str, value: float) -> bool:
+                return bool(
+                    m.js(
+                        """
+                        const input = document.querySelector(
+                          'input[aria-label=%s]');
+                        if (!input) return false;
+                        const setter = Object.getOwnPropertyDescriptor(
+                          HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, String(%s));
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                        """
+                        % (json.dumps(label), json.dumps(value))
+                    )
+                )
+
+            # Trim: Play must start at the selection's start and stop at its end.
+            if open_tool("Trim") and m.wait_for(
+                "document.querySelector('input[aria-label=\"Trim start\"]')", 8
+            ):
+                time.sleep(0.4)
+                set_range("Trim end", 4.0)
+                time.sleep(0.2)
+                set_range("Trim start", 2.0)
+                time.sleep(0.3)
+                m.js("document.querySelector('.waveform-play').click()")
+                time.sleep(0.35)
+                playing = m.js(
+                    """
+                    const button = document.querySelector('.waveform-play');
+                    const time = document.querySelector('.waveform-timecode');
+                    return {
+                      label: button ? button.getAttribute('aria-label') : null,
+                      time: time ? time.innerText.trim() : null,
+                      pause: !!(button && button.querySelector('rect')),
+                      play: !!(button && button.querySelector('polygon')),
+                    };
+                    """
+                )
+                time.sleep(2.7)
+                stopped = m.js(
+                    """
+                    const button = document.querySelector('.waveform-play');
+                    const time = document.querySelector('.waveform-timecode');
+                    return {
+                      label: button ? button.getAttribute('aria-label') : null,
+                      time: time ? time.innerText.trim() : null,
+                      pause: !!(button && button.querySelector('rect')),
+                      play: !!(button && button.querySelector('polygon')),
+                    };
+                    """
+                )
+                report.append(
+                    {"category": "audio", "tool": "trim-playback", "dialog": True,
+                     "playing": playing, "stopped": stopped}
+                )
+                if not (playing.get("time") or "").startswith("0:02."):
+                    failures.append(
+                        f"audio/trim: Play started at {playing.get('time')!r}, not 0:02"
+                    )
+                if playing.get("label") != "Pause" or not playing.get("pause"):
+                    failures.append("audio/trim: the transport does not show a pause icon")
+                if not (stopped.get("time") or "").startswith("0:04.00"):
+                    failures.append(
+                        f"audio/trim: playback stopped at {stopped.get('time')!r}, not 0:04"
+                    )
+                if stopped.get("label") != "Play" or not stopped.get("play"):
+                    failures.append("audio/trim: the transport did not return to a play icon")
+                close_dialog(m)
+            else:
+                failures.append("audio/trim: no trim waveform")
+
+            # Bleep: the × removes its range, one version plays at a time.
+            if open_tool("Bleep") and m.wait_for(
+                "document.querySelector('.waveform-surface')", 8
+            ):
+                time.sleep(0.4)
+                points = surface_points(
+                    m, ".waveform-surface", [(0.3, 0.5), (0.45, 0.5)]
+                )
+                pointer_actions(m, points)
+                time.sleep(0.4)
+                before = int(
+                    m.js(
+                        "return document.querySelectorAll('.waveform-range.is-bleep').length;"
+                    )
+                    or 0
+                )
+                removed = bool(
+                    m.js(
+                        "const b = document.querySelector('.waveform-range-remove');"
+                        "if (b) { b.click(); return true; } return false;"
+                    )
+                )
+                time.sleep(0.4)
+                after = int(
+                    m.js(
+                        "return document.querySelectorAll('.waveform-range.is-bleep').length;"
+                    )
+                    or 0
+                )
+                pointer_actions(m, points)
+                time.sleep(0.4)
+
+                def press_row(text: str) -> bool:
+                    return bool(
+                        m.js(
+                            """
+                            const button = [...document.querySelectorAll(
+                              '.audio-preview-row button')]
+                              .find((b) => (b.innerText || '').trim().startsWith(%s));
+                            if (button) { button.click(); return true; }
+                            return false;
+                            """
+                            % json.dumps(text)
+                        )
+                    )
+
+                def row_states() -> dict:
+                    return m.js(
+                        """
+                        return Object.fromEntries([...document.querySelectorAll(
+                          '.audio-preview-row button')].map((b) => [
+                            (b.innerText || '').trim(),
+                            { pause: !!b.querySelector('rect'),
+                              play: !!b.querySelector('polygon') },
+                          ]));
+                        """
+                    )
+
+                press_row("Original")
+                time.sleep(0.4)
+                original = row_states()
+                press_row("With Bleeps")
+                time.sleep(0.8)
+                with_bleeps = row_states()
+                press_row("With Bleeps")
+                time.sleep(0.3)
+                report.append(
+                    {"category": "audio", "tool": "bleep-controls", "dialog": True,
+                     "ranges": {"before": before, "removed": removed, "after": after},
+                     "original": original, "with_bleeps": with_bleeps}
+                )
+                if before < 1 or not removed or after != 0:
+                    failures.append("audio/bleep: the range × did not remove the range")
+                if not (original.get("Original") or {}).get("pause"):
+                    failures.append("audio/bleep: Original does not show a pause icon")
+                if not (with_bleeps.get("With Bleeps") or {}).get("pause"):
+                    failures.append("audio/bleep: With Bleeps does not show a pause icon")
+                if (with_bleeps.get("Original") or {}).get("pause"):
+                    failures.append(
+                        "audio/bleep: Original kept playing when With Bleeps started"
+                    )
+                close_dialog(m)
+            else:
+                failures.append("audio/bleep: no waveform")
+
+            # Normalize: the waveform is the shared clock. Clicking it seeks the
+            # produced preview; Play starts there and the playhead follows it.
+            if open_tool("Normalize") and m.wait_for(
+                "document.querySelector('.audio-preview-row button')", 8
+            ):
+                time.sleep(0.6)
+                seeked = m.js(
+                    """
+                    const surface = document.querySelector('.waveform-surface');
+                    const playhead = document.querySelector('.waveform-playhead');
+                    if (!surface || !playhead) return null;
+                    const f = surface.getBoundingClientRect();
+                    surface.dispatchEvent(new PointerEvent('pointerdown', {
+                      bubbles: true, clientX: f.left + f.width * 0.5,
+                      clientY: f.top + f.height / 2,
+                    }));
+                    const p = playhead.getBoundingClientRect();
+                    return Math.round(((p.left - f.left) / f.width) * 1000) / 1000;
+                    """
+                )
+                m.js("document.querySelector('.audio-preview-row button').click()")
+                time.sleep(0.9)
+                playing = m.js(
+                    """
+                    const button = document.querySelector('.audio-preview-row button');
+                    const playhead = document.querySelector('.waveform-playhead');
+                    const f = document.querySelector('.waveform-surface').getBoundingClientRect();
+                    const p = playhead.getBoundingClientRect();
+                    return { pause: !!button.querySelector('rect'),
+                             play: !!button.querySelector('polygon'),
+                             fraction: Math.round(((p.left - f.left) / f.width) * 1000) / 1000 };
+                    """
+                )
+                m.js("document.querySelector('.audio-preview-row button').click()")
+                time.sleep(0.4)
+                paused = m.js(
+                    """
+                    const button = document.querySelector('.audio-preview-row button');
+                    return { pause: !!button.querySelector('rect'),
+                             play: !!button.querySelector('polygon') };
+                    """
+                )
+                notch = m.js(
+                    "return !!(document.querySelector('.waveform-note') || {}).innerText;"
+                )
+                report.append(
+                    {"category": "audio", "tool": "normalize-playback", "dialog": True,
+                     "seeked_fraction": seeked, "playing": playing, "paused": paused,
+                     "truncated_note": notch}
+                )
+                if not seeked or abs(seeked - 0.5) > 0.03:
+                    failures.append(
+                        f"audio/normalize: clicking the middle did not seek ({seeked})"
+                    )
+                if not playing.get("pause") or playing.get("play"):
+                    failures.append("audio/normalize: Output does not show a pause icon")
+                if not (playing.get("fraction") or 0) > (seeked or 0) + 0.01:
+                    failures.append(
+                        "audio/normalize: the playhead did not follow playback from the seek"
+                    )
+                if not paused.get("play") or paused.get("pause"):
+                    failures.append("audio/normalize: Pause does not return to a play icon")
+                if notch:
+                    failures.append(
+                        "audio/normalize: a 14-second waveform claims to be truncated"
+                    )
+                close_dialog(m)
+            else:
+                failures.append("audio/normalize: no output button")
+
+            # Channels: a mono output has one Volume row and one M lane, not "Left".
+            if open_tool("Channels") and m.wait_for(
+                "document.querySelector('.waveform-surface')", 8
+            ):
+                time.sleep(0.6)
+                stereo = m.js(
+                    """
+                    const labels = [...document.querySelectorAll(
+                      '.modal-fields .field-label')].map((n) => n.innerText.trim());
+                    const lanes = [...document.querySelectorAll(
+                      '.waveform-lane-label')].map((n) => n.innerText.trim());
+                    return { labels, lanes };
+                    """
+                )
+                mono = m.js(
+                    """
+                    const field = [...document.querySelectorAll('.modal-fields .field')]
+                      .find((r) => ((r.querySelector('.field-label') || r).innerText || '')
+                        .trim() === 'Output');
+                    const button = field && [...field.querySelectorAll('button')]
+                      .find((b) => (b.innerText || '').trim() === 'Mono');
+                    if (button) button.click();
+                    return !!button;
+                    """
+                )
+                time.sleep(0.5)
+                mono_state = m.js(
+                    """
+                    const labels = [...document.querySelectorAll(
+                      '.modal-fields .field-label')].map((n) => n.innerText.trim());
+                    const lanes = [...document.querySelectorAll(
+                      '.waveform-lane-label')].map((n) => n.innerText.trim());
+                    return { labels, lanes };
+                    """
+                )
+                report.append(
+                    {"category": "audio", "tool": "channels-mono", "dialog": True,
+                     "stereo": stereo, "mono": mono_state}
+                )
+                if "Volume" not in mono_state.get("labels", []):
+                    failures.append("audio/channels: a mono output has no Volume row")
+                if "Left volume" in mono_state.get("labels", []):
+                    failures.append(
+                        "audio/channels: a mono output still says Left volume"
+                    )
+                if mono_state.get("lanes") != ["M"]:
+                    failures.append(
+                        f"audio/channels: mono lanes are {mono_state.get('lanes')}, not ['M']"
+                    )
+                if "Left volume" not in stereo.get("labels", []):
+                    failures.append("audio/channels: stereo lost its Left volume row")
+                close_dialog(m)
+            else:
+                failures.append("audio/channels: no waveform")
+
+            # The portrait visualizer preview is centred in its row.
+            if open_tool("Visualize") and m.wait_for(
+                "document.querySelector('.visualizer-frame')", 8
+            ):
+                time.sleep(0.6)
+                m.js(
+                    """
+                    const field = [...document.querySelectorAll('.modal-fields .field')]
+                      .find((r) => ((r.querySelector('.field-label') || r).innerText || '')
+                        .trim() === 'Shape');
+                    const button = field && [...field.querySelectorAll('button')]
+                      .find((b) => (b.innerText || '').trim() === 'Portrait · 9:16');
+                    if (button) button.click();
+                    """
+                )
+                time.sleep(0.5)
+                gaps = m.js(
+                    """
+                    const frame = document.querySelector('.visualizer-frame');
+                    const row = frame.closest('.field');
+                    const f = frame.getBoundingClientRect();
+                    const r = row.getBoundingClientRect();
+                    return { left: Math.round(f.left - r.left),
+                             right: Math.round(r.right - f.right),
+                             width: Math.round(f.width) };
+                    """
+                )
+                report.append(
+                    {"category": "audio", "tool": "visualizer-centre", "dialog": True,
+                     **gaps}
+                )
+                if abs(gaps["left"] - gaps["right"]) > 2:
+                    failures.append(
+                        f"audio/visualize: the preview is not centred ({gaps})"
+                    )
+                close_dialog(m)
+            else:
+                failures.append("audio/visualize: no preview frame")
 
         if key == "pdf":
             # The organizer's own controls: rotating a card must leave a rotation on that

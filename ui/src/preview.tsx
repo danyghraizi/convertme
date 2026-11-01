@@ -1,4 +1,4 @@
-import { Match, Show, Switch, createEffect, createSignal, onMount } from 'solid-js';
+import { Match, Show, Switch, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import * as ipc from './ipc';
 import MediaTimeline from './components/media-timeline';
 import { baseName } from './format';
@@ -58,8 +58,9 @@ export default function PreviewWindow() {
     document.documentElement.dataset.window = 'preview';
   });
 
+  let audioTimer: number | undefined;
   createEffect(() => {
-    if (kind !== 'video' || !path) return;
+    if ((kind !== 'video' && kind !== 'audio') || !path) return;
     void ipc
       .mediaInfo(path)
       .then((info) => setDuration(info.duration))
@@ -67,17 +68,31 @@ export default function PreviewWindow() {
   });
 
   async function playAudio(): Promise<void> {
-    if (!path || playing()) return;
+    if (!path) return;
+    if (playing()) {
+      await ipc.stopPreview();
+      window.clearTimeout(audioTimer);
+      setPlaying(false);
+      return;
+    }
     setPlaying(true);
     setFailed(false);
     try {
-      await ipc.playPreview(path);
+      await ipc.playPreview(path, 0);
+      audioTimer = window.setTimeout(
+        () => setPlaying(false),
+        Math.max(1, duration()) * 1000 + 250,
+      );
     } catch {
       setFailed(true);
-    } finally {
       setPlaying(false);
     }
   }
+
+  onCleanup(() => {
+    window.clearTimeout(audioTimer);
+    void ipc.stopPreview();
+  });
 
   return (
     <div class="preview-window">
@@ -108,8 +123,8 @@ export default function PreviewWindow() {
           <div class="preview-media">
             <div class="preview-audio">
               <p class="preview-name">{baseName(path)}</p>
-              <button type="button" class="button" disabled={playing()} onClick={() => void playAudio()}>
-                {playing() ? 'Playing…' : 'Play'}
+              <button type="button" class="button" onClick={() => void playAudio()}>
+                {playing() ? 'Stop' : 'Play'}
               </button>
             </div>
           </div>

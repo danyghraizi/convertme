@@ -29,6 +29,9 @@ interface VideoEditorProps {
 
 const round = (value: number): number => Math.round(value * 1000) / 1000;
 
+/** The engine's own ceiling for the interval/fps snapshot mode. */
+const ALL_FRAME_LIMIT = 2000;
+
 /** Speed ticks from the reference; the slider itself is a field row. */
 const SPEED_TICKS = [0.25, 0.5, 1, 1.5, 2, 4];
 
@@ -50,6 +53,7 @@ export default function VideoEditor(props: VideoEditorProps) {
   const [frame, setFrame] = createSignal<string | null>(null);
   const [markers, setMarkers] = createSignal<number[]>([]);
   const [times, setTimes] = createSignal<number[]>([]);
+  const [allFrames, setAllFrames] = createSignal(false);
   const [playhead, setPlayhead] = createSignal(0);
   const [equalClips, setEqualClips] = createSignal(4);
 
@@ -57,6 +61,13 @@ export default function VideoEditor(props: VideoEditorProps) {
   const start = (): number => asNumber(props.values.start ?? 0);
   const end = (): number => asNumber(props.values.end ?? 0);
   const boxes = (): TimedBox[] => asBoxes(props.values.boxes ?? []) as TimedBox[];
+  const mediaFps = (): number => info()?.fps ?? 0;
+  /** Every frame of the clip at its own rate; 0 when the rate is unknown. */
+  const allFrameCount = (): number => {
+    const media = info();
+    if (!media || media.duration <= 0 || media.fps <= 0) return 0;
+    return Math.max(1, Math.round(media.duration * media.fps));
+  };
 
   // The first filmstrip frame is the crop/redaction preview: ImageMagick decodes a
   // video by walking it, which is why a dialog never asks for a full decode.
@@ -77,6 +88,7 @@ export default function VideoEditor(props: VideoEditorProps) {
     if (props.resetToken < 0) return;
     setMarkers([]);
     setTimes([]);
+    setAllFrames(false);
     setPlayhead(0);
   });
 
@@ -87,6 +99,7 @@ export default function VideoEditor(props: VideoEditorProps) {
     setInfo(null);
     setMarkers([]);
     setTimes([]);
+    setAllFrames(false);
     setPlayhead(0);
     void ipc
       .mediaInfo(path)
@@ -131,9 +144,18 @@ export default function VideoEditor(props: VideoEditorProps) {
     props.onExtras({ sections });
   });
 
-  // Frames: the chips are the value.
+  // Frames: either the chips, or every frame at the clip's own rate. The engine has
+  // both modes; `fps` is one ffmpeg pass, so it can write far more than the chips do.
   createEffect(() => {
     if (props.tool !== 'snapshot') return;
+    if (allFrames()) {
+      const count = allFrameCount();
+      const rate = mediaFps();
+      props.onCount(count);
+      props.onReady(count > 0 && count <= ALL_FRAME_LIMIT);
+      props.onExtras(count > 0 ? { fps: rate } : {});
+      return;
+    }
     const chosen = times();
     props.onCount(chosen.length);
     props.onReady(chosen.length > 0);
@@ -320,14 +342,56 @@ export default function VideoEditor(props: VideoEditorProps) {
               />
             )}
           </Show>
-          <RangeChips
-            times={times()}
-            onChange={setTimes}
-            playhead={playhead()}
-            max={50}
-            addLabel="Add frame"
-            emptyHelp="Step to a moment and add it."
-          />
+          <Show
+            when={allFrames()}
+            fallback={
+              <>
+                <button
+                  type="button"
+                  class="button button-quiet snapshot-all"
+                  disabled={
+                    allFrameCount() === 0 || allFrameCount() > ALL_FRAME_LIMIT
+                  }
+                  onClick={() => {
+                    setTimes([]);
+                    setAllFrames(true);
+                  }}
+                >
+                  All frames{allFrameCount() > 0 ? ` (${allFrameCount()})` : ''}
+                </button>
+                <RangeChips
+                  times={times()}
+                  onChange={(next) => {
+                    setAllFrames(false);
+                    setTimes(next);
+                  }}
+                  playhead={playhead()}
+                  max={50}
+                  addLabel="Add frame"
+                  emptyHelp="Step to a moment and add it."
+                />
+                <Show
+                  when={allFrameCount() > ALL_FRAME_LIMIT}
+                >
+                  <p class="field-help" role="status">
+                    Every frame would be {allFrameCount()} images; this tool writes at
+                    most {ALL_FRAME_LIMIT} in one go. Trim the clip or pick moments.
+                  </p>
+                </Show>
+              </>
+            }
+          >
+            <p class="field-help">
+              Every frame: {allFrameCount()} images at {Math.round(mediaFps())} fps.
+            </p>
+            <button
+              type="button"
+              class="button button-quiet"
+              onClick={() => setAllFrames(false)}
+            >
+              Choose moments instead
+            </button>
+          </Show>
         </div>
       </Show>
 

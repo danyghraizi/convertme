@@ -29,11 +29,29 @@
       },
       {
         "default": 100.0,
+        "key": "volume",
+        "kind": "range",
+        "label": "Volume",
+        "max": 200.0,
+        "min": 0.0,
+        "show_if": {
+          "equals": "1",
+          "key": "channels"
+        },
+        "step": 1.0,
+        "unit": "%"
+      },
+      {
+        "default": 100.0,
         "key": "left_volume",
         "kind": "range",
         "label": "Left volume",
         "max": 200.0,
         "min": 0.0,
+        "show_if": {
+          "equals": "2",
+          "key": "channels"
+        },
         "step": 1.0,
         "unit": "%"
       },
@@ -427,24 +445,22 @@
       },
       {
         "default": "grid",
+        "help": "Every layout fills the rows and columns below in order.",
         "key": "style",
         "kind": "select",
         "label": "Style",
         "option_labels": [
           "Grid",
-          "Row",
-          "Column",
-          "Featured"
+          "Featured (one large picture)"
         ],
         "options": [
           "grid",
-          "row",
-          "column",
           "featured"
         ]
       },
       {
         "default": 0.0,
+        "help": "1 makes a single row; 0 fits the pictures into the columns.",
         "key": "rows",
         "kind": "number",
         "label": "Rows (0 = auto)",
@@ -455,6 +471,7 @@
       },
       {
         "default": 2.0,
+        "help": "1 makes a single column.",
         "key": "columns",
         "kind": "number",
         "label": "Columns",

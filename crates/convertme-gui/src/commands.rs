@@ -270,6 +270,15 @@ fn still_for(
 ) -> Result<PathBuf, String> {
     match Registry::detect(source).map(|format| format.category) {
         Some(Category::Pdf) => pdf_cover(cache, source, ctx),
+        // A video has no still for ImageMagick: it decodes the file by walking it,
+        // which took 28 s per clip here and failed. The filmstrip's first frame is
+        // the decoder that does know how to seek, and it answers in milliseconds.
+        Some(Category::Video) => {
+            let mut frames = cache.filmstrip(source, 1, ctx).map_err(err_to_string)?;
+            frames
+                .pop()
+                .ok_or_else(|| "the video produced no preview frame".to_string())
+        }
         _ => cache.thumbnail(source, size, ctx).map_err(err_to_string),
     }
 }
@@ -839,15 +848,15 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
                 default: serde_json::json!([]),
                 ..Default::default()
             },
-            select(
-                "style",
-                "Style",
-                "grid",
-                &["grid", "row", "column", "featured"],
-            )
-            .labelled(&["Grid", "Row", "Column", "Featured"]),
-            num("rows", "Rows (0 = auto)", 0.0, 0.0, 6.0, 1.0, ""),
-            num("columns", "Columns", 2.0, 1.0, 6.0, 1.0, ""),
+            // Row and column layouts are the grid with one of the counts at 1.
+            // Keeping them as separate choices made both counts dead controls.
+            select("style", "Style", "grid", &["grid", "featured"])
+                .labelled(&["Grid", "Featured (one large picture)"])
+                .help("Every layout fills the rows and columns below in order."),
+            num("rows", "Rows (0 = auto)", 0.0, 0.0, 6.0, 1.0, "")
+                .help("1 makes a single row; 0 fits the pictures into the columns."),
+            num("columns", "Columns", 2.0, 1.0, 6.0, 1.0, "")
+                .help("1 makes a single column."),
             select(
                 "aspect",
                 "Canvas ratio",
@@ -1241,7 +1250,12 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
             output.kind = "segmented".into();
             vec![
                 output,
-                ranged("left_volume", "Left volume", 100.0, 0.0, 200.0, 1.0, "%"),
+                // One output control, not a stereo pair with a dead half: a mono mix
+                // is a single volume, a stereo mix has a left and a right.
+                ranged("volume", "Volume", 100.0, 0.0, 200.0, 1.0, "%")
+                    .when("channels", "1"),
+                ranged("left_volume", "Left volume", 100.0, 0.0, 200.0, 1.0, "%")
+                    .when("channels", "2"),
                 ranged("right_volume", "Right volume", 100.0, 0.0, 200.0, 1.0, "%")
                     .when("channels", "2"),
             ]
@@ -1447,23 +1461,10 @@ pub async fn preview_thumb(
     tauri::async_runtime::spawn_blocking(move || {
         let cache = convertme_engines::preview::PreviewCache::new(cache_root, cap);
         let source = Path::new(&path);
-        // A video has no still frame for ImageMagick. Ask the filmstrip for one
-        // directly: letting ImageMagick fail first can block the dialog on a decode
-        // attempt, and the redaction/trim preview stays "unavailable". A PDF goes to
-        // its page renderer for the same reason, and because ImageMagick's PDF decode
-        // yields a black rectangle.
-        let category = Registry::detect(source).map(|format| format.category);
+        // One still path for the strip and for a dialog: a video goes to its
+        // filmstrip, a PDF to its page renderer, everything else to the thumbnailer.
         let ctx = JobCtx::new();
-        let thumb = if category == Some(Category::Video) {
-            let mut frames = cache.filmstrip(source, 1, &ctx).map_err(err_to_string)?;
-            frames
-                .pop()
-                .ok_or_else(|| "the video produced no preview frame".to_string())?
-        } else if category == Some(Category::Pdf) {
-            pdf_cover(&cache, source, &ctx)?
-        } else {
-            cache.thumbnail(source, size, &ctx).map_err(err_to_string)?
-        };
+        let thumb = still_for(&cache, source, size, &ctx)?;
         Ok(thumb.to_string_lossy().into_owned())
     })
     .await
