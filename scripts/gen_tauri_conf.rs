@@ -101,7 +101,10 @@ pub fn tauri_conf_json() -> String {
     // stays `convertme` (its name comes from the crate) and the display name stays
     // `ConvertMe` (the window title and the desktop entry's Name=).
     s.push_str(&format!("  \"productName\": {},\n", json_string(APP_ID)));
-    s.push_str("  \"version\": \"0.1.0\",\n");
+    // One source of truth: the workspace version in `Cargo.toml`. `gen-conf` runs
+    // from `xtask` and the build script from the GUI crate; both inherit it.
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    s.push_str(&format!("  \"version\": {},\n", json_string(&version)));
     s.push_str(&format!("  \"identifier\": {},\n", json_string(APP_ID)));
     s.push_str("  \"build\": {\n");
     s.push_str(&format!(

@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
 
+# The job publishes its bundles to the release for the pushed tag.
+permissions:
+  contents: write
+
 jobs:
   gate:
     name: identity gate
@@ -73,6 +77,47 @@ jobs:
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
         run: python scripts/debrand.py --all
+
+      # A tag push alone creates no GitHub release, and the bundles used to sit in
+      # the Actions tab only. Smoke-test what will be downloaded, then attach it.
+      - name: smoke-test the packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          someone=0
+          for deb in target/release/bundle/deb/*.deb; do
+            [ -e "$deb" ] || continue
+            someone=1
+            dpkg-deb -f "$deb" Version | grep -Fx "$version"
+            rm -rf /tmp/deb-smoke && dpkg-deb -x "$deb" /tmp/deb-smoke
+            /tmp/deb-smoke/usr/bin/convertme --version | grep -F "$version"
+          done
+          for image in target/release/bundle/appimage/*.AppImage; do
+            [ -e "$image" ] || continue
+            someone=1
+            rm -rf /tmp/appimage-smoke && mkdir -p /tmp/appimage-smoke
+            (cd /tmp/appimage-smoke && "$OLDPWD/$image" --appimage-extract >/dev/null)
+            /tmp/appimage-smoke/squashfs-root/AppRun --version | grep -F "$version"
+          done
+          [ "$someone" = 1 ] || { echo "no package was produced" >&2; exit 1; }
+
+      - name: publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "ConvertMe ${tag#v}" --generate-notes
+          mapfile -t files < <(find target/release/bundle -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.exe' -o -name '*.zip' -o -name '*.sig' \
+               -o -name 'latest.json' \) | sort)
+          [ "${#files[@]}" -gt 0 ] || { echo "no bundles to publish" >&2; exit 1; }
+          gh release upload "$tag" "${files[@]}" --clobber
 
       - uses: actions/upload-artifact@v4
         with:

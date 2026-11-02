@@ -17,7 +17,7 @@ from . import md as md_mod
 from . import pptx as pptx_mod
 from . import xlsx as xlsx_mod
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 COMMANDS = {
     "docx": docx_mod.convert,

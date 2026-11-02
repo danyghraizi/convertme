@@ -886,7 +886,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "convertme-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "convertme-drag"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ashpd",
  "convertme-core",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "convertme-engines"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calamine",
  "convertme-core",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "convertme-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "convertme-core",
  "convertme-drag",
@@ -7183,7 +7183,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "convertme-core",
  "serde_json",
