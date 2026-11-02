@@ -2,7 +2,8 @@
 #
 # The bundled tools live inside the sandbox; LibreOffice is reachable only through
 # `flatpak-spawn --host soffice`, which the probe already handles, so Office → PDF
-# rows simply disappear when the host has no LibreOffice.
+# rows disappear when the host has no LibreOffice. ODT output uses the bundled
+# Pandoc, so it does not need the host.
 app-id: app.convertme
 runtime: org.gnome.Platform
 runtime-version: "49"

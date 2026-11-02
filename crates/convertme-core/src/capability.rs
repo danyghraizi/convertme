@@ -108,7 +108,7 @@ impl ToolKey {
     /// Install hint shown in Settings when the tool is absent.
     pub fn install_hint(self) -> &'static str {
         match self {
-            ToolKey::Soffice => "Install LibreOffice to enable Office → PDF and ODT conversions.",
+            ToolKey::Soffice => "Install LibreOffice to enable Office → PDF and ODS conversions.",
             ToolKey::Tesseract => "Install Tesseract with the `eng` language data to enable OCR.",
             ToolKey::Magick => "Reinstall ConvertMe: the bundled image engine is missing.",
             _ => "Reinstall ConvertMe: a bundled tool is missing.",

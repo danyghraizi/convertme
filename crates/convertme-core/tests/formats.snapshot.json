@@ -431,7 +431,8 @@
       "read": true,
       "wheels": [
         "documents",
-        "epub"
+        "epub",
+        "pdf"
       ],
       "write": true
     },
@@ -487,7 +488,8 @@
       "mime": "application/vnd.oasis.opendocument.spreadsheet",
       "read": true,
       "wheels": [
-        "spreadsheets"
+        "spreadsheets",
+        "pdf"
       ],
       "write": true
     },
@@ -501,7 +503,8 @@
       "mime": "text/csv",
       "read": true,
       "wheels": [
-        "spreadsheets"
+        "spreadsheets",
+        "pdf"
       ],
       "write": true
     },
@@ -515,7 +518,8 @@
       "mime": "text/tab-separated-values",
       "read": true,
       "wheels": [
-        "spreadsheets"
+        "spreadsheets",
+        "pdf"
       ],
       "write": true
     },
@@ -633,21 +637,6 @@
   ],
   "overrides": [
     [
-      "DOCX",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "ODT",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "EPUB",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
       "PPTX",
       "PDF",
       "LibreOffice"
@@ -658,44 +647,24 @@
       "LibreOffice"
     ],
     [
-      "XLSX",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "XLS",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "ODS",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "CSV",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
-      "TSV",
-      "PDF",
-      "LibreOffice"
-    ],
-    [
       "DOCX",
       "ODT",
-      "LibreOffice"
+      "Pandoc"
     ],
     [
       "ODT",
       "DOCX",
-      "LibreOffice"
+      "Pandoc"
     ],
     [
       "EPUB",
       "ODT",
-      "LibreOffice"
+      "Pandoc"
+    ],
+    [
+      "PDF",
+      "ODT",
+      "Sidecar"
     ],
     [
       "PDF",
@@ -725,7 +694,7 @@
     [
       "PDF",
       "MD",
-      "PopplerText"
+      "Sidecar"
     ],
     [
       "PDF",
@@ -779,21 +748,6 @@
     ],
     [
       "CSV",
-      "ODS",
-      "LibreOffice"
-    ],
-    [
-      "TSV",
-      "ODS",
-      "LibreOffice"
-    ],
-    [
-      "XLSX",
-      "ODS",
-      "LibreOffice"
-    ],
-    [
-      "CSV",
       "XLSX",
       "RustXlsx"
     ],
@@ -813,7 +767,7 @@
       "SubtitleNative"
     ]
   ],
-  "pairs": 307,
+  "pairs": 311,
   "tools": [
     {
       "category": "images",
@@ -956,6 +910,11 @@
       "label": "Merge"
     },
     {
+      "category": "documents",
+      "id": "merge",
+      "label": "Merge"
+    },
+    {
       "category": "pdf",
       "id": "split",
       "label": "Split pages"
@@ -1030,8 +989,12 @@
       "ODT",
       "MD",
       "TXT",
+      "HTML",
       "PPTX",
       "XLSX",
+      "ODS",
+      "CSV",
+      "TSV",
       "EPUB"
     ],
     "slides": [

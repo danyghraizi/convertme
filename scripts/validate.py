@@ -13,10 +13,12 @@ that says "unavailable".
 
 from __future__ import annotations
 
+import html as html_module
 import json
 import re
 import shutil
 import subprocess
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -405,7 +407,7 @@ def docx(path: str | Path) -> dict | None:
         return None
     paragraphs = re.findall(r"<w:p[ >].*?</w:p>", document, re.S)
     texts = [
-        "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", block, re.S)) for block in paragraphs
+        "".join(re.findall(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>", block, re.S)) for block in paragraphs
     ]
     styles_used = DOCX_STYLES.findall(document)
     return {
@@ -426,17 +428,144 @@ def docx(path: str | Path) -> dict | None:
 
 
 def text_coverage(source_text: str, produced_text: str) -> float | None:
-    """Share of the source's alphabetic words that appear in the output."""
-    words = re.findall(r"[A-Za-z][A-Za-z'-]{2,}", source_text or "")
+    """Share of the source's alphabetic words that appear in the output.
+
+    PDF text contains typographic ligatures and words hyphenated across lines; a
+    producer that rejoins them is *more* faithful, not less, so normalise both sides
+    before comparing.
+    """
+    source_text = unicodedata.normalize("NFKC", source_text or "")
+    produced_text = unicodedata.normalize("NFKC", produced_text or "")
+    produced_text = re.sub(r"(?<=[A-Za-z])-\s+(?=[a-z])", "", produced_text)
+    words = re.findall(r"[A-Za-z][A-Za-z'-]{2,}", source_text)
     if not words:
         return None
-    haystack = (produced_text or "").lower()
+    haystack = produced_text.lower()
     missing = [word for word in words if word.lower() not in haystack]
     return 1.0 - len(missing) / len(words)
 
 
-# --------------------------------------------------------------------- epub
+# ---------------------------------------------------------------------- odt
+def odt(path: str | Path) -> dict | None:
+    """ODF text package facts: headings, lists, tables, images and its words."""
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = package.namelist()
+            content = package.read("content.xml").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+    text = re.sub(r"<[^>]+>", " ", content)
+    text = html_module.unescape(" ".join(text.split()))
+    return {
+        "entries": names,
+        "text": text,
+        "headings": content.count("<text:h "),
+        "lists": content.count("<text:list "),
+        "tables": content.count("<table:table "),
+        "images": len([name for name in names if name.startswith("Pictures/")]),
+        "mimetype": _safe_read(path, "mimetype"),
+        "bytes": Path(path).stat().st_size,
+    }
 
+
+# --------------------------------------------------------------------- pptx
+def pptx(path: str | Path) -> dict | None:
+    """Presentation facts without python-pptx: slides, text, pictures, canvas."""
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = package.namelist()
+            slides = sorted(
+                name for name in names if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+            )
+            text = []
+            for slide in slides:
+                xml = package.read(slide).decode("utf-8", "replace")
+                text.extend(re.findall(r"<a:t[^>]*>(.*?)</a:t>", xml, re.S))
+            presentation = package.read("ppt/presentation.xml").decode("utf-8", "replace")
+            size = re.search(r'<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"', presentation)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+    decoded = html_module.unescape(" ".join(" ".join(text).split()))
+    return {
+        "slides": len(slides),
+        "text": decoded,
+        "text_chars": sum(len(item) for item in text),
+        "pictures": len(
+            [name for name in names if name.startswith("ppt/media/")]
+        ),
+        "slide_width": int(size.group(1)) if size else None,
+        "slide_height": int(size.group(2)) if size else None,
+        "bytes": Path(path).stat().st_size,
+    }
+
+
+# --------------------------------------------------------------------- xlsx
+def xlsx(path: str | Path, sheet: str | None = None) -> dict | None:
+    """One worksheet as `{cell: value}`, plus workbook-level counts."""
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = package.namelist()
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                data = package.read("xl/sharedStrings.xml").decode("utf-8", "replace")
+                for item in re.findall(r"<si>.*?</si>", data, re.S):
+                    shared.append(
+                        html_module.unescape(
+                            "".join(re.findall(r"<t[^>]*>(.*?)</t>", item, re.S))
+                        )
+                    )
+            book = package.read("xl/workbook.xml").decode("utf-8", "replace")
+            sheet_names = re.findall(r'<sheet[^>]*name="([^"]+)"', book)
+            sheets = sorted(
+                name for name in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name)
+            )
+            if not sheets:
+                return None
+            selected = 0
+            if sheet is not None and sheet in sheet_names:
+                selected = sheet_names.index(sheet)
+            sheet_xml = package.read(sheets[selected]).decode("utf-8", "replace")
+            merged = re.findall(r'<mergeCell ref="([^"]+)"', sheet_xml)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+    cells: dict[str, str] = {}
+    for match in re.finditer(r"<c\b([^>]*)>(.*?)</c>", sheet_xml, re.S):
+        attributes, body = match.group(1), match.group(2)
+        reference = re.search(r'\br="([A-Z]+\d+)"', attributes)
+        if reference is None:
+            continue
+        pieces = re.findall(r"<t[^>]*>(.*?)</t>", body, re.S)
+        kind = re.search(r'\bt="([^"]+)"', attributes)
+        if kind is not None and kind.group(1) == "s":
+            value = re.search(r"<v>(.*?)</v>", body, re.S)
+            if value is None:
+                continue
+            try:
+                raw = shared[int(value.group(1))]
+            except (ValueError, IndexError):
+                raw = value.group(1)
+        elif pieces:
+            raw = "".join(pieces)
+        else:
+            value = re.search(r"<v>(.*?)</v>", body, re.S)
+            if value is None:
+                continue
+            raw = value.group(1)
+        cells[reference.group(1)] = html_module.unescape(raw)
+    return {
+        "sheets": sheet_names,
+        "sheet": sheet_names[selected] if selected < len(sheet_names) else "",
+        "cells": cells,
+        "populated": len(cells),
+        "longest": max((len(value) for value in cells.values()), default=0),
+        "references": sorted(cells),
+        "merged": merged,
+        "bytes": Path(path).stat().st_size,
+    }
+
+
+# --------------------------------------------------------------------- epub
 def epub(path: str | Path) -> dict | None:
     """Container sanity: the mimetype must be first and stored, per EPUB 3."""
     path = Path(path)
@@ -460,6 +589,8 @@ def epub(path: str | Path) -> dict | None:
         "mimetype": _safe_read(path, "mimetype"),
         "entries": names,
         "chapters": [n for n in names if n.endswith((".xhtml", ".html"))],
+        "styles": [n for n in names if n.endswith(".css")],
+        "images": [n for n in names if "/images/" in n],
         "text": text,
         "bytes": path.stat().st_size,
     }

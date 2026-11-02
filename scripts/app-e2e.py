@@ -147,6 +147,7 @@ BACKEND_TOOLS = {
         "Save pages as images",
         "Extract text",
     ],
+    "Documents": ["Merge"],
     "Archives": ["Extract"],
 }
 
@@ -805,6 +806,27 @@ class Checks:
 
     def failures(self):
         return [item for item in self.items if not item["ok"]]
+
+
+def _is_multi_output_folder(name: str, source_stem: str) -> bool:
+    """Whether `name` is a job's multi-output folder, not a directory artifact.
+
+    A multi-file job names its folder `<stem>-<label>`: `-split` (PDF split, video
+    split), `-images` (PDF save pages), `-frames` (video snapshots), or `-out` for a
+    plain conversion. A collision with an existing file adds `-2`, `-3`, ….
+    An extracted archive stays a directory artifact (`<stem>-extract`) and is never
+    descended into here.
+    """
+    if name == source_stem:
+        return True
+    prefix = source_stem + "-"
+    if not name.startswith(prefix):
+        return False
+    label = name[len(prefix):]
+    return any(
+        label == candidate or label.startswith(candidate + "-")
+        for candidate in ("split", "images", "frames", "out")
+    )
 
 
 class Session:
@@ -1775,14 +1797,15 @@ class Session:
         while time.time() < deadline:
             current = self.snapshot()
             new_names = [name for name in current if name not in before_files]
-            # Several outputs from one source are published inside a folder named
-            # after it (`clip/part-001.mp4`). The folder is one new entry; its files
-            # are the artifacts the checks inspect.
+            # Several outputs from one source are published inside a folder that
+            # names the source and the action (`clip-...-split/part-001.mp4`). The
+            # folder is one new entry; its files are the artifacts the checks
+            # inspect. A directory artifact (an extracted archive) stays one entry.
             new_paths = []
             entries = []
             for name in sorted(new_names):
                 path = os.path.join(self.workdir, name)
-                if os.path.isdir(path) and name == source_stem:
+                if os.path.isdir(path) and _is_multi_output_folder(name, source_stem):
                     for root, _dirs, files in os.walk(path):
                         for item in sorted(files):
                             nested = os.path.join(root, item)
@@ -2493,31 +2516,18 @@ def scenario_dialogs(h, rec, checks, category):
             card_labels,
         )
         if not tools:
-            # The UI shows FALLBACK_TOOLS for categories the backend does not
-            # serve. Open the first one to record the real behaviour, then report
-            # every card as skipped with the reason. No silent omission.
-            observed = ""
-            if cards:
-                session.press(cards[0][1])
-                time.sleep(2.0)
-                dialog = session.dialog()
-                if dialog is not None:
-                    record_dialog(rec, session, cards[0][0])
-                    close_dialog(session)
-                    observed = "a dialog appeared unexpectedly"
-                else:
-                    observed = session.status_text().strip() or session.has_text("missing") and "missing note" or ""
-                    session.cancel_all()
-                checks.add(
-                    f"{category}: fallback card does not open a dialog",
-                    dialog is None,
-                    "no dialog",
-                    observed or "no dialog",
-                )
+            # The backend now has no tools for this category. The UI must show no
+            # clickable phantom cards; the old fallback list advertised engines
+            # that do not exist and every click ended in "Tool could not start".
+            checks.add(
+                f"{category}: no phantom tool cards",
+                not cards,
+                "0 cards",
+                card_labels,
+            )
             raise Skip(
-                f"backend registers no {category} tools; the UI shows "
-                f"{len(cards)} fallback card(s) with no field table/engine. "
-                f"First card observed: {observed or 'no dialog, no job'}"
+                f"backend registers no {category} tools; correctly showing "
+                f"{len(cards)} card(s)"
             )
         for label in tools:
             if (category, label) in FIELDLESS:
@@ -2692,13 +2702,13 @@ def scenario_dialogs(h, rec, checks, category):
                     None,
                 )
             if (category, label) == ("PDF", "Compress"):
-                session.select_option("Quality", "screen")
+                session.select_option("Quality", "Screen · 72 dpi (smallest)")
                 session.press_button("Reset", within=session.dialog())
                 time.sleep(0.4)
                 checks.add(
                     "PDF Compress: Reset restores the ebook preset",
-                    session.selected_option("Quality") == "ebook",
-                    "ebook",
+                    session.selected_option("Quality") == "Ebook · 150 dpi (balanced)",
+                    "Ebook · 150 dpi (balanced)",
                     session.selected_option("Quality"),
                 )
             before = session.snapshot()
@@ -2924,7 +2934,7 @@ def scenario_compress_pdf(h, rec, checks):
             rec,
             checks,
             "Compress",
-            apply=lambda s: s.select_option("Quality", "screen"),
+            apply=lambda s: s.select_option("Quality", "Screen · 72 dpi (smallest)"),
         )
         record = record_outputs(rec, outputs)[0]
         info = record.get("pdf", {})
@@ -3992,9 +4002,9 @@ def scenario_tool_video_frames(h, rec, checks):
             "different pixels",
             "identical",
         )
-        folder = os.path.join(session.workdir, "clip-landscape-720p-10s")
+        folder = os.path.join(session.workdir, "clip-landscape-720p-10s-frames")
         checks.add(
-            "several frames land in a folder named after the source",
+            "several frames land in a folder naming the source and the action",
             outputs
             and all(os.path.dirname(os.path.realpath(p)) == os.path.realpath(folder) for p in outputs),
             folder,
@@ -4024,14 +4034,14 @@ def scenario_tool_video_split(h, rec, checks):
         wanted = [2.5, 2.5, 5.0]
         checks.add("two split points write three clips", len(records) == 3, 3, len(records))
         checks.add(
-            "the parts are grouped in a source-named folder",
+            "the parts are grouped in a folder naming the source and the action",
             outputs
             and all(
                 os.path.dirname(os.path.realpath(p))
-                == os.path.realpath(os.path.join(session.workdir, "clip-landscape-720p-10s"))
+                == os.path.realpath(os.path.join(session.workdir, "clip-landscape-720p-10s-split"))
                 for p in outputs
             ),
-            "clip-landscape-720p-10s/part-*.mp4",
+            "clip-landscape-720p-10s-split/part-*.mp4",
             [p for p in outputs],
         )
         checks.add(
@@ -4698,11 +4708,11 @@ def scenario_tool_pdf_pages(h, rec, checks):
             "5 PNGs >= 2400 px wide",
             [(record.get("image", {}).get("width"), record.get("image", {}).get("height")) for record in records[:3]],
         )
-        folder = os.path.realpath(os.path.join(session.workdir, "report-5-pages"))
+        folder = os.path.realpath(os.path.join(session.workdir, "report-5-pages-images"))
         checks.add(
-            "the page images are grouped in a source-named folder",
+            "the page images are grouped in a folder naming the source and the action",
             outputs and all(os.path.dirname(os.path.realpath(p)) == folder for p in outputs),
-            "report-5-pages/",
+            "report-5-pages-images/",
             [os.path.dirname(p) for p in outputs],
         )
         checks.add(
@@ -4782,6 +4792,55 @@ def scenario_convert_pdf_docx(h, rec, checks):
         checks.add("list markers (w:numPr)", facts["numpr"] >= 23, ">=23", facts["numpr"])
         checks.add("embedded images", facts["images"] >= 4, ">=4", facts["images"])
         checks.add("no page breaks", facts["page_breaks"] == 0, 0, facts["page_breaks"])
+        # Layout, not only text: dates must be tabbed to the right, the coursework
+        # must stay four columns, and the section rules must survive as borders.
+        document_xml = zip_member_text(output, "word/document.xml")
+        tables = re.findall(r"<w:tbl>.*?</w:tbl>", document_xml, re.S)
+        coursework_names = (
+            "Data Structures",
+            "Algorithms Analysis",
+            "Artificial Intelligence",
+            "Systems Programming",
+            "Software Methodology",
+            "Database Management",
+            "Internet Technology",
+            "Computer Architecture",
+        )
+        def table_text(table: str) -> str:
+            joined = " ".join(
+                re.findall(r"<w:t(?:\s[^>]*)?>([^<]*)</w:t>", table, re.S)
+            )
+            return re.sub(r"\s+", " ", joined).strip()
+
+        checks.add(
+            "coursework is one four-column table",
+            any(
+                all(name in table_text(table) for name in coursework_names)
+                for table in tables
+            ),
+            "one table with all eight entries",
+            [table_text(table)[:120] for table in tables],
+        )
+        right_tabs = len(re.findall(r'<w:tab[^>]*w:val="right"', document_xml))
+        checks.add("dated lines use right tabs", right_tabs >= 8, ">=8", right_tabs)
+        checks.add(
+            "section rules are heading borders",
+            document_xml.count("<w:pBdr>") >= 7,
+            ">=7",
+            document_xml.count("<w:pBdr>"),
+        )
+        checks.add(
+            "the photo and four contact icons are embedded",
+            facts["images"] >= 5,
+            ">=5",
+            facts["images"],
+        )
+        checks.add(
+            "a date is not merged into the degree line",
+            "Sep. 2017  May 2021 Bachelor" not in facts["text"],
+            "separate lines",
+            "Sep. 2017  May 2021 Bachelor" in facts["text"],
+        )
         # The source's own text layer, not its bytes: `text_of` reads a text file.
         source_words = validate.pdf_text(source) or ""
         coverage = validate.text_coverage(source_words, facts["text"])
@@ -4820,6 +4879,79 @@ def zip_members(path: str) -> list[str]:
         return []
 
 
+def scenario_convert_pdf_odt(h, rec, checks):
+    """PDF → ODT must be reachable in the window and carry the document, not a shell."""
+    source = h.fixture("pdf/Jake_s_Resume__Anonymous_.pdf")
+    with h.launch("convert-pdf-odt", [source]) as session:
+        rec["workdir"] = session.workdir
+        outputs = conversion_job(session, rec, checks, "ODT")
+        output = outputs[0]
+        record_outputs(rec, outputs)
+        facts = validate.odt(output)
+        if facts is None:
+            raise ScenarioFailure("the published ODT is not a readable package")
+        rec["measurements"]["odt"] = {
+            key: facts[key]
+            for key in ("headings", "lists", "tables", "images", "bytes")
+        }
+        checks.add(
+            "ODF text mimetype",
+            facts["mimetype"] == "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.text",
+            facts["mimetype"],
+        )
+        checks.add("headings survive", facts["headings"] >= 5, ">=5", facts["headings"])
+        checks.add("tables survive", facts["tables"] >= 1, ">=1", facts["tables"])
+        checks.add("images survive", facts["images"] >= 4, ">=4", facts["images"])
+        coverage = validate.text_coverage(validate.pdf_text(source), facts["text"])
+        checks.add(
+            "source words survive",
+            coverage is not None and coverage >= 0.98,
+            ">=0.98",
+            round(coverage, 4) if coverage is not None else None,
+        )
+
+
+def scenario_document_merge(h, rec, checks):
+    """DOCX + HTML merge: the first file names the output type."""
+    source = h.fixture("documents/report.docx")
+    extra = os.path.join(h.profile, "merge-extra.html")
+    with open(extra, "w", encoding="utf-8") as handle:
+        handle.write("<h1>Extra section</h1><p>Unique merge marker.</p>")
+    with h.launch("documents-merge", [source, extra]) as session:
+        rec["workdir"] = session.workdir
+        session.toggle_category("Documents")
+        before = session.snapshot()
+        before_rows = session.history_rows()
+        dialog = session.open_tool("Merge")
+        if dialog is None:
+            raise ScenarioFailure("the document Merge card did not open a dialog")
+        record_dialog(rec, session, "Merge")
+        session.press_run()
+        try:
+            outputs = session.wait_job(before, before_rows, timeout=120)
+        finally:
+            if session.dialog() is not None:
+                close_dialog(session)
+        record = record_outputs(rec, outputs)[0]
+        checks.add(
+            "one merged document",
+            len(outputs) == 1 and record["kind"] in ("docx", "zip", "unknown"),
+            "one document",
+            [os.path.basename(path) for path in outputs],
+        )
+        output = outputs[0]
+        facts = validate.docx(output) if output.endswith(".docx") else None
+        checks.add(
+            "both documents are present",
+            facts is not None
+            and "ConvertMe Test Report" in facts["text"]
+            and "Unique merge marker" in facts["text"],
+            "both source texts",
+            (facts["text"][:160] if facts else "unreadable"),
+        )
+
+
 def scenario_convert_document(h, rec, checks):
     source = h.fixture("documents/report.md")
     source_text = text_of(source)
@@ -4832,6 +4964,37 @@ def scenario_convert_document(h, rec, checks):
         checks.add("magic is a zip container", record["kind"] == "zip", "zip", record["kind"])
         document = zip_member_text(output, "word/document.xml")
         checks.add("document text survives", all(word in document for word in words), words, document[:200])
+
+
+def scenario_convert_document_pdf(h, rec, checks):
+    """A DOCX target must now be enabled without a system LibreOffice."""
+    source = h.fixture("documents/report.docx")
+    with h.launch("convert-document-pdf", [source]) as session:
+        rec["workdir"] = session.workdir
+        outputs = conversion_job(session, rec, checks, "PDF")
+        output = outputs[0]
+        record = record_outputs(rec, outputs)[0]
+        checks.add("magic is PDF", record["kind"] == "pdf", "pdf", record["kind"])
+        text = run(["pdftotext", output, "-"]).stdout
+        checks.add(
+            "document text survives the built-in PDF writer",
+            "ConvertMe Test Report" in text and "Summary" in text,
+            "report headings and text",
+            text[:160],
+        )
+
+
+def scenario_convert_spreadsheet_pdf(h, rec, checks):
+    """Spreadsheet PDF and ODS are produced in-process."""
+    source = h.fixture("spreadsheets/sheet.xlsx")
+    with h.launch("convert-spreadsheet-pdf", [source]) as session:
+        rec["workdir"] = session.workdir
+        pdf = conversion_job(session, rec, checks, "PDF")[0]
+        text = run(["pdftotext", pdf, "-"]).stdout
+        checks.add("sheet headers reach the PDF", "name" in text.lower(), "name/value", text[:160])
+        ods = conversion_job(session, rec, checks, "ODS")[0]
+        members = zip_members(ods)
+        checks.add("ODS is a package", "content.xml" in members, "content.xml", members[:4])
 
 
 def scenario_convert_slides(h, rec, checks):
@@ -4981,14 +5144,14 @@ def _check_split(session, checks, records, outputs):
     pdfs = [record for record in records if record.get("kind") == "pdf"]
     checks.add("split writes one PDF per page", len(pdfs) == 5, 5, [record["name"] for record in records])
     checks.add(
-        "the split pages are grouped in a source-named folder",
+        "the split pages are grouped in a folder naming the source and the action",
         outputs
         and all(
             os.path.dirname(os.path.realpath(path))
-            == os.path.realpath(os.path.join(session.workdir, "report-5-pages"))
+            == os.path.realpath(os.path.join(session.workdir, "report-5-pages-split"))
             for path in outputs
         ),
-        "report-5-pages/",
+        "report-5-pages-split/",
         [os.path.dirname(path) for path in outputs],
     )
     checks.add(
@@ -5093,6 +5256,113 @@ def scenario_tool_pdf_organize(h, rec, checks):
         rotated = int(match.group(1)) if match else 0
         rec["measurements"]["page1_rotation"] = rotated
         checks.add("page 1 is rotated by 90°", rotated == 90, 90, rotated)
+
+
+def scenario_tool_pdf_organize_drag(h, rec, checks):
+    """A real pointer drag: page 3 is lifted, lands at position 2, and is saved there.
+
+    Cards 1–2 sit under the XDG portal's 504×540 "Global Shortcuts Requested" window
+    in this Xvfb session, so the gesture starts on card 3 and drops before card 2;
+    both points are outside that window, which would otherwise eat the pointer.
+    """
+    source = h.fixture("pdf/report-5-pages.pdf")
+    with h.launch("tool-pdf-organize-drag", [source]) as session:
+        rec["workdir"] = session.workdir
+        session.show_history()
+        before_rows = session.history_rows()
+        session.toggle_category("PDF")
+        dialog = session.open_tool("Organize pages")
+        if dialog is None:
+            raise ScenarioFailure("Organize pages opened no dialog")
+        deadline = time.time() + 10
+        cards = []
+        while time.time() < deadline:
+            cards = [
+                node
+                for node in session.find_all(
+                    role="list item", startswith="Page ", within=session.dialog()
+                )
+                if session.extents(node)
+            ]
+            if len(cards) == 5:
+                break
+            time.sleep(0.25)
+        rec["measurements"]["organizer_cards"] = [
+            _safe(node, "get_name") for node in cards
+        ]
+        rec["measurements"]["organizer_boxes"] = [session.extents(node) for node in cards]
+        checks.add("the organizer exposes five page cards", len(cards) == 5, 5, len(cards))
+        if len(cards) < 3:
+            raise Skip("the organizer exposed fewer than three page cards to AT-SPI")
+
+        start = session.extents(cards[2])
+        end = session.extents(cards[1])
+        sx, sy = start[0] + start[2] // 2, start[1] + start[3] // 2
+        # The left half of card 2 inserts before it: page 3 lands at position 2.
+        ex, ey = end[0] + end[2] // 4, end[1] + end[3] // 2
+        run(["xdotool", "mousemove", str(sx), str(sy)], timeout=10)
+        time.sleep(0.15)
+        run(["xdotool", "mousedown", "1"], timeout=10)
+        time.sleep(0.2)
+        for step in range(1, 7):
+            mx = sx + (ex - sx) * step // 6
+            my = sy + (ey - sy) * step // 6
+            run(["xdotool", "mousemove", str(mx), str(my)], timeout=10)
+            time.sleep(0.06)
+        time.sleep(0.35)
+        try:
+            mid = session.wait_text(
+                "position 2 of 5", within=session.dialog(), timeout=5
+            )
+        except ScenarioFailure:
+            mid = session.subtree_text(session.dialog())[-500:]
+        rec["measurements"]["drag_status"] = mid
+        rec["screenshots"].append(session.shot("dragging"))
+        checks.add(
+            "the drag names its landing position",
+            "Page 3" in mid and "position 2 of 5" in mid,
+            "Page 3 → position 2 of 5",
+            mid.strip(),
+        )
+        run(["xdotool", "mouseup", "1"], timeout=10)
+        time.sleep(0.6)
+        rec["screenshots"].append(session.shot("dropped"))
+
+        dropped = session.find(
+            role="list item",
+            contains="Page 3, position 2 of 5",
+            within=session.dialog(),
+        )
+        dropped_name = _safe(dropped, "get_name") or ""
+        checks.add(
+            "the dropped page is selected at its new position",
+            "selected" in dropped_name,
+            "Page 3, position 2 of 5, selected",
+            dropped_name,
+        )
+
+        before_files = session.snapshot()
+        session.press_run()
+        outputs = session.wait_job(before_files, before_rows, timeout=240, expect=1)
+        rec["measurements"]["outputs"] = [
+            os.path.relpath(path, session.workdir) for path in outputs
+        ]
+        rec["screenshots"].append(session.shot("after"))
+        record_outputs(rec, outputs)
+        source_text = page_one_text_source(
+            os.path.join(session.workdir, "report-5-pages.pdf"), 3
+        )
+        output_text = page_one_text_page(outputs[0], 2)
+
+        def head(value: str) -> str:
+            return re.sub(r"\s+", " ", value).strip()[:40]
+
+        checks.add(
+            "the saved PDF follows the dragged order",
+            bool(source_text) and head(source_text) == head(output_text),
+            head(source_text),
+            head(output_text),
+        )
 
 
 def scenario_tool_pdf_organize_multi(h, rec, checks):
@@ -5266,6 +5536,17 @@ def scenario_negative_corrupt(h, rec, checks):
                 "an error message",
                 detail[:600],
             )
+        visible = "\n".join(value for _role, value in session.all_texts())
+        rec["screenshots"].append(session.shot("failed"))
+        # WebKit exposes the red alert as a visual role without its child text in
+        # the AT-SPI tree; the screenshot above and the failure text in the
+        # activity/status strip are the measurable evidence here.
+        checks.add(
+            "the failure reaches the error surface",
+            "engine_failed" in visible or "failed" in visible.lower(),
+            "an error message",
+            visible[-400:],
+        )
         checks.add(
             "the app survives corrupt input",
             session.proc.poll() is None,
@@ -5589,6 +5870,7 @@ SCENARIOS = [
     ("tool-audio-bleep", scenario_tool_audio_bleep),
     ("tool-audio-metadata", scenario_tool_audio_metadata),
     ("tool-pdf-organize", scenario_tool_pdf_organize),
+    ("tool-pdf-organize-drag", scenario_tool_pdf_organize_drag),
     ("tool-pdf-organize-multi", scenario_tool_pdf_organize_multi),
     ("tool-pdf-merge", scenario_tool_pdf_merge),
     ("tool-video-join", scenario_tool_video_join),
@@ -5603,7 +5885,11 @@ SCENARIOS = [
     ("convert-audio", scenario_convert_audio),
     ("convert-pdf-text", scenario_convert_pdf_text),
     ("convert-document", scenario_convert_document),
+    ("convert-document-pdf", scenario_convert_document_pdf),
+    ("convert-spreadsheet-pdf", scenario_convert_spreadsheet_pdf),
     ("convert-pdf-docx", scenario_convert_pdf_docx),
+    ("convert-pdf-odt", scenario_convert_pdf_odt),
+    ("documents-merge", scenario_document_merge),
     ("convert-slides", scenario_convert_slides),
     ("convert-spreadsheet", scenario_convert_spreadsheet),
     ("convert-epub", scenario_convert_epub),

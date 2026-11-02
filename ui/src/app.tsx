@@ -28,7 +28,22 @@ interface ModalState {
   files: string[];
 }
 
+interface AlertState {
+  title: string;
+  message: string;
+}
+
 const HISTORY_LIMIT = 50;
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const value = error.message;
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return fallback;
+}
 
 function normalizeCategory(raw: string): string {
   return raw.toLowerCase();
@@ -51,6 +66,7 @@ export default function App() {
   const [analyzing, setAnalyzing] = createSignal(false);
   const [busyTool, setBusyTool] = createSignal('');
   const [note, setNote] = createSignal('');
+  const [alert, setAlert] = createSignal<AlertState | null>(null);
   const [backendNote, setBackendNote] = createSignal('');
   const unlisteners: (() => void)[] = [];
   let disposed = false;
@@ -87,6 +103,12 @@ export default function App() {
       else delete next[id];
       return next;
     });
+  }
+
+  function reportError(title: string, error: unknown, fallback: string): void {
+    const message = errorMessage(error, fallback);
+    setAlert({ title, message });
+    setNote(message);
   }
 
   function scheduleHistory(): void {
@@ -134,7 +156,11 @@ export default function App() {
       case 'cancelled':
         setJobProgress(id, null);
         if (event.kind === 'failed' && event.error) {
-          setNote(`${event.error.code}: ${event.error.message}`);
+          reportError(
+            'The job failed',
+            `${event.error.code}: ${event.error.message}`,
+            'The job failed.',
+          );
         }
         scheduleHistory();
         break;
@@ -256,7 +282,7 @@ export default function App() {
       announceRun(result, target.label);
       scheduleHistory();
     } catch (error) {
-      setNote(error instanceof Error ? error.message : 'Conversion could not start');
+      reportError('Conversion could not start', error, 'The conversion could not start.');
     }
   }
 
@@ -280,7 +306,7 @@ export default function App() {
       }
       setModal({ tool, fields, category, files });
     } catch (error) {
-      setNote(error instanceof Error ? error.message : 'Tool could not start');
+      reportError('Tool could not start', error, 'The tool could not start.');
     } finally {
       setBusyTool('');
     }
@@ -559,6 +585,24 @@ export default function App() {
             </button>
           </div>
 
+          <Show when={alert()}>
+            {(item) => (
+              <div class="alert-banner" role="alert" aria-live="assertive">
+                <div class="alert-copy">
+                  <span><strong>{item().title}: </strong>{item().message}</span>
+                </div>
+                <button
+                  type="button"
+                  class="alert-dismiss"
+                  aria-label="Dismiss error"
+                  onClick={() => setAlert(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </Show>
+
           <Show when={analysis()}>
             {(result) => (
               <section class="panel panel-card selection-panel" aria-labelledby="selection-heading">
@@ -673,6 +717,13 @@ export default function App() {
                 {categoryLabel(activeCategory())} · {toolCards().length} available
               </span>
             </header>
+            <Show when={toolCards().length === 0}>
+              <p class="empty-note">
+                {hasSelection()
+                  ? 'No tools for this file type yet. Use the format buttons above.'
+                  : 'Choose a file to see the tools for its format.'}
+              </p>
+            </Show>
             <ul class="tool-grid">
               <For each={toolCards()}>
                 {(tool, index) => (
@@ -762,17 +813,17 @@ export default function App() {
               limit={HISTORY_LIMIT}
               onCancel={(id) => {
                 void ipc.cancelJob(id).then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not cancel the job');
+                  reportError('Could not cancel the job', error, 'The job could not be cancelled.');
                 });
               }}
               onRetry={(id) => {
                 void ipc.retry(id).then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not retry the job');
+                  reportError('Could not retry the job', error, 'The job could not be retried.');
                 });
               }}
               onCancelAll={() => {
                 void ipc.cancelAll().then(scheduleHistory, (error: unknown) => {
-                  setNote(error instanceof Error ? error.message : 'Could not cancel jobs');
+                  reportError('Could not cancel jobs', error, 'The jobs could not be cancelled.');
                 });
               }}
             />
@@ -804,7 +855,7 @@ export default function App() {
                 return;
               }
               void ipc.previewWheel(selection()).catch((error) => {
-                setNote(error instanceof Error ? error.message : 'The wheel could not open');
+                reportError('The wheel could not open', error, 'The preview wheel could not open.');
               });
             }}
           >

@@ -47,14 +47,15 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
 
 fn convert(job: &Job, cx: &Context<'_>, target: &'static str) -> Result<Vec<PathBuf>, JobError> {
     match target {
-        "TXT" => extract_text(job, cx, TextFlavor::Plain),
-        "MD" => extract_text(job, cx, TextFlavor::Markdown),
+        "TXT" => extract_text(job, cx),
+        "MD" => sidecar(job, cx, "md", "md"),
         "PNG" => render_pages(job, cx, ImageKind::Png),
         "JPG" => render_pages(job, cx, ImageKind::Jpeg),
         "DOCX" => sidecar(job, cx, "docx", "docx"),
         "PPTX" => sidecar(job, cx, "pptx", "pptx"),
         "XLSX" => sidecar(job, cx, "xlsx", "xlsx"),
         "EPUB" => sidecar(job, cx, "epub", "epub"),
+        "ODT" => odt_from_layout(job, cx),
         other => Err(JobError::unsupported("PDF", other)),
     }
 }
@@ -66,7 +67,7 @@ fn run_tool(job: &Job, cx: &Context<'_>, tool: ToolId) -> Result<Vec<PathBuf>, J
         ToolId::Merge => merge(job, cx),
         ToolId::Split => split(job, cx),
         ToolId::SavePages => save_pages(job, cx),
-        ToolId::ExtractText => extract_text(job, cx, TextFlavor::Plain),
+        ToolId::ExtractText => extract_text(job, cx),
         ToolId::Metadata => Err(JobError::new(
             ErrorCode::Unsupported,
             "PDF metadata is handled by the metadata engine",
@@ -80,42 +81,12 @@ fn run_tool(job: &Job, cx: &Context<'_>, tool: ToolId) -> Result<Vec<PathBuf>, J
 
 // --------------------------------------------------------------------- text
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextFlavor {
-    Plain,
-    Markdown,
-}
-
-fn extract_text(job: &Job, cx: &Context<'_>, flavor: TextFlavor) -> Result<Vec<PathBuf>, JobError> {
+fn extract_text(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let text = pdf_text(job, cx)?;
     cx.ctx.checkpoint()?;
-
-    match flavor {
-        TextFlavor::Plain => {
-            let out = cx.out("text.txt");
-            write_text(&out, &text)?;
-            Ok(vec![out])
-        }
-        TextFlavor::Markdown => {
-            let pandoc = cx.tools.path(ToolKey::Pandoc)?;
-            let plain = cx.scratch("extracted-plain.txt");
-            write_text(&plain, &text)?;
-            let out = cx.out("text.md");
-            cx.ctx.set_stage("Converting text to Markdown");
-            // Pandoc 3 removed the `plain` reader; extracted text is valid Markdown,
-            // and saying so is what keeps this path working across pandoc upgrades.
-            proc::run(
-                Cmd::new(&pandoc)
-                    .args(["-f", "markdown", "-t", "gfm", "--wrap=none", "-o"])
-                    .arg(&out)
-                    .arg(&plain)
-                    .budget(Budget::Short),
-                cx.ctx,
-            )?
-            .ok()?;
-            Ok(vec![out])
-        }
-    }
+    let out = cx.out("text.txt");
+    write_text(&out, &text)?;
+    Ok(vec![out])
 }
 
 /// Text from `pdftotext -layout`, with the OCR fallback for scanned pages.
@@ -1025,6 +996,31 @@ fn sidecar(
     Ok(vec![out])
 }
 
+/// PDF → ODT: the layout-aware DOCX is the intermediate, then the bundled
+/// Pandoc writes ODF. ODT used to require a system LibreOffice; this keeps the
+/// target available on a clean install.
+fn odt_from_layout(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
+    let docx = sidecar(job, cx, "docx", "docx")?
+        .into_iter()
+        .next()
+        .ok_or_else(|| JobError::new(ErrorCode::EngineFailed, "the PDF sidecar wrote no DOCX"))?;
+    let pandoc = cx.tools.path(ToolKey::Pandoc)?;
+    let out = cx.out("output.odt");
+    cx.ctx.set_stage("Converting to ODT");
+    cx.ctx.checkpoint()?;
+    proc::run(
+        Cmd::new(&pandoc)
+            .args(["-f", "docx", "-t", "odt", "-o"])
+            .arg(&out)
+            .arg(&docx)
+            .budget(Budget::Short),
+        cx.ctx,
+    )?
+    .ok()?;
+    ensure_file(&out, "Pandoc")?;
+    Ok(vec![out])
+}
+
 // ------------------------------------------------------------------ params
 
 fn bad_param(key: &str, expected: &str) -> JobError {
@@ -1368,12 +1364,11 @@ mod tests {
         );
     }
 
-    /// PDF → Markdown runs through pandoc, whose reader names change between major
-    /// versions: `plain` was removed in pandoc 3, and nothing noticed because no test
-    /// exercised this path.
+    /// PDF → Markdown runs through the sidecar's layout-aware writer; its output must
+    /// keep the page's words.
     #[test]
     fn pdf_to_markdown_keeps_the_words() {
-        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Pdftotext, ToolKey::Pandoc])
+        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Pdftotext, ToolKey::Sidecar])
         else {
             return;
         };

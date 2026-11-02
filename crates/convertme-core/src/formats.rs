@@ -140,6 +140,7 @@ pub enum EngineRef {
     PrintPdf,
     Calamine,
     RustXlsx,
+    OdsWriter,
     NativeText,
     SubtitleNative,
 }
@@ -160,7 +161,10 @@ impl EngineRef {
             EngineRef::Tesseract => &[Tesseract],
             EngineRef::Sidecar => &[Sidecar],
             EngineRef::LibreOffice => &[Soffice],
-            EngineRef::PrintPdf | EngineRef::Calamine | EngineRef::RustXlsx => &[],
+            EngineRef::PrintPdf
+            | EngineRef::Calamine
+            | EngineRef::RustXlsx
+            | EngineRef::OdsWriter => &[],
             EngineRef::NativeText | EngineRef::SubtitleNative => &[],
         }
     }
@@ -181,6 +185,7 @@ impl EngineRef {
             EngineRef::PrintPdf => "built-in PDF writer",
             EngineRef::Calamine => "built-in spreadsheet reader",
             EngineRef::RustXlsx => "built-in XLSX writer",
+            EngineRef::OdsWriter => "built-in ODS writer",
             EngineRef::NativeText => "built-in text writer",
             EngineRef::SubtitleNative => "built-in subtitle engine",
         }
@@ -307,14 +312,14 @@ pub static FORMATS: &[Format] = &[
          wheels: [Documents, Epub, Pdf], read_engine: Pandoc, write_engine: Pandoc),
     fmt!("ODT", "ODT", Documents, "application/vnd.oasis.opendocument.text",
          ["odt"], read: yes, write: yes,
-         wheels: [Documents, Epub, Pdf], read_engine: LibreOffice, write_engine: LibreOffice),
+         wheels: [Documents, Epub, Pdf], read_engine: Pandoc, write_engine: Pandoc),
     fmt!("MD", "MD", Documents, "text/markdown", ["md", "markdown"], read: yes, write: yes,
          wheels: [Documents, Pdf, Epub], read_engine: Pandoc, write_engine: Pandoc),
     fmt!("TXT", "TXT", Documents, "text/plain", ["txt"], read: yes, write: yes,
          wheels: [Documents, Pdf, Epub, Subtitles],
          read_engine: Pandoc, write_engine: NativeText),
     fmt!("HTML", "HTML", Documents, "text/html", ["html", "htm"], read: yes, write: yes,
-         wheels: [Documents, Epub], read_engine: Pandoc, write_engine: Pandoc),
+         wheels: [Documents, Epub, Pdf], read_engine: Pandoc, write_engine: Pandoc),
     // ---------------------------------------------------------------- Slides
     fmt!("PPTX", "PPTX", Slides,
          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -330,11 +335,11 @@ pub static FORMATS: &[Format] = &[
          wheels: [Spreadsheets, Pdf], read_engine: Calamine, write_engine: RustXlsx),
     fmt!("ODS", "ODS", Spreadsheets, "application/vnd.oasis.opendocument.spreadsheet",
          ["ods"], read: yes, write: yes,
-         wheels: [Spreadsheets], read_engine: Calamine, write_engine: LibreOffice),
+         wheels: [Spreadsheets, Pdf], read_engine: Calamine, write_engine: OdsWriter),
     fmt!("CSV", "CSV", Spreadsheets, "text/csv", ["csv"], read: yes, write: yes,
-         wheels: [Spreadsheets], read_engine: Calamine, write_engine: NativeText),
+         wheels: [Spreadsheets, Pdf], read_engine: Calamine, write_engine: NativeText),
     fmt!("TSV", "TSV", Spreadsheets, "text/tab-separated-values", ["tsv"],
-         read: yes, write: yes, wheels: [Spreadsheets],
+         read: yes, write: yes, wheels: [Spreadsheets, Pdf],
          read_engine: Calamine, write_engine: NativeText),
     // Legacy Excel is import-only.
     fmt!("XLS", "XLS", Spreadsheets, "application/vnd.ms-excel", ["xls"], read: yes, write: no,
@@ -362,22 +367,17 @@ pub static FORMATS: &[Format] = &[
 /// Per-pair engine overrides. A pair not listed here uses the target's
 /// `write_engine` (or the input's `read_engine` for extract-style jobs).
 pub static PAIR_OVERRIDES: &[(FormatId, FormatId, EngineRef)] = &[
-    // Office → PDF needs a real layout engine; pandoc alone cannot honour it.
-    (FormatId("DOCX"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("ODT"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("EPUB"), FormatId("PDF"), EngineRef::LibreOffice),
+    // Office/spreadsheet → PDF uses the in-process HTML layout writer (Pandoc
+    // turns text documents into HTML; Calamine turns workbooks into tables).
+    // PPTX/PPT still need a presentation renderer, so they stay LibreOffice-only.
     (FormatId("PPTX"), FormatId("PDF"), EngineRef::LibreOffice),
     (FormatId("PPT"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("XLSX"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("XLS"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("ODS"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("CSV"), FormatId("PDF"), EngineRef::LibreOffice),
-    (FormatId("TSV"), FormatId("PDF"), EngineRef::LibreOffice),
-    // DOCX ↔ ODT keeps tables and paragraph structure only through LibreOffice.
-    (FormatId("DOCX"), FormatId("ODT"), EngineRef::LibreOffice),
-    (FormatId("ODT"), FormatId("DOCX"), EngineRef::LibreOffice),
-    // EPUB → ODT: pandoc to HTML, then LibreOffice for the page model.
-    (FormatId("EPUB"), FormatId("ODT"), EngineRef::LibreOffice),
+    // ODT is written by the bundled Pandoc, so the target works without a system
+    // LibreOffice. The layout round-trips through the DOCX writer for PDF input.
+    (FormatId("DOCX"), FormatId("ODT"), EngineRef::Pandoc),
+    (FormatId("ODT"), FormatId("DOCX"), EngineRef::Pandoc),
+    (FormatId("EPUB"), FormatId("ODT"), EngineRef::Pandoc),
+    (FormatId("PDF"), FormatId("ODT"), EngineRef::Sidecar),
     // PDF → office/EPUB lives in the Python sidecar.
     (FormatId("PDF"), FormatId("DOCX"), EngineRef::Sidecar),
     (FormatId("PDF"), FormatId("PPTX"), EngineRef::Sidecar),
@@ -385,7 +385,7 @@ pub static PAIR_OVERRIDES: &[(FormatId, FormatId, EngineRef)] = &[
     (FormatId("PDF"), FormatId("EPUB"), EngineRef::Sidecar),
     // PDF → text and images are Poppler's job.
     (FormatId("PDF"), FormatId("TXT"), EngineRef::PopplerText),
-    (FormatId("PDF"), FormatId("MD"), EngineRef::PopplerText),
+    (FormatId("PDF"), FormatId("MD"), EngineRef::Sidecar),
     (FormatId("PDF"), FormatId("PNG"), EngineRef::PopplerRender),
     (FormatId("PDF"), FormatId("JPG"), EngineRef::PopplerRender),
     // Images → PDF is written in-process, not through ImageMagick.
@@ -397,10 +397,7 @@ pub static PAIR_OVERRIDES: &[(FormatId, FormatId, EngineRef)] = &[
     (FormatId("AVIF"), FormatId("PDF"), EngineRef::PrintPdf),
     (FormatId("BMP"), FormatId("PDF"), EngineRef::PrintPdf),
     (FormatId("SVG"), FormatId("PDF"), EngineRef::ImageMagick),
-    // ODS output goes through LibreOffice's spreadsheet writer.
-    (FormatId("CSV"), FormatId("ODS"), EngineRef::LibreOffice),
-    (FormatId("TSV"), FormatId("ODS"), EngineRef::LibreOffice),
-    (FormatId("XLSX"), FormatId("ODS"), EngineRef::LibreOffice),
+    // ODS output is written by the in-process spreadsheet-ods crate.
     // XLSX output from flat text is written in-process.
     (FormatId("CSV"), FormatId("XLSX"), EngineRef::RustXlsx),
     (FormatId("TSV"), FormatId("XLSX"), EngineRef::RustXlsx),
@@ -487,6 +484,18 @@ impl ToolId {
 
     pub fn parse(s: &str) -> Option<Self> {
         TOOLS.iter().map(|t| t.id).find(|id| id.as_str() == s)
+    }
+
+    /// The function a multi-output folder names, appended to the source stem:
+    /// `report-5-pages-split`, `clip-frames`, `project-extract`.
+    pub fn output_folder_label(self) -> &'static str {
+        match self {
+            ToolId::Split => "split",
+            ToolId::SavePages => "images",
+            ToolId::Snapshot => "frames",
+            ToolId::Extract => "extract",
+            _ => "out",
+        }
     }
 }
 
@@ -940,6 +949,23 @@ pub static TOOLS: &[Tool] = &[
         ],
         None
     ),
+    // Documents merge through Pandoc, which reads DOCX/ODT/HTML/Markdown/EPUB
+    // and writes the type of the first selected file. Mixed selections are
+    // supported; the output name and extension follow the first file.
+    tool!(
+        Merge,
+        Documents,
+        "Merge",
+        "Merge documents",
+        "Merge documents",
+        "Append the selected documents into one file in selection order.",
+        Pandoc,
+        [
+            "Merge DOCX, ODT, HTML, Markdown or EPUB",
+            "Use the selection order without conversion copies"
+        ],
+        Some("Any document")
+    ),
     tool!(
         Split,
         Pdf,
@@ -1087,7 +1113,7 @@ mod tests {
         assert!(!audio.iter().any(|f| f.id == FormatId("MP3")));
 
         let pdf = Registry::wheel_targets(Category::Pdf, Some(FormatId("PDF")));
-        assert_eq!(pdf.len(), 9);
+        assert_eq!(pdf.len(), 13);
     }
 
     #[test]
@@ -1112,7 +1138,15 @@ mod tests {
     fn engine_overrides_cover_office_to_pdf() {
         assert_eq!(
             Registry::engine_for(FormatId("DOCX"), FormatId("PDF")),
-            Some(EngineRef::LibreOffice)
+            Some(EngineRef::PrintPdf)
+        );
+        assert_eq!(
+            Registry::engine_for(FormatId("XLSX"), FormatId("PDF")),
+            Some(EngineRef::PrintPdf)
+        );
+        assert_eq!(
+            Registry::engine_for(FormatId("CSV"), FormatId("ODS")),
+            Some(EngineRef::OdsWriter)
         );
         assert_eq!(
             Registry::engine_for(FormatId("PDF"), FormatId("DOCX")),

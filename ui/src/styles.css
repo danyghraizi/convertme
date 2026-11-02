@@ -316,6 +316,50 @@ textarea {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
 }
 
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid color-mix(in srgb, var(--fail-ink) 28%, transparent);
+  border-radius: var(--r-2);
+  background: var(--fail-bg);
+  color: var(--fail-ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.alert-copy {
+  min-width: 0;
+}
+
+.alert-copy strong {
+  font-weight: 700;
+}
+
+.alert-copy span {
+  display: block;
+  font-size: var(--t-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.alert-dismiss {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--fail-ink) 35%, transparent);
+  border-radius: var(--r-2);
+  background: transparent;
+  color: inherit;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+
+.alert-dismiss:hover {
+  background: color-mix(in srgb, var(--fail-ink) 10%, transparent);
+}
+
 /* ------------------------------------------------------------------ buttons */
 
 .button {

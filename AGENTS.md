@@ -61,6 +61,13 @@ the failures that produced each rule, is `docs/LESSONS.md`.
   the frontend build is what makes the bundle current). Plain `cargo test` fails while
   the file is stale. `./scripts/gen-ui-fields.py` writes the same file from a built
   binary, for a machine that has one.
+- The page organizer is a **pointer** drag, not HTML drag-and-drop: lift the source out
+  of the flow, draw a small labelled ghost beside the pointer, open a dashed slot at the
+  insertion index, and state `Page N → position K of M`. The native drag image was a
+  full-card translucent copy that covered the grid and named no position.
+- A select whose stored values are engine names (PDF compress `screen`/`ebook`/…) keeps
+  those values and adds `option_labels` plus `help`; a bare enum is not a description.
+
 - Adding or renaming a field kind or key means: the Rust field table, `ui/src/types.ts`,
   `ui/src/field-parse.ts`, the tests in `commands::field_payload` and
   `ui/src/field-parse.test.ts`, and a new `is-block`/editor arm when it needs one.
@@ -76,6 +83,20 @@ the failures that produced each rule, is `docs/LESSONS.md`.
   rectangle. Every selected file keeps a card even when its thumbnail fails.
 - A page grid loads per path (`createEffect`), not on mount: the second file of a
   multi-file dialog must show its own page count and cards. Ignore a stale response.
+- **PDF → DOCX reads visual rows, not PyMuPDF blocks.** Blocks cross columns and
+  sections: a date block lands beside a school block, the four coursework columns are
+  ordered down each column, and a block can hold the last bullet plus the next heading.
+  `sidecars/pdf/convertme_pdf/layout.py` groups lines by baseline; `docx.py` writes a
+  header table (photo + inline icons), right tabs for dates/places, a borderless
+  four-column coursework table, joined bullets, and heading bottom borders for the PDF
+  rules. Inline pictures are `paragraph.add_run().add_picture(...)`, never
+  `document.add_picture` (that appends at the body end). Rasterise only icon-font
+  glyphs; a body-font `|` is punctuation. Keep the PDF's page size and compact 10 pt
+  Calibri metrics so a one-page résumé stays one page.
+- **PDF → ODT goes through the bundled Pandoc**, using the layout-aware DOCX as its
+  intermediate; a clean machine has no system LibreOffice and must still offer ODT.
+  Similarly, PDF → MD/EPUB/PPTX/XLSX are sidecar writers whose package facts are read
+  back by `scripts/validate.py`.
 - A metadata writer must be able to add an EXIF block to a file that has none
   (`little_exif::Metadata::new()` when `new_from_path` says "No EXIF data found").
   PDF `/Info` is usually indirect; dereference it and decode its strings.
@@ -97,9 +118,11 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - Audio playback is one shared sink (`audio.rs`): starting a play stops the previous one,
   `stop_preview` kills the child, and every sheet's cleanup calls it. Never spawn a
   player and await it, and never fall back to a desktop opener (it cannot be stopped).
-- Several files from one job are one result: publish them into `<source stem>/` (names
-  without the repeated stem) and treat a directory artifact as one output. The e2e
-  harness recurses into that folder; a folder named `<stem>-out` is still one artifact.
+- Several files from one job are one result: publish them into
+  `<source stem>-<function label>/` (`-split`, `-images`, `-frames`, `-extract`, else
+  `-out`; names without the repeated stem) and treat a directory artifact as one
+  output. The e2e harness recurses into that folder; a folder named `<stem>-out` is
+  still one artifact.
 - A snapshot's all-frames mode sends `fps` (the clip's average rate), not thousands of
   times; the UI and engine ceiling is 2000 frames.
 - Masks apply to the layer the control names (rounding is the photo's, not the canvas's).
@@ -144,6 +167,22 @@ the failures that produced each rule, is `docs/LESSONS.md`.
 - An engine change is verified by sampling the output (dimensions, corner pixels, alpha).
 - Reproduce the user's exact parameters and files before concluding anything about a bug.
 - A test that only runs through the mock proves the mock.
+- A package export is verified by its own facts, not by `PK`: ODT mimetype/headings/
+  tables/images, PPTX slides/text/pictures, XLSX populated cells and no blob cell,
+  EPUB chapters and source-word coverage. The validators live in `scripts/validate.py`.
+- PDF → PNG/JPG is a page set inside a directory artifact; a check must accept the set
+  for a PDF source while a single-image conversion still publishes exactly one file.
+- Text-coverage checks normalize ligatures (NFKC) and words hyphenated across a line
+  before reporting loss; otherwise "ﬁve" and "orga- nize" look missing.
+- The fallback tool catalog may only list ids the Rust `TOOLS` table registers. A
+  category with no backend tools shows no cards; a phantom card is a broken promise.
+- Tauri command rejections arrive as strings, not `Error`; normalize them and surface
+  failures in the dismissible `.alert-banner`, not only the status strip.
+- PDF exports without LibreOffice use Pandoc HTML + the built-in `printpdf` writer.
+  It degrades tables to a `Tool | Input | Output` text grid; do not claim exact DOCX
+  page geometry for this path. ODS is written by `spreadsheet-ods`.
+- EPUB output links `style.css` from the manifest and every chapter, and every `<img>`
+  carries explicit `width`/`height`; floats must be contained and grid bullets restored.
 
 ## Front-end state
 

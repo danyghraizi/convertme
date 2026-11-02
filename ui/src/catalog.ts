@@ -294,30 +294,23 @@ export const FALLBACK_TOOLS: Record<string, Segment[]> = {
     seg('decrypt', 'Decrypt', 'Save without the password'),
   ],
   documents: [
-    seg('compress', 'Compress', 'Repack a document with fewer bytes'),
-    seg('merge', 'Merge', 'Append documents into one'),
-    seg('metadata', 'Edit metadata', 'Change title, author and tags'),
+    ref(
+      'merge',
+      'Merge',
+      'Append documents into one',
+      'Merge documents',
+      'Merge documents',
+      [
+        'Merge DOCX, ODT, HTML, Markdown or EPUB',
+        'Use the selection order without conversion copies',
+      ],
+      ANY_FILE,
+    ),
   ],
-  slides: [
-    seg('compress', 'Compress', 'Downscale embedded images'),
-    seg('extract', 'Extract images', 'Save every slide image'),
-    seg('metadata', 'Edit metadata', 'Change title, author and tags'),
-  ],
-  spreadsheets: [
-    seg('compress', 'Compress', 'Repack with a leaner archive'),
-    seg('merge', 'Merge sheets', 'Combine workbooks into one'),
-    seg('metadata', 'Edit metadata', 'Change title, author and tags'),
-  ],
-  epub: [
-    seg('compress', 'Compress', 'Shrink embedded assets'),
-    seg('metadata', 'Edit metadata', 'Change title, author and language'),
-    seg('split', 'Split chapters', 'One file per chapter'),
-  ],
-  subtitles: [
-    seg('shift', 'Shift timing', 'Move every cue by a fixed offset'),
-    seg('merge', 'Merge', 'Concatenate subtitle files in order'),
-    seg('strip', 'Strip formatting', 'Remove styling tags from cues'),
-  ],
+  slides: [],
+  spreadsheets: [],
+  epub: [],
+  subtitles: [],
   archives: [
     seg('extract', 'Extract', 'Unpack into a folder beside the file'),
     seg('repack', 'Repack', 'Rewrite the archive in another format'),

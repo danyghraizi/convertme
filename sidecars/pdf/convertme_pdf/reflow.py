@@ -48,6 +48,10 @@ class Run:
     size: float = 0.0
     link: str | None = None
     image: bytes | None = None
+    font: str = ""
+    small_caps: bool = False
+    image_width: float = 0.0
+    image_height: float = 0.0
 
 
 @dataclass
@@ -96,12 +100,14 @@ def _is_icon(char: str) -> bool:
     )
 
 
-def _span_is_icon(text: str) -> bool:
-    """A contact icon: a very short span with no letters or digits in it.
+def _span_is_icon(text: str, font: str = "") -> bool:
+    """A contact icon: a very short span from an icon font.
 
     Typesetters put the phone/envelope/link marks in a symbol font, so they extract as
     one or two odd characters. Writing those as text produces tofu; they are rasterised
-    instead. A span with any letter or digit is text, however odd it looks.
+    instead. The font matters: a plain ``|`` separator or ``:`` from the body font is
+    punctuation, not a picture. Rasterising it silently deleted the separator from the
+    converted document.
     """
     stripped = text.strip()
     if not stripped or len(stripped) > 3:
@@ -110,7 +116,20 @@ def _span_is_icon(text: str) -> bool:
     # into a picture and lost the list.
     if any(char in BULLET_GLYPHS for char in stripped):
         return False
-    return not any(char.isalnum() for char in stripped)
+    family = font.lower()
+    icon_font = any(
+        marker in family
+        for marker in ("awesome", "wingding", "dingbat", "symbol", "material", "icon")
+    )
+    private = any(
+        0xE000 <= ord(char) <= 0xF8FF or 0xF000 <= ord(char) <= 0xF0FF
+        for char in stripped
+    )
+    if icon_font or private:
+        # A FontAwesome glyph can be letter-shaped (the LinkedIn mark extracts as
+        # "ï"); the font is the evidence, not `isalnum`.
+        return True
+    return False
 
 
 def _dominant_size(spans) -> float:
@@ -126,6 +145,7 @@ def _dominant_size(spans) -> float:
 def measure(pdf) -> Layout:
     """Read the whole document once to decide body size, title and heading levels."""
     sizes: dict[float, int] = {}
+    bold_sizes: dict[float, int] = {}
     fonts: dict[str, int] = {}
     for page in pdf:
         data = page.get_text("dict", sort=True)
@@ -138,6 +158,10 @@ def measure(pdf) -> Layout:
                     size = round(float(span.get("size", 0.0)), 1)
                     sizes[size] = sizes.get(size, 0) + len(text)
                     font = span.get("font", "")
+                    family = font.lower()
+                    bold = bool(int(span.get("flags", 0)) & 16) or family.startswith("cmbx") or "bold" in family
+                    if bold:
+                        bold_sizes[size] = bold_sizes.get(size, 0) + len(text)
                     if font:
                         fonts[font] = fonts.get(font, 0) + len(text)
 
@@ -147,8 +171,19 @@ def measure(pdf) -> Layout:
     if fonts:
         layout.body_font = max(fonts.items(), key=lambda item: item[1])[0]
 
+    # A heading must also be *visibly* larger. An 10.9 pt address line over a 10 pt
+    # body is 9 % larger and satisfied the ratio alone; it then became a heading and
+    # pushed the title/contact rows into the body. Require a point of real difference.
     heading_sizes = sorted(
-        (size for size in sizes if size > layout.body_size * BODY_HEADING_FACTOR),
+        (
+            size
+            for size in sizes
+            if size > layout.body_size * BODY_HEADING_FACTOR
+            and (
+                size - layout.body_size >= 1.2
+                or bold_sizes.get(size, 0) > 0
+            )
+        ),
         reverse=True,
     )
     if heading_sizes:
@@ -215,7 +250,8 @@ def _runs_for_line(page, line, layout: Layout, links) -> list[Run]:
         if not text:
             continue
         size = round(float(span.get("size", 0.0)), 1)
-        if _span_is_icon(text) and size <= ICON_MAX_PT:
+        font = str(span.get("font", ""))
+        if _span_is_icon(text, font) and size <= ICON_MAX_PT:
             import pymupdf
 
             rect = pymupdf.Rect(span.get("bbox"))
@@ -224,16 +260,33 @@ def _runs_for_line(page, line, layout: Layout, links) -> list[Run]:
             rect = rect + (-0.6, -0.6, 0.6, 0.6)
             image = _rasterise(page, rect)
             if image is not None:
-                runs.append(Run(text="", size=size, image=image))
+                runs.append(
+                    Run(
+                        text="",
+                        size=size,
+                        image=image,
+                        font=font,
+                        image_width=rect.width,
+                        image_height=rect.height,
+                    )
+                )
                 continue
         flags = int(span.get("flags", 0))
+        # Computer Modern's family names are the document's typography: BX is bold,
+        # TI is italic, CSC is caps-and-small-caps. The PDF flags are not set for
+        # every one of them, so the name is the reliable signal.
+        family = font.lower()
+        bold = bool(flags & 16) or family.startswith("cmbx") or "bold" in family
+        italic = bool(flags & 2) or family.startswith("cmti") or "italic" in family
         runs.append(
             Run(
                 text=text,
-                bold=bool(flags & 16),
-                italic=bool(flags & 2),
+                bold=bold,
+                italic=italic,
                 size=size,
                 link=_link_at(links, span.get("bbox")),
+                font=font,
+                small_caps="csc" in font.lower(),
             )
         )
     return runs

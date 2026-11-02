@@ -2,12 +2,13 @@
 
 ConvertMe is a local Tauri app: a wheel picks a category, a format and a tool; the tool
 opens **one dialog sheet**; the job runs through the engines crate and publishes beside
-the source. 307 conversion options, 31 backend tools, everything offline.
+the source. 307 conversion options, 33 backend tools, everything offline.
 
 This file is the state of the product and the protocol for changing it. Read it first,
 then `AGENTS.md` (rules) and `docs/LESSONS.md` (the failures that produced the rules;
 42–56 are the alignment session, 57–63 the first bug round, 64–70 the design/media
-regression, 71–82 the image-tools feedback round, 83–101 the interaction, video and audio rounds).
+regression, 71–82 the image-tools feedback round, 83–101 the interaction, video and
+audio rounds, 102–118 the playback, PDF, PDF→DOCX, export-parity and EPUB/tool-start rounds).
 
 ## Start here (new session)
 
@@ -17,10 +18,11 @@ regression, 71–82 the image-tools feedback round, 83–101 the interaction, vi
 | Last code commit | `1f25fb7` — "tools: previews, playback and outputs follow the user" (Rounds 5–8) |
 | Previous code commit | `3e8bbc8` — "the image tools match their own previews" (Round 4) |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
-| Proof | `artifacts/round8/ui-full` (layout), `artifacts/round8/app-full` (real window), `artifacts/round8/targeted` (tool runs); older: `artifacts/round7/*`, `artifacts/round6/*`, `artifacts/round5/*`, `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
+| Proof | `artifacts/round9/audit-pdf` (28 CLI PDF cases), `artifacts/round9/app-pdf` (11 real-window PDF scenarios), `artifacts/round9/app-documents` (Documents merge), `artifacts/round9/ui-final` (52 mock dialogs), `artifacts/round9/ui-documents` (Documents layout), `artifacts/round9/audit-ods` (native ODS), `artifacts/round9/app-doc-pdf` and `app-sheet-pdf` (native PDF), `artifacts/round9/app-errors` (visible failure), `artifacts/round9/app-split-final` (split folder), `artifacts/round9/app-folders` (folder artifacts), `artifacts/round9/ui-pdf` (PDF layout + drag probes), `artifacts/round9/app-drag`, `app-split`, `app-pages`, `app-frames`, `app-vsplit`, `app-compress`, `app-dialogs-pdf`, `app-docx` (real window), `artifacts/round9/audit-docx` (CLI DOCX); older: `artifacts/round8/ui-full`, `artifacts/round8/app-full`, `artifacts/round8/targeted`, `artifacts/round7/*`, `artifacts/round6/*`, `artifacts/round5/*`, `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
 
-Pushed to `origin/master`; CI runs on push and PRs, and this session's commits carry
-`[skip ci]` (the local preflight + full `ui-shots`/`app-e2e` runs are the proof above).
+Rounds 9–12 are **uncommitted** on `master`. The previous commits are pushed to
+`origin/master`; CI runs on push and PRs, and those commits carry `[skip ci]` (the local
+preflight + full `ui-shots`/`app-e2e` runs are the proof above).
 
 First three commands, in this order:
 
@@ -90,11 +92,18 @@ Every editor with its own chrome hides its field. Table changes go through the R
 `generated_fields` + `npm build` (see `AGENTS.md`).
 
 **PDF.** `Organize pages` duplicates, rotates, removes, reorders, matches widths and
-submits `order`/`rotate`; duplicated pages are cloned objects when qpdf refuses a repeated
-page spec. `Merge` reorders the selection. `PDF → DOCX` keeps structure (7 Heading 1,
-4 Heading 2, 29 list paragraphs, 29 `w:numPr`, 14 drawings, 0 page breaks, coverage 1.0);
-`PDF → PPTX` follows the page aspect, `XLSX` writes one sheet per page, `EPUB` shares the
-DOCX reflow analyser.
+submits `order`/`rotate`; dragging is pointer-driven (small labelled ghost, dashed
+landing slot, `Page N → position K of M`), the dropped card is selected, and the arrow
+keys move a focused card. Duplicated pages are cloned objects when qpdf refuses a
+repeated page spec. `Compress` labels each Ghostscript preset with its dpi and tradeoff
+and explains Prepress as the largest/best-image tier. Multi-output jobs name their
+action in the folder (`-split`, `-images`, `-frames`). `Merge` reorders the selection.
+`PDF → DOCX` keeps the page's visual rows: the header
+table (photo plus inline contact icons), right-tabbed dates/places, a four-column
+coursework table, joined bullet items, section rules as heading borders, 10 pt Calibri
+body/12 pt headings, and no page break for a one-page document (7 Heading 1, 4 Heading
+2, 29 list paragraphs, 29 `w:numPr`, 5 images, coverage 1.0). `PDF → PPTX` follows the
+page aspect, `XLSX` writes one sheet per page, `EPUB` still uses the reflow analyser.
 
 **Image tools.** Crop submits the placed rectangle for every preset (a 9:16 dragged to
 the edge stays there). Annotate is an object editor (select/move/resize, eraser, inline
@@ -259,7 +268,7 @@ Cause → fix → measurement; lessons 83–89.
 | "I selected 3 videos … does not show them" | the selection strip thumbnailed videos with ImageMagick: ~28 s per clip, then failure, so `analyze` never returned | one `still_for` routes a video to the filmstrip's first frame (32 ms), a PDF to its page render, everything else to the thumbnailer; the dialog preview uses it too | `multi-file-videos`: three clips reach the strip in **2.2 s**, all names present, three cached video stills |
 | "the playhead is not aligned with the trim end" | each slider had its own min/max (start 0..end, end start..duration, playhead 0..duration) | all three span `0..duration`; the handlers keep the handles apart | end 9.16 and playhead 9.16 both read fraction 0.916; AT-SPI min/max equal (`tool-video-trim`) |
 | "a button to save all the frames" | only per-moment chips; the engine's `fps` mode was unreachable from the dialog | **All frames (N)** sends the clip's `avg_frame_rate`; count on the primary action; ceiling 2000 shared with the engine; back to chips | 10 s mock clip: "All frames (300)" → "Save 300 Frames"; engine test writes 60 frames from 2 s at 30 fps |
-| "save more than one file in a folder" | multiple artifacts were published as loose files beside the source | a multi-file job publishes into `<stem>/`, names drop the repeated stem; one-folder/one-file behavior unchanged for single results; directory artifacts stay single | frames → `clip-landscape-720p-10s/frame-001.png`; split → `…/part-001.mp4`; pages → `report-5-pages/001.png`; queue test pins the contract |
+| "save more than one file in a folder" | multiple artifacts were published as loose files beside the source | a multi-file job publishes into `<stem>-<function label>/`, names drop the repeated stem; one-folder/one-file behavior unchanged for single results; directory artifacts stay single | frames → `clip-landscape-720p-10s-frames/frame-001.png`; split → `clip-landscape-720p-10s-split/part-001.mp4`; pages → `report-5-pages-images/001.png`; queue test pins the contract |
 
 ### Round 6 measurement
 
@@ -300,6 +309,81 @@ Cause → fix → measurement; lessons 83–89.
 | Waveform | 14 s → 2000 peaks, no truncation; 11 min → 2000 peaks, 660 s, 138 ms; normalize click 50 % → 0.500, play → 0.564 after 0.9 s |
 | Channels | mono → `Volume` + `[M]`; stereo → Left/Right + `[L,R]`; engine 50 % mono volume ≈ 6 dB down |
 | `preflight.sh` | ok |
+
+## Round 9 — the PDF feedback round
+
+| Report | Cause | Fix | Proof |
+|---|---|---|---|
+| "I don't understand the differences between these qualities; prepress has the best images" | the PDF compress select showed Ghostscript's internal names (`screen`, `ebook`, `printer`, `prepress`) with no resolution or tradeoff; `help` was unused | option labels now state the measured tier (`Screen · 72 dpi (smallest)` … `Prepress · 300 dpi (best images)`), and one help line says which tiers downsample, that Printer/Prepress keep 300 dpi, and that Prepress keeps the most image detail and makes the largest file; stored values and the engine contract are unchanged | `pdf_compress_describes_its_presets`; `ui-shots` PDF compress screenshot; Ghostscript 10.08 probe: color resolution 72/150/300/300 dpi, JPEG QFactor 0.76/0.76/0.4/0.15 |
+| "organizing pages is not clear: which page is selected, where it lands, how the others move" | HTML drag-and-drop showed a full-card translucent ghost over the grid; `dragover` reordered live with no landing marker, nothing was selected, and the tool chips floated over the page | pointer-driven lift: a small `Page N` ghost beside the pointer, the source removed from the flow, a dashed slot at the target index, a head readout `Page N → position K of M`, click/keyboard selection with a ring and `, selected` in the accessible name, card tools moved into a footer row | `ui-shots`: mid-drag ghost < 75 % of a card, slot centre uncovered, 4 cards + slot, drop order `[2,3,4,1,5]`; `tool-pdf-organize-drag` (real window): `Page 3 → position 2 of 5`, dropped card selected, saved PDF page 2 is source page 3 |
+| "the split folder should state what was done" | a multi-output job published into `<stem>/`, so a split of `report-5-pages.pdf` made `report-5-pages/` with no verb | multi-output folders are `<stem>-<function label>` (`split`, `images`, `frames`, `extract`, else `out`); a file owning the name steps to `-2`, `-3`; names inside still drop the repeated stem | queue `split_outputs_publish_into_a_labelled_folder` + collision test; real window: `report-5-pages-split/`, `report-5-pages-images/`, `clip-…-frames/`, `clip-…-split/` |
+
+### Round 9 measurement
+
+| Layer | Result |
+|---|---|
+| Rust | `convertme-gui` `field_payload` 8 passed, `generated_fields` 1 passed; `convertme-core` queue 9 passed |
+| `ui-shots.py --category pdf` | **8 dialogs of 11 tools, no layout failures**; organize rotate + drag probe + keyboard reorder (`artifacts/round9/ui-pdf`) |
+| `app-e2e.py --only tool-pdf-organize` | 3 pass: duplicate/remove/rotate (`[1,2,2,3,5]`, page 1 at 90°), drag (`Page 3 → position 2 of 5`, output page 2 = source page 3), multi-file reload (`artifacts/round9/app-organize`) |
+| `app-e2e.py` folder checks | `immediate-tools` (split) pass; `tool-pdf-pages` pass; `tool-video-frames` pass; `tool-video-split` pass (`artifacts/round9/app-split`, `app-pages`, `app-frames`, `app-vsplit`) |
+| `app-e2e.py --only compress-pdf` / `dialogs-pdf` | pass; the preset select accepts and resets the labelled options |
+| `preflight.sh` | ok: identity gate, fmt, UI typecheck/tests/build, generated fields, clippy `-D warnings`, 61 + 4 + 3 + 3 + 130 + 28 Rust tests, clean-checkout build, deb 112.29 MiB |
+| Full `app-e2e.py` | not run this round; the targeted scenarios above cover every changed surface |
+
+## Round 10 — the PDF → DOCX feedback round
+
+| Report | Cause | Fix | Proof |
+|---|---|---|---|
+| "the result is several pages and does not look the same as the PDF (iLovePDF does)" | the sidecar walked PyMuPDF **text blocks**. Blocks cross columns and sections: Education's left name and right date were separate blocks, the four coursework columns arrived as blocks ordered down each column, a block held the last bullet plus the next heading, and the writer appended every icon/photo with `document.add_picture` at the *end of the body*. The document used Word defaults (11 pt, 1 in margins) and flow paragraphs, so dates merged into degrees, bullets split, the photo/icon order was lost, and spacing pushed the résumé onto a second page. | `layout.py` flattens the page to visual rows (lines grouped by baseline) and classifies title, heading, dated entry, italic detail, project, skill, bullet, four-column bullet grid, body. `docx.py` writes Word-native layout: header table with the photo and inline contact icons, right tab stops for dates/places, a borderless four-column coursework table, real list numbering, section rules as heading bottom borders, small-caps title, 10 pt Calibri body / 12 pt bold headings, Letter page and compact margins from the reference. Images are inserted as runs, not body-level pictures; only real icon-font glyphs are rasterised (a body-font `|` is punctuation, not a picture). | `convert-pdf-docx`: 7 Heading 1, 4 Heading 2, 29 list items/`w:numPr`, 5 images, **0 page breaks**, coverage **1.0**, 2 tables, 11 right tabs, 7 heading rules, no merged degree/date; `quality-audit pdf-to-docx` 2/2; single-spaced 10 pt Calibri in the 554 pt text frame measures ~745 pt of 762 pt available (one page) |
+
+### Round 10 measurement
+
+| Layer | Result |
+|---|---|
+| Sidecar | rebuilt with Python 3.14 + PyMuPDF 2.0 + python-docx; `sidecars/pdf/dist/convertme-pdf`, `target/release/convertme-pdf`, `vendor/bin/convertme-pdf-x86_64-unknown-linux-gnu` |
+| `app-e2e.py --only convert-pdf-docx` | pass, 16 checks including the layout checks (`artifacts/round9/app-docx`) |
+| `quality-audit.py --only pdf-to-docx` | 2 passed, 0 failed (`artifacts/round9/audit-docx`) |
+| DOCX facts | 55 paragraphs, 7 Heading 1, 4 Heading 2, 29 lists, 29 `w:numPr`, 5 images, 0 page breaks, 55 k → 447 k |
+| `docx-quality.py` vs the reference DOCX | coverage 1.0; Heading 1 7 vs 8; Heading 2 4 vs 4; lists 29 vs 30 |
+| `preflight.sh` | ok (Rust/UI unchanged by the sidecar writer): gate, fmt, UI tests/build, clippy, workspace tests, clean build, deb 112.31 MiB |
+| Renderer | no LibreOffice/Word renderer in this environment; pagination is estimated from the emitted styles (single-spaced Calibri, compact margins) rather than a rendered page |
+
+## Round 11 — the package-output parity round
+
+| Report | Cause | Fix | Proof |
+|---|---|---|---|
+| Exporting the same PDF to MD, EPUB, ODT, XLSX or PPTX had no honest structural test: the audit checked "zip starts with PK" (or nothing), so a blank sheet, a one-slide deck or an ODT with no body could pass | the package writers existed, but the shared validator only understood DOCX and EPUB's container; rich-text XLSX cells were read as their first run, and PDF ligatures/hyphenation produced false text-loss reports | `validate.py` now reads ODT (mimetype, headings, lists, tables, images), PPTX (slides, text, pictures, slide size) and XLSX (per-cell values across every `<t>` run); text coverage normalizes NFKC ligatures and rejoined hyphen breaks; `quality-audit` gained `markdown_check`, `odt_check`, `pptx_check`, `xlsx_check`, a text-aware `epub_check`, and resume cases for each; PDF page-image sets are one directory artifact, not a failed "one artifact" check | six CLI exports of the résumé all succeeded: DOCX 438 K, EPUB 403 K, MD 4.5 K, ODT 409 K, PPTX 431 K, XLSX 8.2 K; ODT 11 headings/2 tables/5 images, PPTX 1 slide/5 pictures/4.1 k characters, XLSX 68 cells with `State University` and `Sep. 2017 – May 2021`, all source words covered |
+
+ODT goes through the **bundled Pandoc** using the layout-aware DOCX as its
+intermediate, so PDF → ODT no longer needs a system LibreOffice. `quality-audit
+`--only pdf` is **28 passed, 0 failed, 14 skipped**; the skips are the LibreOffice-only
+targets and the AVIF decoder on this machine. `app-e2e --only pdf` is **11 passed, 0
+failed** (compress, dialogs, organize/rotate/drag/multi-file, merge, metadata, pages,
+text, DOCX and ODT). The real-window folder scenarios (`immediate-tools`,
+`tool-video-frames`, `tool-video-split`) are **3 passed, 0 failed**. `preflight.sh` is
+**ok** (identity gate, fmt, UI typecheck/tests/build, generated fields, clippy, 130
+engine + workspace tests, clean-checkout build, deb 112.35 MiB); its first run caught
+the stale Markdown test that still gated on Pandoc instead of the sidecar, now fixed.
+
+## Round 12 — the EPUB and out-of-box tools round
+
+| Report | Cause | Fix | Proof |
+|---|---|---|---|
+| EPUB contacts/icons were huge, lines overlapped and the coursework table broke on a narrow reader | the stylesheet was inline per chapter and images had no dimensions, so a reader that dropped inline CSS used 94 px intrinsic icons; the portrait and dates floated without containment; grid bullets were stripped; there was no viewport meta | `style.css` is a linked manifest item; every image has explicit width/height; floats are contained; detail/project metadata is right-aligned; contacts are wrapping spans without invented dots; the grid has a colgroup, bullets and a fixed layout; Calibri/Carlito replaces Georgia | `quality-audit --only pdf-to-epub`: 2 passed; validator asserts linked CSS and image dimensions; Calibre render matches the résumé sections |
+| Documents tools all said "Tool could not start"; Merge with DOCX+HTML failed; the bottom text was too quiet | the fallback catalog advertised Compress/Merge/Metadata (and tools in four other categories) that the Rust `TOOLS` table never registered; Tauri rejects commands with a string, so `error instanceof Error` erased the real reason; Merge only existed for PDFs | removed phantom cards; added a real Documents Merge (Pandoc normalizes each input to the first file's format, so DOCX+HTML works); normalized string rejections and added a dismissible red alert above the workspace; an empty category now says so instead of showing dead cards | `dialogs-documents`, `documents-merge` pass in the window; `negative-corrupt` captures the red alert; `ui-shots --category documents` is 1 dialog, no layout failures |
+| PDF targets required system LibreOffice; Spreadsheets → PDF/ODS failed; HTML→PDF was enabled but then failed | every Office/spreadsheet pair was pinned to `EngineRef::LibreOffice`; `document_pdf` called `soffice` even for HTML; ODS had no in-process writer | documents and spreadsheets now use Pandoc HTML + the built-in `printpdf` writer; spreadsheets→ODS uses `spreadsheet-ods`; HTML/CSV/TSV/ODS expose PDF; PPTX/PPT remain the only LibreOffice-gated targets. Complex DOCX tables degrade to a readable `Tool | Input | Output` grid rather than clipped columns | `quality-audit --only pdf`: **39 passed, 0 failed, 7 skipped** (down from 14 skips), including `matrix-docx-to-pdf`, `matrix-html-to-pdf`, `matrix-ods-to-pdf`, `matrix-xlsx-to-pdf`; `--only ods`: **9 passed, 0 failed, 1 skipped**; window `convert-document-pdf` and `convert-spreadsheet-pdf` pass |
+
+### Round 12 measurement
+
+| Layer | Result |
+|---|---|
+| EPUB | `quality-audit --only pdf-to-epub`: 2 passed; linked `style.css`, explicit image dimensions; Calibre render matches the résumé’s sections and contact row |
+| Documents | `app-e2e --only documents`: 2 passed (`dialogs-documents`, mixed DOCX+HTML `documents-merge`) |
+| Native PDF/ODS | window `convert-document-pdf` and `convert-spreadsheet-pdf`: 1 passed each; `quality-audit --only pdf`: **39 passed, 0 failed, 7 skipped**; `--only ods`: **9 passed, 0 failed, 1 skipped** |
+| Error surface | `negative-corrupt`: pass; the red dismissible alert is captured with the engine error |
+| UI layout | `ui-shots --category documents`: 1 dialog of 1 tool, no layout failures |
+| `preflight.sh` | **ok**; identity gate, fmt, UI typecheck/tests/build, generated fields, clippy `-D warnings`, 132 engine + 28 GUI + core/workspace tests, clean-checkout build, deb **116.56 MiB** |
+| Full `app-e2e.py` | not run; the targeted scenarios above cover every changed surface |
 
 ## Numbers from the previous final run (Round 3)
 
@@ -371,8 +455,10 @@ Measured before this round; no hot path changed except the audio preview (now a
    preview *is* the artifact and oxipng's lossless passes cost that. The dialog now
    shows the source thumbnail immediately and debounces 400 ms; only the size/dimensions
    wait for the encode. The ceiling is 3 s, measured rather than estimated.
-3. **The Windows sidecar binary was not rebuilt** here. `sidecars/pdf/build.sh` changed
-   (pdf2docx removed from the pip line); rebuild it in the release matrix.
+3. **The Windows sidecar binary was not rebuilt** here. The Linux `convertme-pdf` was
+   rebuilt for Round 10 (PyMuPDF 2.0 + python-docx); rebuild the Windows one in the
+   release matrix. `pdf2docx` is still not a dependency: the writer is ours so the
+   row layout, tabs and tables are testable.
 4. **AVIF/HEIC** cannot be decoded by the ImageMagick build on this machine (no
    `heic.la` coder module), so those pairs skip in the audit. The capability probe
    records the feature flags; the wheel does not yet mark them unavailable.
@@ -416,9 +502,12 @@ Measured before this round; no hot path changed except the audio preview (now a
 15. **All frames is capped at 2000 images.** A longer clip cannot be exported as every
     frame in one job: the button is disabled and the engine refuses with the count. It
     is one ffmpeg pass; the per-moment chips remain for specific frames.
-16. **A multi-output job publishes into `<source stem>/`.** A second run adds deduped
-    names inside that folder (`part-001 (2).mp4`) under the never policy; `Replace`
-    overwrites. A directory artifact (an extracted archive) is still one output.
+16. **A multi-output job publishes into `<source stem>-<function label>/`.** The label
+    is the action (`-split`, `-images`, `-frames`, `-extract`, else `-out`); a file
+    already owning that name pushes the folder to `-2`, `-3`, …. A second run adds
+    deduped names inside the folder (`part-001 (2).mp4`) under the never policy;
+    `Replace` overwrites. A directory artifact (an extracted archive) is still one
+    output.
 17. **The waveform is a six-hour overview at 1 kHz.** A longer recording draws its
     head and says so; the bucket count stays 2000. Decoding the whole file at 8 kHz was
     what made the old ten-minute cap look necessary.
@@ -442,3 +531,8 @@ Measured before this round; no hot path changed except the audio preview (now a
 - A toolbar button with `aria-pressed` is a `toggle button` in AT-SPI, not a `button`;
   `press_button` accepts both, but a direct `find(role="button")` misses it.
 - The mock is not the app: it proves layout and the reader path, never the engine.
+- A fresh Xvfb session can have the XDG portal's **"Global Shortcuts Requested"** window
+  at `(0,0)` size `504×540`. Real-pointer scenarios must start outside that rectangle;
+  clicks inside it never reach the webview (`tool-pdf-organize-drag` starts on card 3 for
+  this reason). Check `xdotool getmouselocation` + `getwindowname` when a synthetic click
+  does nothing.

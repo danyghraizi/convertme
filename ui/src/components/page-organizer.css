@@ -1,23 +1,41 @@
-/* Pages as cards: drag to reorder, a toolbar per card, a badge with the output position. */
+/* Pages as cards: a lifted ghost, a visible landing slot, and a selection ring. */
 .page-organizer {
   display: grid;
   gap: 8px;
   min-width: 0;
+  position: relative;
+}
+
+.page-organizer.is-dragging {
+  user-select: none;
 }
 
 .page-organizer-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   font-size: 12px;
   color: var(--ink-2);
 }
 
 .page-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-drag-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
 
 .page-reset {
+  flex: 0 0 auto;
+  margin-left: auto;
   border: 0;
   background: transparent;
   color: var(--accent);
@@ -40,20 +58,41 @@
   max-height: 340px;
   overflow-y: auto;
   scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.page-organizer.is-dragging .page-grid {
+  cursor: grabbing;
 }
 
 .page-card {
   position: relative;
   display: grid;
   gap: 6px;
+  align-content: start;
   padding: 6px;
   border-radius: 12px;
   background: var(--surface-2);
   cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transition:
+    background 120ms var(--ease),
+    box-shadow 120ms var(--ease);
 }
 
-.page-card.is-dragging {
-  opacity: 0.55;
+.page-card:hover {
+  background: color-mix(in srgb, var(--surface-2) 76%, var(--surface));
+}
+
+.page-card:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent-ring);
+}
+
+.page-card.is-selected {
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .page-face {
@@ -95,18 +134,45 @@
   font-variant-numeric: tabular-nums;
 }
 
-.page-tools {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+.page-card.is-selected .page-badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.page-foot {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.page-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-rotation {
+  color: var(--accent);
+}
+
+/* A normal row under the page, never a chip floating over the picture. */
+.page-tools {
+  display: flex;
+  flex: 0 0 auto;
   gap: 2px;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity 120ms var(--ease);
 }
 
 .page-card:hover .page-tools,
-.page-card:focus-within .page-tools {
+.page-card:focus-within .page-tools,
+.page-card.is-selected .page-tools {
   opacity: 1;
 }
 
@@ -130,12 +196,98 @@
   background: var(--surface);
 }
 
-.page-meta {
+/* The landing position: the lifted card's slot, drawn where the drop will insert. */
+.page-slot {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 2px;
+  min-height: 96px;
+  padding: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--accent-wash);
+  color: var(--accent);
+  text-align: center;
+}
+
+.page-slot-label {
   font-size: 11px;
-  color: var(--ink-3);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.page-slot-position {
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-.page-rotation {
-  color: var(--accent);
+.page-hint {
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Fixed to the viewport through a portal: the sheet is transformed, so a fixed box
+   inside it would be positioned against the sheet and clipped by its scroller. */
+.page-ghost {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px var(--rule-2);
+  pointer-events: none;
+  opacity: 0.97;
+  transform: rotate(-2deg);
+  transform-origin: top left;
+}
+
+.page-ghost-face {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+
+.page-ghost-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.page-ghost-page {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-ghost-target {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }

@@ -1428,15 +1428,20 @@ files beside the original (`clip-part-001.mp4`, `clip-part-002.mp4`, `frame-001.
 …), mixing runs and unrelated results.
 
 **Rule.** When a job returns more than one file (a directory artifact still counts as
-one), publish them into a folder named after the source stem, strip the repeated
-`stem-` prefix from each name, and apply the overwrite policy per file. The primary
-history output stays the first file. The harness must recurse into that folder; a
-folder named `<stem>-out`/`<stem>-extract` is still a single artifact.
+one), publish them into `<source stem>-<function label>/` — the label says what was
+done (`split`, `images`, `frames`, `extract`, else `out`) — strip the repeated
+`stem-` prefix from each name, and apply the overwrite policy per file. A file already
+owning the folder name is never overwritten; the folder steps to `-2`, `-3`, …. The
+primary history output stays the first file. The harness must recurse into that
+folder; a folder named `<stem>-out`/`<stem>-extract` is still a single artifact.
 
-**Evidence.** Queue test `several_outputs_publish_into_a_folder_named_after_the_source`;
-app-e2e `tool-video-frames` → `clip-landscape-720p-10s/frame-001.png`,
-`tool-video-split` → `…/part-001.mp4`, `tool-pdf-pages` and the PDF split case →
-`report-5-pages/…`; `quality-audit video-frames` passes.
+**Evidence.** Queue tests `several_conversion_outputs_publish_into_an_out_folder`,
+`split_outputs_publish_into_a_labelled_folder` and
+`a_file_owning_the_folder_name_is_not_overwritten`; app-e2e `tool-video-frames` →
+`clip-landscape-720p-10s-frames/frame-001.png`, `tool-video-split` →
+`clip-landscape-720p-10s-split/part-001.mp4`, `tool-pdf-pages` →
+`report-5-pages-images/…` and the PDF split case → `report-5-pages-split/…`;
+`quality-audit video-frames` passes.
 
 ## 97. A duration cap must be a bounded overview, not a silent stretch
 
@@ -1546,3 +1551,241 @@ the visible label stays constant. The same glyph pair is used by the waveform tr
 
 **Evidence.** `ui-shots` reads polygons (play) and rects (pause) on the buttons; only the
 active version carries the pause glyph.
+
+## 105. A native drag image is not a drag affordance
+
+**Trap.** The page organizer used HTML drag-and-drop. The browser's drag image was a
+full-size translucent copy of the card, so while dragging page 1 it covered the grid,
+the page numbers, and the hint; `dragover` reordered the list live with no marker for
+where the drop would insert; no card was visibly selected; and the duplicate/rotate/
+remove chips floated over the page image. The user could not tell which page was moving,
+where it would land, or how the others would move.
+
+**Rule.** Lift with a pointer gesture, not the native drag image: remove the source from
+the flow, draw a **small** ghost beside the pointer carrying its page number, open a
+dashed slot at the insertion index (so the other cards visibly move around the landing
+position), and state `Page N → position K of M` in the same row as the page count.
+Select on click and drop, ring the selected card, and put the per-card tools in a footer
+row instead of over the picture. Track with `window` pointer listeners so the gesture
+survives the source card leaving the DOM; ignore pointerdown on buttons; clean up on
+unmount and on a file change.
+
+**Evidence.** `ui-shots` measures mid-drag: the ghost is under 75 % of a card's width,
+the slot's centre is not covered, the grid has four cards plus the slot, and the drop
+order is `[2,3,4,1,5]`. `tool-pdf-organize-drag` in the real window drags page 3 to
+position 2 and saves a PDF whose page 2 is source page 3.
+
+## 106. A bare enum is not a description
+
+**Trap.** PDF compress offered `screen`, `ebook`, `printer`, `prepress`. Those are
+Ghostscript's internal preset names; they name no resolution, no quality and no file-size
+consequence. The user could only discover that Prepress has the best images by testing.
+
+**Rule.** Keep the stored values (they are the engine's contract), but give every option
+a human label that carries the measurable difference (`Screen · 72 dpi (smallest)`) and
+put the tradeoff the labels cannot hold in the field's `help` (`Prepress preserves the
+most image detail and usually makes the largest file`). Verify the numbers against the
+tool; do not invent a dpi.
+
+**Evidence.** `pdf_compress_describes_its_presets` pins the values, labels and help;
+a Ghostscript 10.08 probe reports color resolution 72/150/300/300 dpi and JPEG QFactor
+0.76/0.76/0.4/0.15 for the four presets.
+
+## 107. A generated folder must name the action
+
+**Trap.** A split of `report-5-pages.pdf` published five PDFs into `report-5-pages/`,
+which could be mistaken for the source's own folder and said nothing about what the job
+did.
+
+**Rule.** A multi-file job publishes into `<source stem>-<function label>/` (`-split`,
+`-images`, `-frames`, `-extract`, else `-out`) and still strips the repeated stem from
+the files inside. Derive the label from the tool, not from string matching at the call
+site, and step to `-2`, `-3` when a file already owns the candidate name.
+
+**Evidence.** `split_outputs_publish_into_a_labelled_folder` and
+`a_file_owning_the_folder_name_is_not_overwritten` in `convertme-core`; app-e2e sees
+`report-5-pages-split/`, `report-5-pages-images/`, `clip-…-frames/` and
+`clip-…-split/` in the real window.
+
+## 108. A text block is not a visual row
+
+**Trap.** The PDF→DOCX sidecar walked PyMuPDF text blocks. A block follows the
+content stream, not the page: the résumé's Education row arrived as one block with
+the school and the date as separate lines, but the degree block followed it; the four
+coursework columns arrived as four blocks ordered down each column; one block even
+held the last bullet of Experience followed by the "Startup, Inc" heading. The writer
+therefore emitted "Sep. 2017  May 2021 Bachelor … City, State" as one paragraph, put
+the coursework down columns, split every wrapped bullet into a list item plus a body
+paragraph, and lost the photo and icon order. The user's result spilled to two pages
+and did not look like the PDF the online converter reproduced.
+
+**Rule.** Flatten the page to **lines**, group lines whose baselines overlap into a
+visual **row**, and classify the row: title, section heading, dated entry, italic
+detail, project, skill label, bullet, multi-column bullet grid, body. Write a dated
+row with a right tab stop, a multi-column bullet row as a borderless table, joined
+wrap lines as one paragraph, and the PDF's section rules as heading bottom borders.
+Use the PDF's page size and compact text metrics so a one-page document stays one
+page. A heading threshold needs bold evidence as well as size: 10.9 pt regular text
+over a 10 pt body is an address line, not a heading, while 12 pt bold is a heading.
+
+**Evidence.** The resume now emits 7 Heading 1, 4 Heading 2, 29 list items, 5 images
+and **0 page breaks**, coverage 1.0; `convert-pdf-docx` checks the right tabs, the
+four-column coursework table, the heading rules and that "Sep. 2017  May 2021
+Bachelor" is not one text run. `quality-audit pdf-to-docx` passes both the curated
+case and the matrix.
+
+## 109. An inline picture is a run, not a document-level picture
+
+**Trap.** The DOCX writer called `document.add_picture(...)` while adding the runs of
+the contact line. python-docx appends that picture as a **new paragraph at the end of
+the body**, so the photo landed after the last section and the contact icons were out
+of order. Separately, `_span_is_icon` treated any short string without letters or
+digits as an icon, so the body-font `|` in "Gym Reservation Bot | Python" was
+rasterised and vanished from the text.
+
+**Rule.** Insert an inline image through `paragraph.add_run().add_picture(...)` and
+carry its intended point width on the run. Rasterise only spans from an icon font (or
+a private-use glyph); punctuation from the body font is text.
+
+**Evidence.** The new résumé DOCX has 5 embedded images in document order (photo plus
+four contact icons), the project line still contains its `|`, and the header table's
+photo is in the first cell rather than at the end of the document.
+
+## 110. A PDF's rules are heading borders, not extra content
+
+**Trap.** The section rules in the PDF were vector drawings. Dropping them lost the
+strong horizontal dividers that make the résumé's sections read as sections; adding
+them as paragraphs would add lines to the flow and move every control below.
+
+**Rule.** Detect full-width horizontal rules (`get_drawings()`: width over half the
+page, height at most 2 pt), attach each to the heading it sits under, and write it as
+that heading's bottom border. Ignore short link underlines.
+
+**Evidence.** The résumé DOCX carries 7 `<w:pBdr>` heading borders, one for each
+section; `convert-pdf-docx` asserts the count.
+
+## 111. A rich-text cell is several `<t>` runs, not the first one
+
+**Trap.** The XLSX validator read a cell with `re.search(r"<t…>(.*?)</t>")`. A rich
+text cell from openpyxl is an `<is>` containing one `<r><t>` per run, so "State
+University" was read as "State" and "Sep. 2017 – May 2021" as "Sep."; the audit blamed
+the writer for text loss that was not there. The same false negative came from PDF
+ligatures (`ﬁve`) and a word hyphenated across a line (`orga- nize`).
+
+**Rule.** Concatenate every `<t>` in an inline-string cell, keep shared-string
+indices separate, and normalize both sides of a coverage comparison with NFKC and a
+hyphen/whitespace rejoin. A validator is part of the measurement; a bad reader creates
+a fake bug as easily as it hides a real one.
+
+**Evidence.** `validate.xlsx` now returns A7 `State University` and D7
+`Sep. 2017 – May 2021`; `quality-audit pdf-to-xlsx` reports coverage 1.0, and
+`matrix-pdf-to-epub` moved from a false 0.9796 to 1.0 after normalizing `ﬁ` and
+`orga- nize`.
+
+## 112. Page images are a set, not one artifact
+
+**Trap.** `image_check` required exactly one produced path. PDF → PNG/JPG publishes
+the pages inside `<stem>-images/`, so every multi-page PDF failed "one artifact" while
+the images were correct. The same check would have hidden a genuine extra file from a
+single-image conversion if it were simply relaxed.
+
+**Rule.** Only when the current input is a PDF, accept a page set; report the page
+count and validate the images. Keep the single-image path at exactly one artifact.
+
+**Evidence.** `pdf-to-png`, `matrix-pdf-to-png` and `matrix-pdf-to-jpg` all pass with
+5 page images; single-image conversions still fail if they publish more than one file.
+
+## 113. A second output format needs its own package contract
+
+**Trap.** PPTX, XLSX and ODT were checked only by "the file starts with `PK`", or not
+at all. A presentation with no slides, a sheet with no cells and an ODT with no body
+would all satisfy that check. ODT in particular was previously assumed to need a
+system LibreOffice.
+
+**Rule.** Read the package: ODT mimetype, headings, tables and images; PPTX slide
+count, text and pictures; XLSX populated cells and no single blob cell; EPUB chapter
+count and source-word coverage. ODT is written by the bundled Pandoc through the
+DOCX intermediate, so it is not skipped on a clean machine.
+
+**Evidence.** `quality-audit --only pdf`: **28 passed, 0 failed, 14 skipped**;
+resume facts: ODT 11 headings/2 tables/5 images, PPTX 1 slide/5 pictures/4.1 k
+characters, XLSX 68 populated cells with dates in D, EPUB coverage 1.0; all six
+exports (DOCX, MD, EPUB, ODT, XLSX, PPTX) ran through the CLI.
+
+## 114. A fallback catalog is a product promise
+
+**Trap.** `FALLBACK_TOOLS` listed Compress, Merge and Edit metadata under Documents,
+plus tools under Slides, Spreadsheets, EPUB and Subtitles. The Rust `TOOLS` table
+registers none of them, so every card planned a job the backend rejected; the user saw
+"Tool could not start" six times and concluded the app was broken.
+
+**Rule.** The fallback catalog may only contain tools that `TOOLS` actually registers.
+A category with no backend tools shows zero cards and an explicit empty state, not a
+clickable placeholder. Every tool card must be backed by a field table or a defined
+fieldless path.
+
+**Evidence.** The Documents panel now has only the real Merge; `ui-shots --category
+documents` captured 1 dialog, and `dialogs-documents` passes in the window.
+
+## 115. A command rejection is not an `Error`
+
+**Trap.** Tauri rejects a `Result<_, String>` command with a bare string. The UI's
+`error instanceof Error ? error.message : 'Tool could not start'` therefore collapsed
+every backend explanation into the same five words; the actual message was only visible
+in the activity drawer if a job had already started.
+
+**Rule.** Normalize unknown rejections with `errorMessage()` (Error, string, then an
+object with a string `message`) and show failures in a dismissible red alert above the
+workspace, in addition to the status strip. The alert is the user-visible surface; the
+strip is telemetry.
+
+**Evidence.** `negative-corrupt` captures the red alert over the workspace; the job's
+`engine_failed: magick: … bad header` is visible instead of a generic phrase.
+
+## 116. EPUB reflow is not PDF geometry
+
+**Trap.** The EPUB writer embedded CSS in each chapter and emitted no image dimensions.
+A reader that drops inline styles rendered 94 px contact icons at intrinsic size and let
+a floated portrait overlap the next heading. The table had no bullets and a fixed
+four-column auto layout, and the writer invented `·` separators the PDF never had.
+
+**Rule.** Put the stylesheet in the manifest and link it from every chapter; emit
+`width`/`height` attributes for every image; contain floats; right-align `.meta` in
+details and projects; re-add the PDF's bullets in grid cells; use a fixed table layout
+with `overflow-wrap`. A reflowable EPUB cannot preserve page coordinates — say so —
+but it must preserve hierarchy and never explode at narrow widths.
+
+**Evidence.** `quality-audit pdf-to-epub` asserts `style.css` is a linked manifest item
+and every `<img>` has explicit dimensions; Calibre's render matches the résumé's
+sections and contact row.
+
+## 117. Mixed-format merge needs normalization, not a batch guess
+
+**Trap.** Pandoc infers one input format from the first file. Passing a DOCX and an HTML
+to one invocation produced `couldn't unpack docx container`; the tool had never been
+registered for Documents, so the failure surfaced as "Tool could not start".
+
+**Rule.** For a Documents merge, convert every input whose format differs from the first
+to a staged file of the first format, then concatenate the normalized files. The output
+extension follows the first file. The plan carries all inputs in selection order.
+
+**Evidence.** `documents-merge` (DOCX + HTML) produces one DOCX containing both texts;
+`quality-audit` CLI merge passes the same contract.
+
+## 118. A built-in PDF writer is a fallback with a stated layout contract
+
+**Trap.** Every Office/spreadsheet → PDF target was disabled behind LibreOffice. The
+in-process `printpdf` HTML renderer can produce a PDF from Pandoc HTML without a system
+package, but it does not implement table layout: a DOCX table arrived as clipped columns,
+and `<pre>` content disappeared visually although it remained in the text layer.
+
+**Rule.** Route documents/spreadsheets through Pandoc HTML + the built-in writer when
+LibreOffice is absent, but degrade complex tables to an explicit preformatted text grid
+(`Tool | Input | Output`) instead of emitting clipped cells. Keep LibreOffice for the
+presentation formats that have no bundled renderer. State the fidelity limit; do not claim
+exact DOCX geometry from this path.
+
+**Evidence.** `doc-md-to-pdf`, `matrix-docx-to-pdf`, `matrix-xlsx-to-pdf`,
+`matrix-ods-to-pdf` and `matrix-html-to-pdf` pass without LibreOffice; the PDF text
+contains every table cell on one readable line. Spreadsheet ODS is written by
+`spreadsheet-ods` (`matrix-csv-to-ods`, `matrix-xlsx-to-ods` pass).

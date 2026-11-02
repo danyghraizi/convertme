@@ -18,6 +18,8 @@ use convertme_core::error::{ErrorCode, JobError};
 use convertme_core::formats::{Category, FormatId, Registry};
 use convertme_core::job::{Intent, Job};
 use convertme_core::subtitle::Subtitle;
+use printpdf::{Base64OrRaw, GeneratePdfOptions, PdfDocument, PdfSaveOptions};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +28,20 @@ use std::path::{Path, PathBuf};
 /// [`subtitle`] instead, but a subtitle job arriving here is rejected cleanly.
 pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
     let from = input_format(job)?;
+    let category = Registry::get(from).map(|f| f.category).ok_or_else(|| {
+        JobError::new(
+            ErrorCode::Unsupported,
+            format!("{from} is not a known format"),
+        )
+    })?;
+    if let Intent::Tool {
+        tool: convertme_core::formats::ToolId::Merge,
+        ..
+    } = &job.intent
+        && category == Category::Documents
+    {
+        return document_merge(job, cx);
+    }
     let target = match &job.intent {
         Intent::Convert { target } => *target,
         Intent::Tool { .. } => {
@@ -35,12 +51,6 @@ pub fn run(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
             ));
         }
     };
-    let category = Registry::get(from).map(|f| f.category).ok_or_else(|| {
-        JobError::new(
-            ErrorCode::Unsupported,
-            format!("{from} is not a known format"),
-        )
-    })?;
     // `engine_for` is the pair table the dispatcher already validated; it also
     // admits the EPUB → PDF override, which the generic category rule misses.
     if Registry::engine_for(from, target).is_none() {
@@ -96,44 +106,79 @@ fn document(
             let pdf = document_pdf(job, cx, from)?;
             let dest = cx.out(&format!("{}.pdf", stem_of(job)));
             move_file(&pdf, &dest)?;
-            ensure_file(&dest, "LibreOffice")?;
+            ensure_file(&dest, "the built-in PDF writer")?;
             cx.ctx.set_progress(1.0);
             Ok(vec![dest])
         }
         "JPG" | "PNG" => document_images(job, cx, from, target_ext),
-        // DOCX ↔ ODT keeps tables and page structure only through the layout
-        // engine; every other text target is Pandoc's job.
-        _ if office_pair(from, target) => {
-            let staged = stage_source(job, cx, from)?;
-            let produced = soffice_convert(
-                cx,
-                &staged,
-                &out_dir(cx),
-                writer_filter(target_ext)?,
-                target_ext,
-            )?;
-            let dest = publish(job, cx, &produced, target_ext, "LibreOffice")?;
-            cx.ctx.set_progress(1.0);
-            Ok(vec![dest])
-        }
         _ => pandoc_convert(job, cx, from, target, target_ext),
     }
 }
 
-/// True for the pairs whose layout only survives a real Office renderer.
-fn office_pair(from: FormatId, target: FormatId) -> bool {
-    matches!((from.0, target.0), ("DOCX", "ODT") | ("ODT", "DOCX"))
+/// Merge documents with Pandoc. It reads each input by extension and writes the
+/// type of the first file; a mixed DOCX + HTML selection therefore becomes one
+/// DOCX (or HTML) instead of being rejected by a category check.
+fn document_merge(job: &Job, cx: &Context<'_>) -> Result<Vec<PathBuf>, JobError> {
+    let pandoc = cx.tools.path(ToolKey::Pandoc)?;
+    let first = job
+        .inputs
+        .first()
+        .ok_or_else(|| JobError::new(ErrorCode::Unsupported, "nothing to merge"))?;
+    let first_format = Registry::detect(first).ok_or_else(|| {
+        JobError::new(
+            ErrorCode::Unsupported,
+            format!("{} has no known document format", first.display()),
+        )
+    })?;
+    let ext = ext_of(first_format.id);
+    let dest = cx.out(&format!("{}-merged.{ext}", stem_of(job)));
+    // Pandoc reads every input with the format inferred from the first file, so a
+    // mixed selection is not a legal multi-input invocation. Normalise each input
+    // to the first file's format first, then concatenate those files.
+    let mut staged = Vec::with_capacity(job.inputs.len());
+    for (index, input) in job.inputs.iter().enumerate() {
+        let input_format = Registry::detect(input).ok_or_else(|| {
+            JobError::new(
+                ErrorCode::Unsupported,
+                format!("{} has no known document format", input.display()),
+            )
+        })?;
+        if input_format.id == first_format.id {
+            staged.push(input.clone());
+            continue;
+        }
+        let converted = cx.scratch(&format!("merge-{index}.{ext}"));
+        let cmd = Cmd::new(&pandoc)
+            .arg(input)
+            .args(["--standalone", "-o"])
+            .arg(&converted)
+            .budget(Budget::Long);
+        proc::run(cmd, cx.ctx)?.ok()?;
+        ensure_file(&converted, "Pandoc")?;
+        staged.push(converted);
+    }
+    let cmd = Cmd::new(&pandoc)
+        .args(staged.iter())
+        .args(["--standalone", "-o"])
+        .arg(&dest)
+        .budget(Budget::Long);
+    cx.ctx.set_stage("merging the documents");
+    proc::run(cmd, cx.ctx)?.ok()?;
+    ensure_file(&dest, "Pandoc")?;
+    cx.ctx.set_progress(1.0);
+    Ok(vec![dest])
 }
 
-/// Produce a PDF in the work dir for a document. Text-shaped inputs get an
-/// intermediate HTML page because Pandoc cannot emit PDF without a TeX engine.
+/// Produce a PDF in the work dir for a document. Pandoc gives us standalone HTML
+/// (with images embedded), then the built-in printpdf layout writes the pages;
+/// LibreOffice is no longer a prerequisite for this target.
 fn document_pdf(job: &Job, cx: &Context<'_>, from: FormatId) -> Result<PathBuf, JobError> {
-    if matches!(from.0, "DOCX" | "ODT") {
-        let staged = stage_source(job, cx, from)?;
-        return soffice_convert(cx, &staged, &out_dir(cx), writer_filter("pdf")?, "pdf");
-    }
     let html = pandoc_html(job, cx, from)?;
-    soffice_convert(cx, &html, &out_dir(cx), writer_filter("pdf")?, "pdf")
+    let raw = fs::read_to_string(&html)
+        .map_err(|error| JobError::io(format!("reading {}", html.display()), &error))?;
+    let pdf = cx.scratch("document.pdf");
+    html_to_pdf(cx, &raw, &pdf)?;
+    Ok(pdf)
 }
 
 fn document_images(
@@ -144,23 +189,6 @@ fn document_images(
 ) -> Result<Vec<PathBuf>, JobError> {
     cx.ctx.set_stage("rendering the document");
     let pdf = document_pdf(job, cx, from)?;
-    let pages = pdf_page_count(&pdf)?;
-
-    // A one-page Office document can be exported directly; anything longer (or
-    // any text-shaped input) needs the PDF route so no page is silently lost.
-    if pages <= 1 && matches!(from.0, "DOCX" | "ODT") {
-        let staged = stage_source(job, cx, from)?;
-        let produced = soffice_convert(
-            cx,
-            &staged,
-            &out_dir(cx),
-            writer_filter(target_ext)?,
-            target_ext,
-        )?;
-        let dest = publish(job, cx, &produced, target_ext, "LibreOffice")?;
-        cx.ctx.set_progress(1.0);
-        return Ok(vec![dest]);
-    }
     render_pdf_pages(cx, &pdf, target_ext, &stem_of(job))
 }
 
@@ -238,6 +266,299 @@ fn pandoc_html(job: &Job, cx: &Context<'_>, from: FormatId) -> Result<PathBuf, J
     Ok(out)
 }
 
+/// Add a compact, print-oriented stylesheet after Pandoc's own styles. The
+/// built-in layout engine understands basic CSS; this keeps tables inside the
+/// page, uses a sans stack matching the app's documents, and wraps code.
+const PDF_STYLE: &str = "<style>\
+html,body{font-family:\"Carlito\",\"Calibri\",\"Liberation Sans\",sans-serif;\
+font-size:10.5pt;line-height:1.35;margin:0;}\
+h1,h2,h3{line-height:1.2;margin:0.8em 0 0.3em;}\
+p{margin:0.35em 0;}\
+table{width:100%;border-collapse:collapse;margin:0.5em 0 0.8em;}\
+.pdf-table,.pdf-code{font-family:\"DejaVu Sans Mono\",\"Liberation Mono\",monospace;font-size:8.5pt;border:1px solid #b7b7b7;padding:4pt;margin:0.5em 0 0.8em;}\
+th,td{padding:3pt 4pt;border:1px solid #b7b7b7;vertical-align:top;\
+overflow-wrap:anywhere;}\
+pre,code{font-family:\"DejaVu Sans Mono\",\"Liberation Mono\",monospace;\
+white-space:pre-wrap;overflow-wrap:anywhere;}\
+img{max-width:100%;height:auto;}\
+</style>";
+
+fn without_unsupported_table_wrappers(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<colgroup") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</colgroup>") {
+            Some(end) => rest = &rest[start + end + "</colgroup>".len()..],
+            None => return html.to_string(),
+        }
+    }
+    out.push_str(rest);
+    for tag in ["thead", "tbody", "tfoot"] {
+        out = out
+            .replace(&format!("<{tag}>"), "")
+            .replace(&format!("</{tag}>"), "");
+    }
+    out
+}
+
+fn tables_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<table") {
+        out.push_str(&rest[..start]);
+        let Some(open_end) = rest[start..].find('>') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let body_start = start + open_end + 1;
+        let Some(close) = rest[body_start..].find("</table>") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let table = &rest[body_start..body_start + close];
+        out.push_str("<p class=\"pdf-table\">");
+        let mut rows = table;
+        while let Some(row_start) = rows.find("<tr") {
+            let Some(row_open) = rows[row_start..].find('>') else {
+                break;
+            };
+            let row_body_start = row_start + row_open + 1;
+            let Some(row_close) = rows[row_body_start..].find("</tr>") else {
+                break;
+            };
+            let row = &rows[row_body_start..row_body_start + row_close];
+            let mut cells = row;
+            let mut line = String::new();
+            while let Some(cell_start) = cells.find('<') {
+                let rest_cell = &cells[cell_start..];
+                let Some(tag_end) = rest_cell.find('>') else {
+                    break;
+                };
+                let opening = &rest_cell[..tag_end + 1];
+                let tag = opening
+                    .trim_matches(|c| c == '<' || c == '>')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                if tag != "td" && tag != "th" {
+                    cells = &rest_cell[tag_end + 1..];
+                    continue;
+                }
+                let close_tag = format!("</{tag}>");
+                let Some(cell_end) = rest_cell.find(&close_tag) else {
+                    break;
+                };
+                let content = &rest_cell[tag_end + 1..cell_end];
+                let mut plain = String::new();
+                let mut inside = true;
+                for ch in content.chars() {
+                    match ch {
+                        '<' => inside = false,
+                        '>' => inside = true,
+                        _ if inside => plain.push(ch),
+                        _ => {}
+                    }
+                }
+                if !line.is_empty() {
+                    line.push_str(" | ");
+                }
+                line.push_str(plain.trim());
+                cells = &rest_cell[cell_end + close_tag.len()..];
+            }
+            out.push_str(&line);
+            out.push_str("<br/>");
+            rows = &rows[row_body_start + row_close + "</tr>".len()..];
+        }
+        out.push_str("</p>");
+        rest = &rest[body_start + close + "</table>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+fn code_blocks_to_paragraphs(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<pre") {
+        out.push_str(&rest[..start]);
+        let Some(open_end) = rest[start..].find('>') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let body_start = start + open_end + 1;
+        let Some(close) = rest[body_start..].find("</pre>") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let body = &rest[body_start..body_start + close];
+        let mut plain = String::new();
+        let mut inside = true;
+        for ch in body.chars() {
+            match ch {
+                '<' => inside = false,
+                '>' => inside = true,
+                _ if inside => plain.push(ch),
+                _ => {}
+            }
+        }
+        out.push_str("<p class=\"pdf-code\">");
+        for line in plain.split('\n') {
+            out.push_str(line.trim_end());
+            out.push_str("<br/>");
+        }
+        out.push_str("</p>");
+        rest = &rest[body_start + close + "</pre>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn with_pdf_style(html: &str) -> String {
+    let html =
+        code_blocks_to_paragraphs(&tables_to_text(&without_unsupported_table_wrappers(html)));
+    let html = html.as_str();
+    let position = html
+        .find("</head>")
+        .or_else(|| html.find("<body"))
+        .unwrap_or(0);
+    let mut styled = String::with_capacity(html.len() + PDF_STYLE.len());
+    styled.push_str(&html[..position]);
+    styled.push_str(PDF_STYLE);
+    styled.push_str(&html[position..]);
+    styled
+}
+
+/// Render a standalone HTML document to PDF with the in-process layout engine.
+/// Pandoc's `--embed-resources` puts images in `data:` URIs; printpdf resolves
+/// images by the `src` it sees, so swap each URI for a key in its image map.
+fn html_to_pdf(cx: &Context<'_>, html: &str, dest: &Path) -> Result<(), JobError> {
+    let html = with_pdf_style(html);
+    let (html, images) = extract_inline_images(&html);
+    let options = GeneratePdfOptions {
+        page_width: Some(210.0),
+        page_height: Some(297.0),
+        margin_top: Some(14.0),
+        margin_right: Some(14.0),
+        margin_bottom: Some(14.0),
+        margin_left: Some(14.0),
+        ..Default::default()
+    };
+    let fonts = BTreeMap::new();
+    let mut warnings = Vec::new();
+    cx.ctx.set_stage("laying out the PDF");
+    let document = PdfDocument::from_html(&html, &images, &fonts, &options, &mut warnings)
+        .map_err(|error| {
+            JobError::new(
+                ErrorCode::EngineFailed,
+                format!("the built-in PDF layout failed: {error}"),
+            )
+        })?;
+    let bytes = document.save(&PdfSaveOptions::default(), &mut warnings);
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(JobError::new(
+            ErrorCode::EngineFailed,
+            "the built-in PDF layout wrote no PDF",
+        ));
+    }
+    fs::write(dest, bytes).map_err(|error| JobError::io("writing the PDF", &error))?;
+    ensure_file(dest, "the built-in PDF writer")?;
+    Ok(())
+}
+
+/// Replace every `src="data:image/...;base64,..."` with `inline-N` and build the
+/// map printpdf needs. The payload is already base64, so no decode is necessary.
+fn extract_inline_images(html: &str) -> (String, BTreeMap<String, Base64OrRaw>) {
+    let mut out = String::with_capacity(html.len());
+    let mut images = BTreeMap::new();
+    let mut rest = html;
+    let mut index = 0usize;
+    while let Some(position) = rest.find("src=\"data:image/") {
+        out.push_str(&rest[..position]);
+        let value = &rest[position + 5..];
+        let Some(end) = value.find('"') else {
+            out.push_str("src=\"");
+            out.push_str(value);
+            return (out, images);
+        };
+        let uri = &value[..end];
+        let Some((_, payload)) = uri.split_once(',') else {
+            out.push_str("src=\"");
+            out.push_str(uri);
+            out.push('"');
+            rest = &value[end + 1..];
+            continue;
+        };
+        let key = format!("inline-{index}");
+        index += 1;
+        images.insert(key.clone(), Base64OrRaw::B64(payload.to_string()));
+        out.push_str("src=\"");
+        out.push_str(&key);
+        out.push('"');
+        rest = &value[end + 1..];
+    }
+    out.push_str(rest);
+    (out, images)
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// A workbook as one or more HTML tables. It shares the PDF layout path with
+/// text documents, so a spreadsheet target works without LibreOffice.
+fn spreadsheet_html(from: FormatId, path: &Path) -> Result<String, JobError> {
+    let mut html = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><style>\
+         body{font-family:Calibri,Carlito,\"Liberation Sans\",sans-serif;font-size:10pt;}\
+         h1{font-size:13pt;margin:0 0 6pt;}table{border-collapse:collapse;width:100%;margin-bottom:14pt;}\
+         td{border:1px solid #bbb;padding:2pt 4pt;vertical-align:top;white-space:pre-wrap;}\
+         </style></head><body>",
+    );
+    each_sheet(from, path, |name, rows| {
+        html.push_str(&format!("<h1>{}</h1><table>", html_escape(name)));
+        for row in rows {
+            html.push_str("<tr>");
+            for cell in row {
+                html.push_str(&format!("<td>{}</td>", html_escape(&cell_text(&cell))));
+            }
+            html.push_str("</tr>");
+        }
+        html.push_str("</table>");
+        Ok(())
+    })?;
+    html.push_str("</body></html>");
+    Ok(html)
+}
+
+fn spreadsheet_ods(from: FormatId, path: &Path, dest: &Path) -> Result<(), JobError> {
+    use spreadsheet_ods::{Sheet, WorkBook, write_ods};
+
+    let mut book = WorkBook::new_empty();
+    each_sheet(from, path, |name, rows| {
+        let mut sheet = Sheet::default();
+        sheet.set_name(name);
+        for (row, cells) in rows.iter().enumerate() {
+            for (column, cell) in cells.iter().enumerate() {
+                match cell {
+                    Cell::Empty => {}
+                    Cell::Text(text) => sheet.set_value(row as u32, column as u32, text.as_str()),
+                    Cell::Number(value) => sheet.set_value(row as u32, column as u32, *value),
+                    Cell::Bool(value) => sheet.set_value(row as u32, column as u32, *value),
+                }
+            }
+        }
+        book.push_sheet(sheet);
+        Ok(())
+    })?;
+    write_ods(&mut book, dest)
+        .map_err(|error| JobError::new(ErrorCode::EngineFailed, error.to_string()))?;
+    ensure_file(dest, "the ODS writer")?;
+    Ok(())
+}
+
 // --------------------------------------------------------------------- slides
 
 fn slides(
@@ -284,43 +605,28 @@ fn spreadsheet(
             cx.ctx.set_progress(1.0);
             Ok(vec![dest])
         }
-        "ODS" | "PDF" => {
-            let staged = spreadsheet_office_input(job, cx, from)?;
-            let (filter, out_ext) = if target.0 == "ODS" {
-                (calc_filter("ods")?, "ods")
-            } else {
-                (calc_filter("pdf")?, "pdf")
-            };
-            let produced = soffice_convert(cx, &staged, &out_dir(cx), filter, out_ext)?;
-            let dest = publish(job, cx, &produced, out_ext, "LibreOffice")?;
+        "ODS" => {
+            cx.ctx.set_stage("writing the workbook");
+            let dest = cx.out(&format!("{}.ods", stem_of(job)));
+            spreadsheet_ods(from, &job.source, &dest)?;
             cx.ctx.set_progress(1.0);
             Ok(vec![dest])
         }
+        "PDF" => {
+            let html = spreadsheet_html(from, &job.source)?;
+            let dest = cx.out(&format!("{}.pdf", stem_of(job)));
+            html_to_pdf(cx, &html, &dest)?;
+            cx.ctx.set_progress(1.0);
+            Ok(vec![dest])
+        }
+        "JPG" | "PNG" => {
+            let html = spreadsheet_html(from, &job.source)?;
+            let pdf = cx.scratch("spreadsheet.pdf");
+            html_to_pdf(cx, &html, &pdf)?;
+            let ext = if target.0 == "JPG" { "jpg" } else { "png" };
+            render_pdf_pages(cx, &pdf, ext, &stem_of(job))
+        }
         other => Err(JobError::unsupported(from.0, other)),
-    }
-}
-
-/// A workbook LibreOffice can open. Flat files are materialised as XLSX first,
-/// because `--convert-to` cannot import CSV/TSV on its own without filter options.
-fn spreadsheet_office_input(
-    job: &Job,
-    cx: &Context<'_>,
-    from: FormatId,
-) -> Result<PathBuf, JobError> {
-    let dir = cx.scratch("office-in");
-    fs::create_dir_all(&dir).map_err(|e| JobError::io("creating the scratch directory", &e))?;
-    match from.0 {
-        "XLSX" | "XLS" | "ODS" => {
-            let staged = dir.join(format!("input.{}", ext_of(from)));
-            fs::copy(&job.source, &staged)
-                .map_err(|e| JobError::io(format!("staging {}", job.source.display()), &e))?;
-            Ok(staged)
-        }
-        _ => {
-            let staged = dir.join("input.xlsx");
-            write_workbook(from, &job.source, &staged)?;
-            Ok(staged)
-        }
     }
 }
 
@@ -745,20 +1051,6 @@ fn soffice_convert(
     Ok(produced)
 }
 
-fn writer_filter(target_ext: &str) -> Result<&'static str, JobError> {
-    match target_ext {
-        "pdf" => Ok("pdf:writer_pdf_Export"),
-        "odt" => Ok("odt:writer8"),
-        "docx" => Ok("docx:MS Word 2007 XML"),
-        "jpg" => Ok("jpg:writer_jpg_Export"),
-        "png" => Ok("png:writer_png_Export"),
-        other => Err(JobError::new(
-            ErrorCode::Unsupported,
-            format!("LibreOffice cannot write {other} from a text document"),
-        )),
-    }
-}
-
 fn impress_filter(target_ext: &str) -> Result<&'static str, JobError> {
     match target_ext {
         "pdf" => Ok("pdf:impress_pdf_Export"),
@@ -767,18 +1059,6 @@ fn impress_filter(target_ext: &str) -> Result<&'static str, JobError> {
         other => Err(JobError::new(
             ErrorCode::Unsupported,
             format!("LibreOffice cannot write {other} from a presentation"),
-        )),
-    }
-}
-
-fn calc_filter(target_ext: &str) -> Result<&'static str, JobError> {
-    match target_ext {
-        "pdf" => Ok("pdf:calc_pdf_Export"),
-        "ods" => Ok("ods:calc8"),
-        "xlsx" => Ok("xlsx:Calc MS Excel 2007 XML"),
-        other => Err(JobError::new(
-            ErrorCode::Unsupported,
-            format!("LibreOffice cannot write {other} from a spreadsheet"),
         )),
     }
 }
@@ -864,16 +1144,6 @@ fn move_file(from: &Path, to: &Path) -> Result<(), JobError> {
             Ok(())
         }
     }
-}
-
-fn pdf_page_count(path: &Path) -> Result<usize, JobError> {
-    let document = lopdf::Document::load(path).map_err(|e| {
-        JobError::new(
-            ErrorCode::EngineFailed,
-            format!("reading the generated PDF: {e}"),
-        )
-    })?;
-    Ok(document.get_pages().len())
 }
 
 /// Render every page at 150 DPI into its own artifact, numbered in page order.
@@ -1019,6 +1289,28 @@ mod tests {
     }
 
     #[test]
+    fn docx_to_odt_uses_pandoc_without_libreoffice() {
+        let fixture = Fixture::new();
+        if !fixture.tools.has(ToolKey::Pandoc) {
+            return;
+        }
+        let source = fixture.source("notes.md", b"# Title\n\nBody text.\n");
+        let cx = fixture.context();
+        let docx = run(&job(source, "DOCX"), &cx).expect("pandoc docx");
+        // This pair is deliberately Pandoc: a clean install has no LibreOffice,
+        // and the ODT target must still be reachable.
+        let odt = run(&job(docx[0].clone(), "ODT"), &cx).expect("pandoc odt");
+        let bytes = std::fs::read(&odt[0]).expect("odt");
+        assert_eq!(&bytes[..2], b"PK", "ODT must be a zip container");
+        assert!(
+            bytes
+                .windows(b"content.xml".len())
+                .any(|w| w == b"content.xml"),
+            "ODT must carry content.xml"
+        );
+    }
+
+    #[test]
     fn text_to_epub_is_a_zip_with_container_xml() {
         let fixture = Fixture::new();
         if !fixture.tools.has(ToolKey::Pandoc) {
@@ -1109,17 +1401,27 @@ mod tests {
     }
 
     #[test]
-    fn docx_to_pdf_runs_through_libreoffice() {
+    fn docx_to_pdf_runs_through_the_builtin_writer() {
         let fixture = Fixture::new();
-        if !fixture.tools.has(ToolKey::Pandoc) || !fixture.tools.has(ToolKey::Soffice) {
+        if !fixture.tools.has(ToolKey::Pandoc) {
             return;
         }
         let source = fixture.source("brief.md", b"# Brief\n\nOne paragraph.\n");
         let cx = fixture.context();
         let docx = run(&job(source, "DOCX"), &cx).expect("pandoc docx");
-        let pdf = run(&job(docx[0].clone(), "PDF"), &cx).expect("soffice pdf");
+        let pdf = run(&job(docx[0].clone(), "PDF"), &cx).expect("built-in pdf");
         let bytes = std::fs::read(&pdf[0]).expect("pdf");
         assert!(bytes.starts_with(b"%PDF"), "output must be a PDF");
+    }
+
+    #[test]
+    fn table_cells_are_kept_when_the_builtin_writer_cannot_lay_them_out() {
+        let html = r#"<table><tr><th>Tool</th><th>Output</th></tr>
+<tr><td>Compress</td><td>photo.jpg</td></tr></table>"#;
+        let text = tables_to_text(html);
+        assert!(text.contains("Tool | Output"), "{text}");
+        assert!(text.contains("Compress | photo.jpg"), "{text}");
+        assert!(!text.contains("<table"), "{text}");
     }
 
     #[test]

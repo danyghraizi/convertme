@@ -84,8 +84,17 @@ def tool_case(name: str, source: str, tool: str, category: str, params: dict, ch
 def image_check(format_name=None, size=None, alpha=None, unchanged_size=False):
     def check(produced: list[Path]) -> list[dict]:
         checks = []
-        if len(produced) != 1:
+        page_set = bool(
+            len(produced) > 1
+            and CURRENT_INPUTS
+            and CURRENT_INPUTS[0].suffix.lower() == ".pdf"
+        )
+        if len(produced) != 1 and not page_set:
             return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        if page_set:
+            checks.append(
+                {"name": "page images", "ok": True, "actual": len(produced)}
+            )
         artifact = produced[0]
         facts = validate.image(artifact)
         if facts is None:
@@ -332,14 +341,158 @@ def docx_check(headings=0, lists=0, images=0):
     return check
 
 
-def epub_check(min_chapters=1):
+def markdown_check(min_headings=5, min_words=40):
+    """A Markdown file with a real document shape, not one flattened line."""
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        text = produced[0].read_text(errors="replace")
+        lines = text.splitlines()
+        headings = [line for line in lines if line.startswith("#")]
+        words = [word for word in text.split() if any(ch.isalpha() for ch in word)]
+        source = (
+            validate.pdf_text(str(CURRENT_INPUTS[0])) if CURRENT_INPUTS else ""
+        )
+        coverage = validate.text_coverage(source, text) if source else None
+        return [
+            {"name": "non-empty markdown", "ok": len(words) >= min_words, "actual": len(words)},
+            {
+                "name": f"at least {min_headings} headings",
+                "ok": len(headings) >= min_headings,
+                "actual": [heading[:60] for heading in headings[:8]],
+            },
+            {
+                "name": "no wall of text",
+                "ok": max((len(line) for line in lines), default=0) < 1200,
+                "actual": max((len(line) for line in lines), default=0),
+            },
+            {
+                "name": "source words survive",
+                "ok": coverage is None or coverage >= 0.98,
+                "actual": round(coverage, 4) if coverage is not None else None,
+            },
+        ]
+
+    return check
+
+
+def odt_check(min_headings=1, min_tables=0, min_images=0):
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        facts = validate.odt(produced[0])
+        if facts is None:
+            return [{"name": "readable odt", "ok": False, "actual": "unreadable"}]
+        source = validate.pdf_text(str(CURRENT_INPUTS[0])) if CURRENT_INPUTS else ""
+        coverage = validate.text_coverage(source, facts["text"]) if source else None
+        return [
+            {
+                "name": "odf text mimetype",
+                "ok": facts["mimetype"] == "application/vnd.oasis.opendocument.text",
+                "actual": facts["mimetype"],
+            },
+            {
+                "name": f"at least {min_headings} heading(s)",
+                "ok": facts["headings"] >= min_headings,
+                "actual": facts["headings"],
+            },
+            {
+                "name": f"at least {min_tables} table(s)",
+                "ok": facts["tables"] >= min_tables,
+                "actual": facts["tables"],
+            },
+            {
+                "name": f"at least {min_images} image(s)",
+                "ok": facts["images"] >= min_images,
+                "actual": facts["images"],
+            },
+            {
+                "name": "source words survive",
+                "ok": coverage is None or coverage >= 0.98,
+                "actual": round(coverage, 4) if coverage is not None else None,
+            },
+        ]
+
+    return check
+
+
+def pptx_check(min_slides=1, min_pictures=0, expect=None):
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        facts = validate.pptx(produced[0])
+        if facts is None:
+            return [{"name": "readable pptx", "ok": False, "actual": "unreadable"}]
+        return [
+            {
+                "name": f"at least {min_slides} slide(s)",
+                "ok": facts["slides"] >= min_slides,
+                "actual": facts["slides"],
+            },
+            {
+                "name": "text inside",
+                "ok": facts["text_chars"] > 0,
+                "actual": facts["text_chars"],
+            },
+            {
+                "name": f"at least {min_pictures} picture(s)",
+                "ok": facts["pictures"] >= min_pictures,
+                "actual": facts["pictures"],
+            },
+            {
+                "name": f"contains {expect!r}" if expect else "text expected",
+                "ok": expect in facts["text"] if expect else True,
+                "actual": facts["text"][:120],
+            },
+        ]
+
+    return check
+
+
+def xlsx_check(min_cells=40, max_longest=600, expect=()):
+    def check(produced: list[Path]) -> list[dict]:
+        if len(produced) != 1:
+            return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
+        facts = validate.xlsx(produced[0])
+        if facts is None:
+            return [{"name": "readable xlsx", "ok": False, "actual": "unreadable"}]
+        values = " ".join(facts["cells"].values())
+        return [
+            {
+                "name": f"at least {min_cells} populated cells",
+                "ok": facts["populated"] >= min_cells,
+                "actual": facts["populated"],
+            },
+            {
+                "name": "no blob cell",
+                "ok": facts["longest"] <= max_longest,
+                "actual": facts["longest"],
+            },
+            *[
+                {
+                    "name": f"contains {phrase!r}",
+                    "ok": phrase in values,
+                    "actual": values[:120],
+                }
+                for phrase in expect
+            ],
+        ]
+
+    return check
+
+
+def epub_check(min_chapters=1, expect=None):
     def check(produced: list[Path]) -> list[dict]:
         if len(produced) != 1:
             return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
         facts = validate.epub(produced[0])
         if facts is None:
             return [{"name": "valid zip", "ok": False, "actual": "unreadable"}]
-        return [
+        plain = re.sub(r"<[^>]+>", " ", facts["text"])
+        plain = " ".join(plain.split())
+        source = validate.pdf_text(str(CURRENT_INPUTS[0])) if CURRENT_INPUTS else ""
+        coverage = validate.text_coverage(source, plain) if source else None
+        checks = [
             {
                 "name": "mimetype first and stored",
                 "ok": facts["mimetype_first"] and facts["mimetype_stored"],
@@ -355,7 +508,35 @@ def epub_check(min_chapters=1):
                 "ok": len(facts["chapters"]) >= min_chapters,
                 "actual": len(facts["chapters"]),
             },
+            {
+                "name": "source words survive",
+                "ok": coverage is None or coverage >= 0.98,
+                "actual": round(coverage, 4) if coverage is not None else None,
+            },
+            {
+                "name": "stylesheet is a linked manifest item",
+                "ok": any(style.endswith("style.css") for style in facts["styles"])
+                and 'href="style.css"' in facts["text"],
+                "actual": facts["styles"],
+            },
+            {
+                "name": "every image has explicit dimensions",
+                "ok": all(
+                    re.search(r'<img[^>]*\bwidth="\d+"[^>]*\bheight="\d+"', tag)
+                    for tag in re.findall(r"<img\b[^>]*>", facts["text"])
+                ) if "<img" in facts["text"] else True,
+                "actual": len(re.findall(r"<img\b[^>]*>", facts["text"])),
+            },
         ]
+        if expect:
+            checks.append(
+                {
+                    "name": f"contains {expect!r}",
+                    "ok": expect in plain,
+                    "actual": plain[:120],
+                }
+            )
+        return checks
 
     return check
 
@@ -548,6 +729,16 @@ CASES: list[Case] = [
     convert("pdf-to-md", "pdf/report-5-pages.pdf", "MD", text_check(20)),
     convert("pdf-to-docx", "pdf/Jake_s_Resume__Anonymous_.pdf", "DOCX",
            docx_check(headings=1)),
+    convert("pdf-to-md-resume", "pdf/Jake_s_Resume__Anonymous_.pdf", "MD",
+           markdown_check(7)),
+    convert("pdf-to-epub", "pdf/Jake_s_Resume__Anonymous_.pdf", "EPUB",
+           epub_check(1, "Relevant Coursework")),
+    convert("pdf-to-odt", "pdf/Jake_s_Resume__Anonymous_.pdf", "ODT",
+           odt_check(5, 1, 4)),
+    convert("pdf-to-xlsx", "pdf/Jake_s_Resume__Anonymous_.pdf", "XLSX",
+           xlsx_check(40, 600, ("State University", "Sep. 2017", "Data Structures"))),
+    convert("pdf-to-pptx-resume", "pdf/Jake_s_Resume__Anonymous_.pdf", "PPTX",
+           pptx_check(1, 4, "Relevant Coursework")),
     convert("pdf-to-pptx", "pdf/report-5-pages.pdf", "PPTX", package_check("PPTX")),
     tool_case(
         "pdf-organize-rotate",

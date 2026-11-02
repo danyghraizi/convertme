@@ -1,6 +1,6 @@
-"""ConvertMe PDF sidecar: the four PDF targets PyMuPDF does and Rust does not.
+"""ConvertMe PDF sidecar: the PDF targets PyMuPDF does and Rust does not.
 
-`convertme-pdf <docx|pptx|xlsx|epub> <input.pdf> <output>`
+`convertme-pdf <docx|pptx|xlsx|epub|md> <input.pdf> <output>`
 
 Every subcommand writes exactly one file at `<output>` and prints nothing on
 success. Failures print a one-line reason to stderr and exit non-zero, which the
@@ -13,6 +13,7 @@ import sys
 
 from . import docx as docx_mod
 from . import epub as epub_mod
+from . import md as md_mod
 from . import pptx as pptx_mod
 from . import xlsx as xlsx_mod
 
@@ -23,6 +24,7 @@ COMMANDS = {
     "pptx": pptx_mod.convert,
     "xlsx": xlsx_mod.convert,
     "epub": epub_mod.convert,
+    "md": md_mod.convert,
 }
 
 

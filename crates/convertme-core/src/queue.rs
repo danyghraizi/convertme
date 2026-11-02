@@ -366,7 +366,7 @@ fn execute(shared: &Arc<Shared>, job: Job) {
 
     match result {
         Ok(outputs) => {
-            // With a source-named output folder, a file's parent is that folder, not
+            // With a labelled output folder, a file's parent is that folder, not
             // the destination root; ask the same helper the publish step used.
             let (_, fallback) = publish::publish_dir_for(&job.source);
             let primary = outputs.first().cloned();
@@ -464,10 +464,10 @@ fn publish_artifacts(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".into());
-    // Several files from one source go into a folder named after it: split parts,
-    // saved frames and exported pages are one result, not a dozen loose files beside
-    // the original. A directory artifact (an extracted archive) is one result and is
-    // published on its own, as before.
+    // Several files from one source go into a folder that names the source and what
+    // was done: split parts, saved frames and exported pages are one result, not a
+    // dozen loose files beside the original. A directory artifact (an extracted
+    // archive) is one result and is published on its own, as before.
     let file_count = artifacts
         .iter()
         .filter(|artifact| {
@@ -477,14 +477,20 @@ fn publish_artifacts(
         })
         .count();
     let folder: Option<PathBuf> = if file_count > 1 {
-        let mut path = dest_dir.join(&source_stem);
-        if path.exists() && !path.is_dir() {
-            // A file already owns that name; keep the folder and the file apart.
-            let name = match suffix {
-                Some(tool) => format!("{source_stem}-{tool}"),
-                None => format!("{source_stem}-out"),
-            };
-            path = dest_dir.join(name);
+        let name = match job.intent.tool_id() {
+            Some(tool) => format!("{source_stem}-{}", tool.output_folder_label()),
+            None => format!("{source_stem}-out"),
+        };
+        let mut path = dest_dir.join(&name);
+        let mut n = 2;
+        // A directory with that name is the previous run's folder; a file owns it,
+        // so step aside to `-2`, `-3`, … rather than overwrite the file.
+        while path.exists() && !path.is_dir() {
+            path = dest_dir.join(format!("{name}-{n}"));
+            n += 1;
+            if n > 9999 {
+                break;
+            }
         }
         Some(path)
     } else {
@@ -526,8 +532,8 @@ fn publish_artifacts(
             published.push(published_path);
         } else {
             let desired = if let Some(folder) = &folder {
-                // Inside the source-named folder the stem is redundant:
-                // `clip-.../part-001.mp4`, not `clip-.../clip-...-part-001.mp4`.
+                // Inside the labelled folder the stem is redundant:
+                // `clip-...-split/part-001.mp4`, not `clip-...-split/clip-...-part-001.mp4`.
                 let original = artifact.file_name().unwrap_or_default();
                 let name = original
                     .to_string_lossy()
@@ -618,6 +624,7 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::ToolId;
     use crate::job::Intent;
     use std::sync::Barrier;
     use std::sync::atomic::AtomicUsize;
@@ -692,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn several_outputs_publish_into_a_folder_named_after_the_source() {
+    fn several_conversion_outputs_publish_into_an_out_folder() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("photo.jpg");
         std::fs::write(&src, b"source-bytes").unwrap();
@@ -706,7 +713,10 @@ mod tests {
         };
         assert_eq!(outputs.len(), 3);
         for (index, output) in outputs.iter().enumerate() {
-            assert_eq!(output.parent(), Some(dir.path().join("photo").as_path()));
+            assert_eq!(
+                output.parent(),
+                Some(dir.path().join("photo-out").as_path())
+            );
             assert_eq!(
                 output.file_name().and_then(|n| n.to_str()),
                 Some(format!("part-{:03}.webp", index + 1).as_str())
@@ -714,6 +724,58 @@ mod tests {
             assert_eq!(std::fs::read(output).unwrap(), b"part");
         }
         assert_eq!(std::fs::read(&src).unwrap(), b"source-bytes");
+        q.shutdown();
+    }
+
+    #[test]
+    fn split_outputs_publish_into_a_labelled_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.jpg");
+        std::fs::write(&src, b"source-bytes").unwrap();
+        let (q, rx) = queue_with(Arc::new(Many), dir.path().join("tmp"));
+        q.submit(Job::new(src.clone(), Intent::tool(ToolId::Split)))
+            .unwrap();
+        let Event::Finished { outputs, .. } =
+            wait_for(&rx, |e| matches!(e, Event::Finished { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(outputs.len(), 3);
+        for (index, output) in outputs.iter().enumerate() {
+            assert_eq!(
+                output.parent(),
+                Some(dir.path().join("photo-split").as_path())
+            );
+            assert_eq!(
+                output.file_name().and_then(|n| n.to_str()),
+                Some(format!("part-{:03}.webp", index + 1).as_str())
+            );
+        }
+        assert_eq!(std::fs::read(&src).unwrap(), b"source-bytes");
+        q.shutdown();
+    }
+
+    #[test]
+    fn a_file_owning_the_folder_name_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.jpg");
+        std::fs::write(&src, b"source-bytes").unwrap();
+        let squatter = dir.path().join("photo-split");
+        std::fs::write(&squatter, b"not-a-folder").unwrap();
+        let (q, rx) = queue_with(Arc::new(Many), dir.path().join("tmp"));
+        q.submit(Job::new(src.clone(), Intent::tool(ToolId::Split)))
+            .unwrap();
+        let Event::Finished { outputs, .. } =
+            wait_for(&rx, |e| matches!(e, Event::Finished { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(
+            outputs[0].parent(),
+            Some(dir.path().join("photo-split-2").as_path())
+        );
+        assert_eq!(std::fs::read(&squatter).unwrap(), b"not-a-folder");
         q.shutdown();
     }
 

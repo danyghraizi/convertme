@@ -1222,7 +1222,9 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
         }
         // A multi-input tool orders its inputs in the dialog; the editor owns the
         // list and the value travels as indices into the selection.
-        (Category::Video, ToolId::Join) | (Category::Pdf, ToolId::Merge) => vec![Field {
+        (Category::Video, ToolId::Join)
+        | (Category::Pdf, ToolId::Merge)
+        | (Category::Documents, ToolId::Merge) => vec![Field {
             key: "order".into(),
             label: "Order".into(),
             kind: "files".into(),
@@ -1290,11 +1292,25 @@ fn fields_for(category: Category, tool: ToolId) -> Vec<Field> {
         .hidden()],
         (Category::Audio, ToolId::Metadata) => vec![metadata_field()],
         (Category::Pdf, ToolId::Compress) => vec![
+            // The stored values are Ghostscript's PDFSETTINGS names, and they must stay
+            // that way: the engine interpolates them straight into `-dPDFSETTINGS`.
+            // The labels spell out what each tier costs, because four bare words told
+            // the user nothing. Measured with Ghostscript 10.08: color image resolution
+            // 72/150/300/300 dpi, JPEG quality factor 0.76/0.76/0.4/0.15.
             select(
                 "preset",
                 "Quality",
                 "ebook",
                 &["screen", "ebook", "printer", "prepress"],
+            )
+            .labelled(&[
+                "Screen · 72 dpi (smallest)",
+                "Ebook · 150 dpi (balanced)",
+                "Printer · 300 dpi (print ready)",
+                "Prepress · 300 dpi (best images)",
+            ])
+            .help(
+                "Presets differ mainly in image downsampling and compression: Screen and Ebook shrink most but soften photos, Printer and Prepress keep 300 dpi, and Prepress preserves the most image detail and usually makes the largest file.",
             ),
             num(
                 "target_bytes",
@@ -1689,6 +1705,45 @@ mod field_payload {
                 .iter()
                 .all(|f| f.key.as_str() != "spacing" && f.key.as_str() != "radius")
         );
+    }
+
+    /// The PDF preset stores Ghostscript PDFSETTINGS names verbatim; the dialog is
+    /// what translates them into a resolution and a tradeoff. Both halves are the
+    /// contract: a renamed stored value breaks the engine, a dropped label brings
+    /// back the four opaque words.
+    #[test]
+    fn pdf_compress_describes_its_presets() {
+        let fields = super::tool_fields("pdf".into(), "compress".into());
+        let preset = fields.iter().find(|f| f.key == "preset").unwrap();
+        assert_eq!(preset.kind, "select");
+        assert_eq!(preset.default, serde_json::json!("ebook"));
+        assert_eq!(
+            preset.options.as_deref(),
+            Some(
+                ["screen", "ebook", "printer", "prepress"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        assert_eq!(
+            preset.option_labels.as_deref(),
+            Some(
+                [
+                    "Screen · 72 dpi (smallest)",
+                    "Ebook · 150 dpi (balanced)",
+                    "Printer · 300 dpi (print ready)",
+                    "Prepress · 300 dpi (best images)",
+                ]
+                .map(String::from)
+                .as_slice()
+            )
+        );
+        let help = preset.help.as_deref().expect("the preset needs help text");
+        // The help is the one place that compares the two 300 dpi tiers, which the
+        // labels alone cannot: Prepress is the larger file.
+        assert!(help.contains("300 dpi"), "help names the shared resolution");
+        assert!(help.contains("Prepress"), "help explains prepress");
+        assert!(help.contains("largest file"), "help warns about file size");
     }
 
     /// Metadata is one browser over three backend keys, in every category that has a

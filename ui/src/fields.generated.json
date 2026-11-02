@@ -240,7 +240,16 @@
       }
     ]
   },
-  "documents": {},
+  "documents": {
+    "merge": [
+      {
+        "default": [],
+        "key": "order",
+        "kind": "files",
+        "label": "Order"
+      }
+    ]
+  },
   "epub": {},
   "images": {
     "add-background": [
@@ -948,9 +957,16 @@
     "compress": [
       {
         "default": "ebook",
+        "help": "Presets differ mainly in image downsampling and compression: Screen and Ebook shrink most but soften photos, Printer and Prepress keep 300 dpi, and Prepress preserves the most image detail and usually makes the largest file.",
         "key": "preset",
         "kind": "select",
         "label": "Quality",
+        "option_labels": [
+          "Screen · 72 dpi (smallest)",
+          "Ebook · 150 dpi (balanced)",
+          "Printer · 300 dpi (print ready)",
+          "Prepress · 300 dpi (best images)"
+        ],
         "options": [
           "screen",
           "ebook",

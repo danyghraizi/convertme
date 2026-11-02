@@ -396,6 +396,30 @@ def pointer_actions(m: Marionette, moves) -> None:
     m.cmd("WebDriver:ReleaseActions")
 
 
+def pointer_press_move(m: Marionette, moves) -> None:
+    """Press and move without releasing, so the drag can be measured mid-gesture."""
+    actions = [{"type": "pointerMove", "duration": 0, "x": moves[0][0], "y": moves[0][1],
+                "origin": "viewport"}, {"type": "pointerDown", "button": 0}]
+    for x, y in moves[1:]:
+        actions.append({"type": "pointerMove", "duration": 80, "x": x, "y": y,
+                        "origin": "viewport"})
+    m.cmd(
+        "WebDriver:PerformActions",
+        {"actions": [{"type": "pointer", "id": "mouse",
+                      "parameters": {"pointerType": "mouse"}, "actions": actions}]},
+    )
+
+
+def pointer_release(m: Marionette) -> None:
+    m.cmd(
+        "WebDriver:PerformActions",
+        {"actions": [{"type": "pointer", "id": "mouse",
+                      "parameters": {"pointerType": "mouse"},
+                      "actions": [{"type": "pointerUp", "button": 0}]}]},
+    )
+    m.cmd("WebDriver:ReleaseActions")
+
+
 def surface_points(m: Marionette, selector: str, points) -> list[tuple[int, int]]:
     box = m.js(
         """
@@ -1745,7 +1769,8 @@ def run_category(
             open_category(m, "PDF")
             m.js(
                 "const card = [...document.querySelectorAll('.tool-card')]"
-                ".find((c) => c.innerText.trim().startsWith('Organize'));"
+                ".find((c) => ((c.querySelector('.tool-label') || c).innerText || '')"
+                ".trim() === 'Organize pages');"
                 "if (card) card.click(); return !!card;"
             )
             if m.wait_for("document.querySelector('.page-card')", 6):
@@ -1774,6 +1799,156 @@ def run_category(
                 if not rotated.get("found") or not state.get("rotated"):
                     failures.append(
                         f"pdf/organize: rotating page 1 left {state.get('meta')!r}"
+                    )
+
+                # A dragged card must leave a ghost that follows the pointer, open a
+                # visible landing slot, and say where the drop will insert. The old
+                # native drag image covered the grid and named no position.
+                points = m.js(
+                    """
+                    const cards = [...document.querySelectorAll('.page-card')];
+                    const center = (i) => {
+                      const r = cards[i].getBoundingClientRect();
+                      return [Math.round(r.left + r.width / 2),
+                              Math.round(r.top + r.height / 2)];
+                    };
+                    return { from: center(0), to: [center(3)[0] + 20, center(3)[1]] };
+                    """
+                )
+                pointer_press_move(m, [points["from"], points["to"]])
+                time.sleep(0.4)
+                dragging = m.js(
+                    """
+                    const ghost = document.querySelector('.page-ghost');
+                    const slot = document.querySelector('.page-slot');
+                    const status = document.querySelector('.page-drag-status');
+                    const card = document.querySelector('.page-card');
+                    const g = ghost ? ghost.getBoundingClientRect() : null;
+                    const s = slot ? slot.getBoundingClientRect() : null;
+                    const c = card ? card.getBoundingClientRect() : null;
+                    return {
+                      ghost: !!ghost,
+                      ghostTarget: ghost
+                        ? (ghost.querySelector('.page-ghost-target') || {}).innerText : '',
+                      ghostPage: ghost
+                        ? (ghost.querySelector('.page-ghost-page') || {}).innerText : '',
+                      ghostWidth: g ? Math.round(g.width) : 0,
+                      cardWidth: c ? Math.round(c.width) : 0,
+                      slotCovered: !!(g && s
+                        && s.left + s.width / 2 > g.left && s.left + s.width / 2 < g.right
+                        && s.top + s.height / 2 > g.top && s.top + s.height / 2 < g.bottom),
+                      slot: !!slot,
+                      slotText: slot ? slot.innerText : '',
+                      cards: document.querySelectorAll('.page-card').length,
+                      selected: document.querySelectorAll('.page-card.is-selected').length,
+                      status: status ? status.innerText : '',
+                    };
+                    """
+                )
+                report.append(
+                    {"category": key, "tool": "organize-drag", "dialog": True,
+                     **dragging}
+                )
+                m.screenshot(out / "pdf-organize-dragging.png")
+                pointer_release(m)
+                time.sleep(0.5)
+                dropped = m.js(
+                    """
+                    const cards = [...document.querySelectorAll('.page-card')];
+                    const status = document.querySelector('.page-drag-status');
+                    return {
+                      order: cards.map((card) => (card.querySelector('.page-meta') || {}).innerText || ''),
+                      badges: cards.map((card) => (card.querySelector('.page-badge') || {}).innerText || ''),
+                      selected: (document.querySelector('.page-card.is-selected .page-meta') || {}).innerText || '',
+                      ghost: !!document.querySelector('.page-ghost'),
+                      slot: !!document.querySelector('.page-slot'),
+                      status: status ? status.innerText : '',
+                    };
+                    """
+                )
+                report.append(
+                    {"category": key, "tool": "organize-drop", "dialog": True,
+                     **dropped}
+                )
+                expected_order = ["Page 2", "Page 3", "Page 4", "Page 1", "Page 5"]
+                if not dragging.get("ghost"):
+                    failures.append("pdf/organize: dragging showed no lifted card")
+                if not dragging.get("slot"):
+                    failures.append("pdf/organize: dragging showed no landing slot")
+                if "position" not in (dragging.get("status") or "").lower():
+                    failures.append(
+                        f"pdf/organize: the drag readout names no position ({dragging.get('status')!r})"
+                    )
+                if dragging.get("cards") != 4:
+                    failures.append(
+                        "pdf/organize: the lifted card is still drawn in the grid "
+                        f"({dragging.get('cards')} cards left of 5)"
+                    )
+                if "Page 1" not in (dragging.get("ghostPage") or ""):
+                    failures.append(
+                        f"pdf/organize: the lifted card does not name its page ({dragging.get('ghostPage')!r})"
+                    )
+                if dragging.get("ghostWidth", 0) >= dragging.get("cardWidth", 1) * 0.75:
+                    failures.append(
+                        "pdf/organize: the drag ghost is card-sized "
+                        f"({dragging.get('ghostWidth')} px of {dragging.get('cardWidth')} px)"
+                    )
+                if dragging.get("slotCovered"):
+                    failures.append("pdf/organize: the drag ghost covers the landing slot")
+                if [line.split(" ·")[0] for line in dropped.get("order", [])] != expected_order:
+                    failures.append(
+                        f"pdf/organize: the drop inserted in the wrong place {dropped.get('order')!r}"
+                    )
+                elif dropped.get("badges", [])[3] != "4":
+                    failures.append(
+                        f"pdf/organize: page 1 landed with badge {dropped.get('badges', [None])[3]!r}"
+                    )
+                if "Page 1" not in (dropped.get("selected") or ""):
+                    failures.append(
+                        f"pdf/organize: the dropped card is not selected ({dropped.get('selected')!r})"
+                    )
+                if dropped.get("ghost") or dropped.get("slot"):
+                    failures.append("pdf/organize: the drag overlay survived the drop")
+
+                # The hint promises the arrow keys; the selected card must move one slot
+                # and keep selection.
+                pressed = m.js(
+                    """
+                    const card = document.querySelector('.page-card.is-selected');
+                    if (!card) return { found: false };
+                    card.dispatchEvent(new KeyboardEvent('keydown', {
+                      key: 'ArrowRight', bubbles: true, cancelable: true,
+                    }));
+                    return { found: true };
+                    """
+                )
+                time.sleep(0.4)
+                keyed = m.js(
+                    """
+                    const cards = [...document.querySelectorAll('.page-card')];
+                    const selected = document.querySelector('.page-card.is-selected');
+                    return {
+                      order: cards.map((card) => (card.querySelector('.page-meta') || {}).innerText || ''),
+                      badge: selected
+                        ? (selected.querySelector('.page-badge') || {}).innerText : '',
+                    };
+                    """
+                )
+                report.append(
+                    {"category": key, "tool": "organize-keys", "dialog": True,
+                     "order": keyed.get("order"), "badge": keyed.get("badge")}
+                )
+                if not pressed.get("found"):
+                    failures.append("pdf/organize: no selected card for the arrow keys")
+                elif [line.split(" ·")[0] for line in keyed.get("order", [])] != [
+                    "Page 2", "Page 3", "Page 4", "Page 5", "Page 1"
+                ]:
+                    failures.append(
+                        f"pdf/organize: ArrowRight reordered to {keyed.get('order')!r}"
+                    )
+                elif keyed.get("badge") != "5":
+                    failures.append(
+                        f"pdf/organize: the moved card's badge is {keyed.get('badge')!r}, not 5"
                     )
                 close_dialog(m)
 
