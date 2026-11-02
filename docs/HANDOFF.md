@@ -8,21 +8,23 @@ This file is the state of the product and the protocol for changing it. Read it 
 then `AGENTS.md` (rules) and `docs/LESSONS.md` (the failures that produced the rules;
 42–56 are the alignment session, 57–63 the first bug round, 64–70 the design/media
 regression, 71–82 the image-tools feedback round, 83–101 the interaction, video and
-audio rounds, 102–118 the playback, PDF, PDF→DOCX, export-parity and EPUB/tool-start rounds).
+audio rounds, 102–120 the playback, PDF, PDF→DOCX, export-parity, EPUB/tool-start and
+native-export rounds).
 
 ## Start here (new session)
 
 | | |
 |---|---|
 | Branch | `master` |
-| Last code commit | `1f25fb7` — "tools: previews, playback and outputs follow the user" (Rounds 5–8) |
-| Previous code commit | `3e8bbc8` — "the image tools match their own previews" (Round 4) |
+| Last code commit | `83e6996` — "tools: EPUB hierarchy, mixed merge and native PDF/ODS [skip ci]" (Rounds 9–12) |
+| Previous code commit | `1f25fb7` — "tools: previews, playback and outputs follow the user" (Rounds 5–8) |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
 | Proof | `artifacts/round9/audit-pdf` (28 CLI PDF cases), `artifacts/round9/app-pdf` (11 real-window PDF scenarios), `artifacts/round9/app-documents` (Documents merge), `artifacts/round9/ui-final` (52 mock dialogs), `artifacts/round9/ui-documents` (Documents layout), `artifacts/round9/audit-ods` (native ODS), `artifacts/round9/app-doc-pdf` and `app-sheet-pdf` (native PDF), `artifacts/round9/app-errors` (visible failure), `artifacts/round9/app-split-final` (split folder), `artifacts/round9/app-folders` (folder artifacts), `artifacts/round9/ui-pdf` (PDF layout + drag probes), `artifacts/round9/app-drag`, `app-split`, `app-pages`, `app-frames`, `app-vsplit`, `app-compress`, `app-dialogs-pdf`, `app-docx` (real window), `artifacts/round9/audit-docx` (CLI DOCX); older: `artifacts/round8/ui-full`, `artifacts/round8/app-full`, `artifacts/round8/targeted`, `artifacts/round7/*`, `artifacts/round6/*`, `artifacts/round5/*`, `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
 
-Rounds 9–12 are **uncommitted** on `master`. The previous commits are pushed to
-`origin/master`; CI runs on push and PRs, and those commits carry `[skip ci]` (the local
-preflight + full `ui-shots`/`app-e2e` runs are the proof above).
+Rounds 9–12 are committed and pushed as `83e6996` on `master`. The commit carries
+`[skip ci]`, so no GitHub Actions run was created; the local preflight + full
+`ui-shots`/`app-e2e` runs are the acceptance proof above. The previous commits are also
+pushed, and they carry `[skip ci]` for the same reason.
 
 First three commands, in this order:
 
@@ -384,6 +386,7 @@ the stale Markdown test that still gated on Pandoc instead of the sidecar, now f
 | UI layout | `ui-shots --category documents`: 1 dialog of 1 tool, no layout failures |
 | `preflight.sh` | **ok**; identity gate, fmt, UI typecheck/tests/build, generated fields, clippy `-D warnings`, 132 engine + 28 GUI + core/workspace tests, clean-checkout build, deb **116.56 MiB** |
 | Full `app-e2e.py` | not run; the targeted scenarios above cover every changed surface |
+| Published | commit `83e6996` pushed to `origin/master`; `[skip ci]` prevented a GitHub Actions run |
 
 ## Numbers from the previous final run (Round 3)
 

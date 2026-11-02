@@ -1789,3 +1789,37 @@ exact DOCX geometry from this path.
 `matrix-ods-to-pdf` and `matrix-html-to-pdf` pass without LibreOffice; the PDF text
 contains every table cell on one readable line. Spreadsheet ODS is written by
 `spreadsheet-ods` (`matrix-csv-to-ods`, `matrix-xlsx-to-ods` pass).
+
+## 119. A visible alert can be absent from the accessibility tree
+
+**Trap.** The red `role="alert"` banner was on screen with the engine's message, but
+WebKitGTK's AT-SPI tree exposed the alert as a role without its child text. A harness
+that asserted the error through accessible text failed even though the surface was
+correct, and the screenshot alone could not tell whether the banner was an alert or a
+decorative strip.
+
+**Rule.** Give the error two measurable surfaces: a structural one (the alert container,
+its placement above the workspace, its dismiss control) and a textual one (the same
+failure in the activity/status detail). Test both. Do not make accessible child text the
+only gate for a WebKit surface, and do not weaken the test to "some text mentions
+failed" when the job detail already carries the engine string.
+
+**Evidence.** `negative-corrupt` saves the red banner and the `engine_failed: magick: …
+bad header` detail together; the check passes without reading alert children through
+AT-SPI.
+
+## 120. `[skip ci]` is a promise backed by a named local run
+
+**Trap.** A commit can be pushed with `[skip ci]` precisely because the local preflight
+and harness are the acceptance run. Without recording which run backed the bypass, the
+next session cannot tell a verified push from a hopeful one. Rewriting a pushed commit to
+add the marker is worse: it changes history and still does not create a CI result.
+
+**Rule.** Use `[skip ci]` only after `preflight.sh` and the scenario covering every
+changed surface have passed, put the commit id and the commands/results in
+`docs/HANDOFF.md`, and confirm no new Actions run was created. Never present the bypass
+as equivalent to a green CI run; it is a deliberate local gate.
+
+**Evidence.** `83e6996` carries the marker, was pushed to `origin/master`, and `gh run
+list --branch master` still showed the previous run; the handoff records preflight,
+`ui-shots` (52/59 dialogs) and the targeted `app-e2e`/`quality-audit` results.
