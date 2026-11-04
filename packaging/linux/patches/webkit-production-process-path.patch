@@ -1,0 +1,32 @@
+--- a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
++++ b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
+@@ -45,7 +45,6 @@
+ 
+ static String findWebKitProcess(const char* processName)
+ {
+-#if ENABLE(DEVELOPER_MODE)
+     static const char* execDirectory = g_getenv("WEBKIT_EXEC_PATH");
+     if (execDirectory) {
+         String processPath = FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(execDirectory), StringView::fromLatin1(processName));
+@@ -53,6 +52,7 @@
+             return processPath;
+     }
+ 
++#if ENABLE(DEVELOPER_MODE)
+     static String executablePath = getExecutablePath();
+     if (!executablePath.isNull()) {
+         String processPath = FileSystem::pathByAppendingComponent(executablePath, StringView::fromLatin1(processName));
+--- a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
+@@ -967,8 +967,10 @@
+         sandboxArgs.append("--unshare-ipc");
+     }
+ 
+-#if ENABLE(DEVELOPER_MODE)
+     const char* execDirectory = g_getenv("WEBKIT_EXEC_PATH");
++    bindIfExists(sandboxArgs, execDirectory, BindFlags::ReadOnly);
++
++#if ENABLE(DEVELOPER_MODE)
+     if (execDirectory) {
+         String parentDir = FileSystem::parentPath(FileSystem::stringFromFileSystemRepresentation(execDirectory));
+         bindIfExists(sandboxArgs, parentDir.utf8().data());

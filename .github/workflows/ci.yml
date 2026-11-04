@@ -67,25 +67,78 @@ jobs:
       - name: test
         run: cargo test --workspace --lib --tests
 
-  rust-windows:
-    # Compilation only: the behaviour tests need the bundled tools, which are
-    # vendored on Linux. A real Windows run is a Windows host with them in place.
-    name: rust (windows, check)
+  windows-x64:
+    name: Windows x64 build, tests and package smoke
     needs: gate
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: front end
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - run: npm ci --prefix ui
+      - run: npm --prefix ui run build
+      - run: cargo test --workspace --lib --tests
+      - name: Bundle
+        env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: ./scripts/bundle-windows.ps1 -Target x86_64-pc-windows-msvc
+      - run: cargo test --workspace --lib --tests
+      - name: Portable CLI smoke
+        shell: pwsh
         run: |
-          npm ci --prefix ui
-          npm --prefix ui run build
-      - run: cargo check --workspace --all-targets
+          Expand-Archive artifacts/windows/x86_64-pc-windows-msvc/*-portable.zip "$env:RUNNER_TEMP/portable"
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-tools
+          path: vendor/windows/x86_64-pc-windows-msvc/tools
+          if-no-files-found: error
+
+  windows-arm64:
+    name: Windows ARM64 build, tests and package smoke
+    needs: windows-x64
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-tools
+          path: helper-payload
+      - run: npm ci --prefix ui
+      - run: npm --prefix ui run build
+      - run: cargo test --workspace --lib --tests
+      - name: Bundle using x64 helpers
+        env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: ./scripts/bundle-windows.ps1 -Target aarch64-pc-windows-msvc -HelperPayload "$pwd/helper-payload"
+      - run: cargo test --workspace --lib --tests
+      - name: Portable CLI smoke
+        shell: pwsh
+        run: |
+          Expand-Archive artifacts/windows/aarch64-pc-windows-msvc/*-portable.zip "$env:RUNNER_TEMP/portable"
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   ui:
     name: ui
@@ -135,25 +188,17 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
             libxdo-dev libssl-dev pkg-config imagemagick ffmpeg pandoc 7zip ghostscript \
             poppler-utils qpdf tesseract-ocr rpm
-      - name: vendor the bundled tools
-        run: cargo xtask vendor
-      - name: cache the PDF sidecar
-        id: sidecar-cache
+      - name: cache locked Linux tool archives
         uses: actions/cache@v4
         with:
-          path: sidecars/pdf/dist/convertme-pdf
-          key: sidecar-${{ runner.os }}-${{ hashFiles('sidecars/pdf/**') }}
-      - name: build the PDF sidecar
-        if: steps.sidecar-cache.outputs.cache-hit != 'true'
-        run: ./sidecars/pdf/build.sh
-      - name: copy the sidecar into vendor/
-        run: |
-          cp sidecars/pdf/dist/convertme-pdf "vendor/bin/convertme-pdf-$(rustc --print host-tuple)"
+          path: vendor/cache/linux
+          key: linux-tools-${{ hashFiles('packaging/linux/tools.lock.json') }}
+      - name: capture locked Linux tool archives
+        run: python3 scripts/vendor-linux.py --capture-tools
       - name: bundle
         env:
-          # The bundler runs the identity gate as its pre-build step.
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: ./scripts/bundle.sh deb,appimage
+        run: ./scripts/bundle.sh deb
       - name: scan the artifacts
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
@@ -161,13 +206,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bundles
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/appimage/*.AppImage
+          path: target/release/bundle/deb/*.deb
       - uses: actions/upload-artifact@v4
         with:
           name: release-binary
           path: target/release/convertme
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tools
+          path: vendor/linux/x86_64-unknown-linux-gnu/tools
 
   perf:
     # The budgets are requirements, so a regression fails the build.
@@ -193,15 +240,19 @@ jobs:
           name: release-binary
           path: target/release
       - run: chmod +x target/release/convertme
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          prefix-key: perf
-      - run: cargo xtask vendor
+          name: linux-tools
+          path: vendor/linux/x86_64-unknown-linux-gnu/tools
+      - name: prepare packaged probe resources
+        run: |
+          mkdir -p target/release/tools
+          cp -a vendor/linux/x86_64-unknown-linux-gnu/tools/. target/release/tools/
       # The budget the product promises (600 ms) is measured on a desktop session.
       # This container has no GPU and starts WebKit in seconds, so the gate here
       # catches regressions against the container baseline instead of pretending.
       # Each start sample is a fresh process, and this container needs seconds to
-      # bring WebKit up; eight launches tell a regression from noise just as well.
+      # eight launches tell a regression from noise just as well.
       - name: cold start
         run: xvfb-run -a cargo xtask perf start --runs 8 --budget 8000
       - name: wheel

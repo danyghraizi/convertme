@@ -1,16 +1,13 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
-# The job publishes its bundles to the release for the pushed tag.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   gate:
-    name: identity gate
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -21,18 +18,10 @@ jobs:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
         run: python scripts/debrand.py --src
 
-  build:
+  linux:
     needs: gate
-    strategy:
-      fail-fast: false
-      # Windows bundles are produced on a Windows host with the tools vendored for
-      # that target; `cargo xtask vendor` copies from the system it runs on, so it
-      # cannot fetch them here yet. CI still compiles and checks the Windows build.
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            bundles: deb,rpm,appimage
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,91 +31,113 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: system dependencies (linux)
-        if: runner.os == 'Linux'
+      - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
-            libxdo-dev libssl-dev pkg-config imagemagick ffmpeg pandoc ghostscript \
-            poppler-utils qpdf tesseract-ocr 7zip rpm
-
-      - name: vendor the bundled tools
-        run: cargo xtask vendor
-
-      - name: build the PDF sidecar
-        shell: bash
-        run: ./sidecars/pdf/build.sh
-
-      - name: copy the sidecar next to the other bundled tools
-        shell: bash
-        run: cp sidecars/pdf/dist/convertme-pdf* "vendor/bin/convertme-pdf-$(rustc --print host-tuple)$( [[ ${{ runner.os }} == Windows ]] && echo .exe )"
-
-      - name: build and bundle
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # `beforeBuildCommand` runs the identity gate before the front end.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev libssl-dev pkg-config binutils dpkg-dev imagemagick ffmpeg pandoc ghostscript libgs-common fonts-urw-base35 poppler-utils poppler-data qpdf tesseract-ocr tesseract-ocr-eng 7zip rpm
+      - run: npm --prefix ui ci
+      - run: npm --prefix ui run build
+      - run: python3 scripts/vendor-linux.py --capture-tools
+      - env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: |
-          npm --prefix ui ci
-          ./scripts/bundle.sh ${{ matrix.bundles }}
-
-      - name: scan the artifacts
-        env:
-          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: python scripts/debrand.py --all
-
-      # A tag push alone creates no GitHub release, and the bundles used to sit in
-      # the Actions tab only. Smoke-test what will be downloaded, then attach it.
-      - name: smoke-test the packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          someone=0
-          for deb in target/release/bundle/deb/*.deb; do
-            [ -e "$deb" ] || continue
-            someone=1
-            dpkg-deb -f "$deb" Version | grep -Fx "$version"
-            rm -rf /tmp/deb-smoke && dpkg-deb -x "$deb" /tmp/deb-smoke
-            /tmp/deb-smoke/usr/bin/convertme --version | grep -F "$version"
-          done
-          for image in target/release/bundle/appimage/*.AppImage; do
-            [ -e "$image" ] || continue
-            someone=1
-            rm -rf /tmp/appimage-smoke && mkdir -p /tmp/appimage-smoke
-            (cd /tmp/appimage-smoke && "$OLDPWD/$image" --appimage-extract >/dev/null)
-            /tmp/appimage-smoke/squashfs-root/AppRun --version | grep -F "$version"
-          done
-          [ "$someone" = 1 ] || { echo "no package was produced" >&2; exit 1; }
-
-      - name: publish to the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "ConvertMe ${tag#v}" --generate-notes
-          mapfile -t files < <(find target/release/bundle -type f \
-            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
-               -o -name '*.exe' -o -name '*.zip' -o -name '*.sig' \
-               -o -name 'latest.json' \) | sort)
-          [ "${#files[@]}" -gt 0 ] || { echo "no bundles to publish" >&2; exit 1; }
-          gh release upload "$tag" "${files[@]}" --clobber
-
+        run: ./scripts/bundle.sh deb,rpm
       - uses: actions/upload-artifact@v4
         with:
-          name: bundles-${{ matrix.os }}
+          name: release-linux
+          if-no-files-found: error
           path: |
             target/release/bundle/**/*.deb
             target/release/bundle/**/*.rpm
-            target/release/bundle/**/*.AppImage
-            target/release/bundle/**/*.exe
-            target/release/bundle/**/*.zip
-            target/release/bundle/**/*.sig
-            target/release/bundle/**/latest.json
+
+  windows-x64:
+    needs: gate
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - run: npm --prefix ui ci
+      - run: npm --prefix ui run build
+      - run: cargo test --workspace --lib --tests
+      - env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: ./scripts/bundle-windows.ps1 -Target x86_64-pc-windows-msvc
+      - run: cargo test --workspace --lib --tests
+      - name: Smoke portable CLI
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath 'artifacts/windows/x86_64-pc-windows-msvc' -Filter 'ConvertMe-*-windows-x64-portable.zip' -File)
+          if ($archives.Count -ne 1) { throw "Expected exactly one x64 portable ZIP, found $($archives.Count)" }
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath "$env:RUNNER_TEMP/portable"
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke portable GUI image conversion (partial desktop coverage)
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -File scripts/app-e2e-windows.ps1 -Binary "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" -Fixtures "$env:GITHUB_WORKSPACE/fixtures" -Out "$env:RUNNER_TEMP/gui-smoke" -Only convert-image
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: artifacts/windows/x86_64-pc-windows-msvc
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-x64-tools
+          path: vendor/windows/x86_64-pc-windows-msvc/tools
+          if-no-files-found: error
+
+  windows-arm64:
+    needs: windows-x64
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-x64-tools
+          path: helper-payload
+      - run: npm --prefix ui ci
+      - run: npm --prefix ui run build
+      - run: cargo test --workspace --lib --tests
+      - env:
+          DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
+        run: ./scripts/bundle-windows.ps1 -Target aarch64-pc-windows-msvc -HelperPayload "$pwd/helper-payload"
+      - run: cargo test --workspace --lib --tests
+      - name: Smoke portable CLI
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath 'artifacts/windows/aarch64-pc-windows-msvc' -Filter 'ConvertMe-*-windows-arm64-portable.zip' -File)
+          if ($archives.Count -ne 1) { throw "Expected exactly one ARM64 portable ZIP, found $($archives.Count)" }
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath "$env:RUNNER_TEMP/portable"
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke portable GUI image conversion (partial desktop coverage)
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -File scripts/app-e2e-windows.ps1 -Binary "$env:RUNNER_TEMP/portable/ConvertMe/convertme.exe" -Fixtures "$env:GITHUB_WORKSPACE/fixtures" -Out "$env:RUNNER_TEMP/gui-smoke" -Only convert-image
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-arm64
+          path: artifacts/windows/aarch64-pc-windows-msvc
+          if-no-files-found: error

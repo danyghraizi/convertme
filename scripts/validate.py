@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html as html_module
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,18 +23,109 @@ import unicodedata
 import zipfile
 from pathlib import Path
 
+# Validator executables are resolved separately from the application environment.
+_tools_root: Path | None = None
+_executables: dict[str, str] = {}
+_library_dirs: dict[str, list[str]] = {}
+_strict_tools = False
+
+
+def configure_tools(binary: Path, strict: bool = False) -> None:
+    global _tools_root, _executables, _library_dirs, _strict_tools
+    executable_dir = binary.resolve().parent
+    roots = [executable_dir / "tools", executable_dir / "../lib/app.convertme/tools"]
+    roots = [root.resolve() for root in roots if (root / "manifest.json").is_file()]
+    if len(set(roots)) > 1:
+        raise ValueError(f"ambiguous tools manifests for {binary}")
+    _tools_root = roots[0] if roots else executable_dir / "tools"
+    _executables = {}
+    _library_dirs = {}
+    _strict_tools = strict
+    manifest = _tools_root / "manifest.json"
+    if manifest.is_file():
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if data.get("schema_version") != 1 or not isinstance(data.get("executables"), dict):
+            raise ValueError(f"invalid tools manifest: {manifest}")
+        _executables = data["executables"]
+        if os.name != "nt":
+            library_dirs = data.get("library_dirs")
+            if not isinstance(library_dirs, dict):
+                raise ValueError(f"missing Linux library directories: {manifest}")
+            root = _tools_root.resolve()
+            for key, directories in library_dirs.items():
+                if key not in _executables or not isinstance(directories, list):
+                    raise ValueError(f"invalid library directory entry: {key}")
+                resolved = []
+                for directory in directories:
+                    if not isinstance(directory, str) or not directory or Path(directory).is_absolute():
+                        raise ValueError(f"invalid library directory: {directory!r}")
+                    path = (root / directory).resolve()
+                    if not path.is_relative_to(root) or not path.is_dir():
+                        raise ValueError(f"escaping or missing library directory: {directory}")
+                    resolved.append(str(path))
+                _library_dirs[key] = resolved
+    elif _strict_tools:
+        raise ValueError(f"missing tools manifest: {manifest}")
+
+
+def tool_path(tool: str) -> str | None:
+    key = "7zz" if tool == "7z" else tool
+    relative = _executables.get(key)
+    if isinstance(relative, str) and _tools_root is not None:
+        root = _tools_root.resolve()
+        path = (root / relative).resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return str(path)
+        return None
+    return None if _strict_tools else shutil.which(tool)
+
+
+def validator_dependencies() -> dict[str, str | None]:
+    return {key: tool_path(key) for key in
+            ("magick", "ffmpeg", "ffprobe", "pdfinfo", "pdftotext", "qpdf", "7z")}
+
+
+def run_tool(argv: list[str], timeout: float = 60.0) -> subprocess.CompletedProcess | None:
+    return _run(argv, timeout)
+
+
 
 def _run(argv: list[str], timeout: float = 60.0) -> subprocess.CompletedProcess | None:
+    executable = tool_path(argv[0])
+    if executable is None:
+        return None
+    env = None
+    key = "7zz" if argv[0] == "7z" else argv[0]
+    if os.name != "nt" and key in _executables:
+        env = os.environ.copy()
+        env.pop("LD_LIBRARY_PATH", None)
+        env.pop("LD_PRELOAD", None)
+        if _library_dirs.get(key):
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(_library_dirs[key])
+        if _tools_root is not None:
+            share = _tools_root / "runtime-data/usr/share"
+            if key == "tesseract":
+                env.pop("TESSDATA_PREFIX", None)
+                base = share / "tesseract-ocr"
+                data = [p / "tessdata" for p in base.iterdir()
+                        if (p / "tessdata/eng.traineddata").is_file()] if base.is_dir() else []
+                if len(data) == 1:
+                    env["TESSDATA_PREFIX"] = str(data[0])
+            elif key in ("pdftoppm", "pdftotext", "pdfinfo"):
+                env.pop("POPPLER_DATADIR", None)
+                if (share / "poppler").is_dir():
+                    env["POPPLER_DATADIR"] = str(share / "poppler")
     try:
         return subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False
+            [executable, *argv[1:]], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout, check=False, env=env
         )
     except (OSError, subprocess.SubprocessError):
         return None
 
 
 def _have(tool: str) -> bool:
-    return shutil.which(tool) is not None
+    return tool_path(tool) is not None
 
 
 # ------------------------------------------------------------------- images

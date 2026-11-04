@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "cargo_about": {
+    "version": "0.9.3",
+    "template": "packaging/cargo-about.hbs",
+    "config": "packaging/cargo-about.toml",
+    "config_sha256": "a952ddadc22c0cac6007e4f8cb5e0f7df3e79b8991b7b51821541005f9fb38ce",
+    "template_sha256": "9d95ff51993544145a3a9fb61adfd5ecf76b47a7c6bb0b07478c40c7b4b35042",
+    "binaries": {
+      "windows-x86_64": {"binary": "cargo-about/windows-x86_64/cargo-about.exe", "sha256": "1d865e2cd72823b466a64831462046e6c9f7b6fb5d2984abfc186ccba1df9d89", "asset_id": 677833098, "archive_sha256": "9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02"},
+      "windows-arm64": {"binary": "cargo-about/windows-arm64/cargo-about.exe", "sha256": "445f03a8487ace635f88e059e2ea9ce44ded6f3a1665b884bfa9276a43a7d321", "asset_id": 677833880, "archive_sha256": "f05a79c38eeffa45098091f6325682ef0801a1078b4e706e024585fa2bfb641b"},
+      "linux-x86_64": {"binary": "cargo-about/linux-x86_64/cargo-about", "sha256": "e902609296601f873c08ca912acea0c37b375128ea3940eb307a76080afb8211", "asset_id": 677828105, "archive_sha256": "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4"}
+    }
+  },
+  "components": {
+    "ghostscript": {
+      "version": "10.08.0",
+      "source_identity": "ArtifexSoftware/ghostpdl-downloads:gs10080",
+      "duplicate_members": {
+        "path": "lib/gssetgs.bat",
+        "count": 2,
+        "selected_variant": "gssetgs64.bat",
+        "variants": [
+          {"source": "lib/gssetgs.bat", "size": 552, "sha256": "ca207628a1dd76951dd7b750ec733b2be09a463bc761e9b17e4cd7e0e9c54356"},
+          {"source": "lib/gssetgs64.bat", "size": 380, "sha256": "babee67366808cf4f4c5724783c3975f3c07db62e0f4754c144aeb8e8d0ecd0b"}
+        ]
+      },
+      "sources": [
+        {
+          "url": "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/assets/550319188",
+          "release_tag": "gs10080",
+          "asset_id": 550319188,
+          "path": "ghostscript/ghostscript-10.08.0.tar.gz",
+          "sha256": "caf199e3f233f1290b27d0972d636f66c303355f2353309b7bfddf1edda06b3d",
+          "size": 90851112
+        }
+      ]
+    }
+  }
+}

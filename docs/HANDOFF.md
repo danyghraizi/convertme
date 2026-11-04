@@ -539,3 +539,25 @@ Measured before this round; no hot path changed except the audio preview (now a
   clicks inside it never reach the webview (`tool-pdf-organize-drag` starts on card 3 for
   this reason). Check `xdotool getmouselocation` + `getwindowname` when a synthetic click
   does nothing.
+
+## Release readiness — Linux and Windows
+
+Cause → the release inputs and full native acceptance matrix are not complete. Fix → capture only publisher-checked, hash-locked inputs; keep package replay and candidate verification fail-closed. Measurement → the approved Linux capture stopped with its explicit incomplete-input report, and no candidate package set exists.
+
+| Captured item | Measurement |
+|---|---|
+| Acceptance fixtures | `artifacts/acceptance/fixtures.zip`, 40,586,226 bytes; archive SHA-256 `e2ecd25dca63d13198a1bf20da6419ac7b221d6843e456e17e3ffd70b8a75219`; validated fixture-manifest SHA-256 `8bc6a0603441fcbcaef23cada0eafb4d15ed84f9f0ce840ba73b2eec23eea259` |
+| Rootless Docker | Docker 28.5.2 and rootless extras captured; SHA-256 values are in `packaging/linux/build.lock.json` |
+| Linux Python sidecar wheelhouse | 24 wheels captured and accepted by `prepare-linux-pdf-inputs.py --verify` |
+| AppImage deploy tools | `linuxdeploy`, `appimagetool`, and the GTK plugin captured and hash-checked against the release pins |
+| Rootless daemon smoke | `docker version` reported client/server 28.5.2, rootlesskit 2.3.4, VPNKit networking; the private daemon directory and process group were removed on exit |
+| Source identity transport | `release-inventory.py source-identity` and the offline identity-file round trip produced byte-identical JSON |
+| Bundled-tool version probe | The real ImageMagick executable ran through a temporary manifest-based tools directory and reported `ImageMagick 7.1.2-35` |
+
+The Linux release remains blocked on the signed Ubuntu 24.04 package/source snapshot, exact binary and source closure, pinned OCI image, complete retained builder image, publisher-verified Rust 1.99 and Node 22 inputs, Cargo/npm offline caches, and full source materials. The capture driver deliberately exits instead of synthesizing these records. The current capture includes Docker archives, Python wheels, qpdf/ImageMagick, and AppImage tooling only.
+
+Docker 28.5.2 rejects the approved `DOCKERD_ROOTLESS_ROOTLESSKIT_NET=host` setting in its own `dockerd-rootless.sh`; the successful connected capture smoke therefore uses bundled VPNKit. Replay containers remain `--network=none`. This is recorded in the Linux build lock; it does not permit connected replay.
+
+Native Windows runtime Authenticode verification, Poppler/FFmpeg capture, MSVC builds, and Windows UIA are not executable on this CachyOS host. The Windows UIA harness is configured to mark the five unimplemented full-matrix rows (`instance-forward`, `crop-placement`, `annotation-pixels`, `video-trim`, `audio-trim`) as blocked rather than passed. Annotation solid-fill acceptance also requires a product behavior not present in the current outline-only editor.
+
+No Linux or Windows package, inventory, candidate, native acceptance report, workflow dispatch, publish, or tag was produced. The release workflow is now manual-only and has no publisher job; its build jobs still require a separate integration pass for the incomplete payload/material inputs and native acceptance matrix.

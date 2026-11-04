@@ -82,52 +82,80 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use std::process::Command;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows::Win32::System::Registry::*;
+    use windows::core::{PCWSTR, w};
 
-    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-
+    struct Key(HKEY);
+    impl Drop for Key {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = RegCloseKey(self.0);
+            }
+        }
+    }
+    fn open(access: REG_SAM_FLAGS) -> Result<Key, windows::Win32::Foundation::WIN32_ERROR> {
+        let mut key = HKEY::default();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+                None,
+                access,
+                &mut key,
+            )
+        };
+        if status.0 == 0 {
+            Ok(Key(key))
+        } else {
+            Err(status)
+        }
+    }
+    fn name() -> Vec<u16> {
+        std::ffi::OsStr::new(identity::APP_NAME)
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
+    }
     pub fn install() -> Result<(), String> {
-        let value = format!("\"{}\" --background", executable().display());
-        let status = Command::new("reg")
-            .args([
-                "add",
-                KEY,
-                "/v",
-                identity::APP_NAME,
-                "/t",
-                "REG_SZ",
-                "/d",
-                &value,
-                "/f",
-            ])
-            .status()
-            .map_err(|e| format!("reg add: {e}"))?;
-        if status.success() {
+        let key = open(KEY_SET_VALUE).map_err(|e| format!("open Run key: {e:?}"))?;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mut value: Vec<u16> = std::ffi::OsStr::new("\"").encode_wide().collect();
+        value.extend(exe.as_os_str().encode_wide());
+        value.extend(std::ffi::OsStr::new("\" --background").encode_wide());
+        value.push(0);
+        let bytes =
+            unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), value.len() * 2) };
+        let name = name();
+        let status =
+            unsafe { RegSetValueExW(key.0, PCWSTR(name.as_ptr()), None, REG_SZ, Some(bytes)) };
+        if status.0 == 0 {
             Ok(())
         } else {
-            Err(format!("reg add exited with {status}"))
+            Err(format!("set Run value: {status:?}"))
         }
     }
-
     pub fn remove() -> Result<(), String> {
-        let status = Command::new("reg")
-            .args(["delete", KEY, "/v", identity::APP_NAME, "/f"])
-            .status()
-            .map_err(|e| format!("reg delete: {e}"))?;
-        // A missing value is not an error for the caller.
-        if status.success() || status.code() == Some(1) {
+        let key = match open(KEY_SET_VALUE) {
+            Ok(key) => key,
+            Err(e) if e == ERROR_FILE_NOT_FOUND => return Ok(()),
+            Err(e) => return Err(format!("open Run key: {e:?}")),
+        };
+        let name = name();
+        let status = unsafe { RegDeleteValueW(key.0, PCWSTR(name.as_ptr())) };
+        if status.0 == 0 || status == ERROR_FILE_NOT_FOUND {
             Ok(())
         } else {
-            Err(format!("reg delete exited with {status}"))
+            Err(format!("delete Run value: {status:?}"))
         }
     }
-
     pub fn present() -> bool {
-        Command::new("reg")
-            .args(["query", KEY, "/v", identity::APP_NAME])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+        let Ok(key) = open(KEY_QUERY_VALUE) else {
+            return false;
+        };
+        let name = name();
+        unsafe { RegQueryValueExW(key.0, PCWSTR(name.as_ptr()), None, None, None, None).0 == 0 }
     }
 }
 

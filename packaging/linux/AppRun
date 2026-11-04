@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -eo pipefail
+APPDIR="$(dirname "$(readlink -f "$0")")"
+export APPDIR
+# The deploy hook configures GTK's relocated modules and schemas.
+for hook in "$APPDIR"/apprun-hooks/*.sh; do
+    [ -f "$hook" ] || continue
+    # shellcheck source=/dev/null
+    . "$hook"
+done
+export LD_LIBRARY_PATH="$APPDIR/usr/lib/convertme/gui:$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export WEBKIT_EXEC_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1"
+export WEBKIT_INJECTED_BUNDLE_PATH="$WEBKIT_EXEC_PATH/injected-bundle"
+exec "$APPDIR/usr/bin/convertme" "$@"

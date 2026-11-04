@@ -950,6 +950,7 @@ dependencies = [
  "spreadsheet-ods",
  "tempfile",
  "walkdir",
+ "windows",
 ]
 
 [[package]]

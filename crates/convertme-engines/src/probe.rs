@@ -21,45 +21,163 @@ pub const FEATURE_OCR_ENG: &str = "lang:eng";
 
 #[derive(Debug, Clone, Default)]
 pub struct ProbeOptions {
-    /// Directory searched before `PATH` (bundled sidecars live here).
+    /// Tools root (package payload or explicit `CONVERTME_TOOLS_DIR` override).
     pub tools_dir: Option<PathBuf>,
     /// Extra directory searched before the bundled one.
     pub extra_dir: Option<PathBuf>,
     /// Cap on concurrent `--version` calls.
     pub concurrency: usize,
+    manifest: Option<std::collections::BTreeMap<String, PathBuf>>,
+    manifest_error: Option<String>,
+    require_manifest: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct ToolsManifest {
+    schema_version: u32,
+    helper_arch: String,
+    executables: std::collections::BTreeMap<String, PathBuf>,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    library_dirs: std::collections::BTreeMap<String, Vec<PathBuf>>,
 }
 
 impl ProbeOptions {
     pub fn from_env() -> Self {
-        let tools_dir = std::env::var_os(identity::ENV_TOOLS_DIR)
-            .map(PathBuf::from)
-            .or_else(default_tools_dir);
+        let packaged = cfg!(all(windows, not(debug_assertions)))
+            || (cfg!(target_os = "linux") && option_env!("CONVERTME_PACKAGE_BUILD") == Some("1"));
+        let override_dir = std::env::var_os(identity::ENV_TOOLS_DIR).map(PathBuf::from);
+        #[cfg(target_os = "linux")]
+        let discovery = if override_dir.is_some() { Ok(None) } else { discover_linux_tools() };
+        #[cfg(not(target_os = "linux"))]
+        let discovery: Result<Option<PathBuf>, String> = Ok(default_tools_dir());
+        let (discovered, discovery_error) = match discovery {
+            Ok(dir) => (dir, None),
+            Err(error) => (None, Some(error)),
+        };
+        let tools_dir = override_dir.or(discovered);
+        let (manifest, manifest_error) = tools_dir.as_deref()
+            .map(load_tools_manifest).unwrap_or((None, discovery_error));
+        let manifest_error = if packaged && tools_dir.is_none() {
+            Some("the packaged tools directory is missing".to_string())
+        } else if packaged && manifest.is_none() {
+            Some(manifest_error.unwrap_or_else(|| "the packaged tools manifest is missing".into()))
+        } else {
+            manifest_error
+        };
+        let require_manifest = packaged || tools_dir.is_some() || manifest_error.is_some();
+        let extra_dir = None;
         Self {
             tools_dir,
-            extra_dir: None,
+            extra_dir,
             concurrency: 4,
+            manifest,
+            manifest_error,
+            require_manifest,
         }
     }
 }
 
-/// `<exe dir>/vendor/bin`, which is how the bundled sidecars are laid out next to
-/// the binary on both platforms.
+fn load_tools_manifest(
+    tools_dir: &Path,
+) -> (
+    Option<std::collections::BTreeMap<String, PathBuf>>,
+    Option<String>,
+) {
+    let path = tools_dir.join("manifest.json");
+    let result = (|| {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("reading packaged tools manifest {}: {e}", path.display()))?;
+        let manifest: ToolsManifest = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parsing packaged tools manifest {}: {e}", path.display()))?;
+        if manifest.schema_version != 1 || manifest.helper_arch != "x86_64" {
+            return Err("unsupported packaged tools manifest schema or helper architecture".into());
+        }
+        for (key, relative) in &manifest.executables {
+            if key.trim().is_empty()
+                || relative.as_os_str().is_empty()
+                || relative.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                return Err(format!("invalid executable path for manifest key {key:?}"));
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let root = std::fs::canonicalize(tools_dir).map_err(|e| format!("canonicalizing tools root: {e}"))?;
+            if manifest.library_dirs.len() != manifest.executables.len() {
+                return Err("library_dirs must cover every executable".into());
+            }
+            for key in manifest.executables.keys() {
+                let dirs = manifest.library_dirs.get(key).ok_or_else(|| format!("missing library_dirs for {key}"))?;
+                for relative in dirs {
+                    if relative.as_os_str().is_empty() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                        return Err(format!("invalid library directory for {key}"));
+                    }
+                    let path = std::fs::canonicalize(root.join(relative)).map_err(|e| format!("resolving library directory for {key}: {e}"))?;
+                    if !path.starts_with(&root) || !path.is_dir() {
+                        return Err(format!("library directory escapes tools root for {key}"));
+                    }
+                }
+            }
+        }
+        Ok(manifest.executables)
+    })();
+    match result {
+        Ok(executables) => (Some(executables), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
+/// Locate the package tools root adjacent to the executable or in its resource tree.
 pub fn default_tools_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let candidate = dir.join("vendor").join("bin");
-    if candidate.is_dir() {
-        return Some(candidate);
+    #[cfg(target_os = "linux")]
+    { discover_linux_tools().ok().flatten() }
+    #[cfg(windows)]
+    { let path = std::env::current_exe().ok()?.parent()?.join("tools"); path.exists().then_some(path) }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    { None }
+}
+
+#[cfg(target_os = "linux")]
+fn discover_linux_tools() -> Result<Option<PathBuf>, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("locating executable: {e}"))?;
+    let dir = exe.parent().ok_or("executable has no parent directory")?;
+    linux_resource_tools_from_exe_dir(dir)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_resource_tools_from_exe_dir(exe_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let adjacent = exe_dir.join("tools");
+    let installed = exe_dir.join("../lib").join(identity::APP_ID).join("tools");
+    let candidates: Vec<_> = [adjacent, installed].into_iter().filter(|p| p.exists()).collect();
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [candidate] => Ok(Some(candidate.clone())),
+        _ => Err("ambiguous package tools directories".into()),
     }
-    let flat = dir.to_path_buf();
-    if flat.join("ffmpeg").exists() || flat.join("ffmpeg.exe").exists() {
-        return Some(flat);
-    }
-    None
 }
 
 /// Resolve a tool's path without running it.
 pub fn locate(key: ToolKey, opts: &ProbeOptions) -> Option<PathBuf> {
+    if opts.require_manifest {
+        if key == ToolKey::Soffice {
+            return locate_on_path(key);
+        }
+        if opts.manifest_error.is_some() {
+            return None;
+        }
+        return manifest_path(key, opts);
+    }
+    if opts.manifest.is_some() {
+        return manifest_path(key, opts);
+    }
     for dir in [opts.extra_dir.as_ref(), opts.tools_dir.as_ref()]
         .into_iter()
         .flatten()
@@ -71,6 +189,19 @@ pub fn locate(key: ToolKey, opts: &ProbeOptions) -> Option<PathBuf> {
             }
         }
     }
+    locate_on_path(key)
+}
+
+
+fn manifest_path(key: ToolKey, opts: &ProbeOptions) -> Option<PathBuf> {
+    let root = opts.tools_dir.as_ref()?;
+    let relative = opts.manifest.as_ref()?.get(key.as_str())?;
+    let root = std::fs::canonicalize(root).ok()?;
+    let path = std::fs::canonicalize(root.join(relative)).ok()?;
+    (path.starts_with(&root) && path.is_file() && is_executable(&path)).then_some(path)
+}
+
+fn locate_on_path(key: ToolKey) -> Option<PathBuf> {
     for name in key.candidates() {
         if let Some(path) = which(name) {
             return Some(path);
@@ -163,7 +294,7 @@ pub fn probe_one(key: ToolKey, opts: &ProbeOptions) -> Capability {
         ToolKey::Tesseract => vec!["--list-langs"],
         ToolKey::Gs => vec!["--version"],
         ToolKey::Ffmpeg => vec!["-version"],
-        ToolKey::Ffprobe => vec!["-version"],
+        ToolKey::Ffprobe | ToolKey::Ffplay => vec!["-version"],
         ToolKey::Sidecar => vec!["--version"],
         _ => vec!["--version"],
     };
@@ -175,13 +306,16 @@ pub fn probe_one(key: ToolKey, opts: &ProbeOptions) -> Capability {
     } else {
         Command::new(&path)
     };
-    let out = command
+    crate::proc::configure_background(&mut command);
+    crate::proc::configure_tool_environment(&mut command, &path);
+    command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("LC_ALL", "C.UTF-8")
-        .output();
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.env("LC_ALL", "C.UTF-8");
+    let out = command.output();
 
     // Some tools (soffice) print their version on stderr.
     let mut text = String::new();
@@ -339,6 +473,7 @@ fn detect_features(key: ToolKey, text: &str) -> Vec<String> {
             }
         }
         ToolKey::Ffprobe => push("json"),
+        ToolKey::Ffplay => {}
         ToolKey::Soffice => push("headless-convert"),
     }
     features
@@ -434,6 +569,7 @@ mod tests {
             tools_dir: Some(PathBuf::from("/nonexistent-tools")),
             extra_dir: Some(PathBuf::from("/nonexistent-tools-2")),
             concurrency: 4,
+            ..Default::default()
         };
         let cap = probe_one(ToolKey::Magick, &opts);
         // Either the host has it (PATH) or it is cleanly reported missing.
@@ -471,5 +607,63 @@ mod tests {
         assert_eq!(s.len(), 20, "{s}");
         assert!(s.ends_with('Z'));
         assert_eq!(&s[4..5], "-");
+    }
+    #[test]
+    fn required_manifest_resolution_ignores_extra_and_host_fallbacks() {
+        let root = tempfile::tempdir().unwrap();
+        let package_tool = root.path().join("ffmpeg/bin/ffmpeg.exe");
+        let extra = tempfile::tempdir().unwrap();
+        let extra_tool = extra.path().join("ffmpeg.exe");
+        std::fs::create_dir_all(package_tool.parent().unwrap()).unwrap();
+        std::fs::write(&package_tool, b"packaged").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&package_tool, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        std::fs::write(&extra_tool, b"override").unwrap();
+        let opts = ProbeOptions {
+            tools_dir: Some(root.path().to_path_buf()),
+            extra_dir: Some(extra.path().to_path_buf()),
+            manifest: Some(std::collections::BTreeMap::from([(
+                "ffmpeg".into(),
+                PathBuf::from("ffmpeg/bin/ffmpeg.exe"),
+            )])),
+            require_manifest: true,
+            ..Default::default()
+        };
+
+        assert_eq!(locate(ToolKey::Ffmpeg, &opts), Some(package_tool));
+        assert_eq!(locate(ToolKey::Ffplay, &opts), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn installed_tools_discovery_rejects_ambiguity() {
+        let app = tempfile::tempdir().unwrap();
+        let exe_dir = app.path().join("usr/bin");
+        let installed = app.path().join("usr/lib/app.convertme/tools");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&installed).unwrap();
+        let found = linux_resource_tools_from_exe_dir(&exe_dir).unwrap().unwrap();
+        assert_eq!(std::fs::canonicalize(found).unwrap(), std::fs::canonicalize(&installed).unwrap());
+        std::fs::create_dir_all(exe_dir.join("tools")).unwrap();
+        assert!(linux_resource_tools_from_exe_dir(&exe_dir).is_err());
+    }
+
+    #[test]
+    fn manifest_paths_cannot_escape_the_tools_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("manifest.json"),
+            r#"{"schema_version":1,"helper_arch":"x86_64","executables":{"ffmpeg":"../outside.exe"}}"#,
+        )
+        .unwrap();
+
+        let (manifest, error) = load_tools_manifest(root.path());
+
+        assert!(manifest.is_none());
+        assert!(error.unwrap().contains("invalid executable path"));
     }
 }

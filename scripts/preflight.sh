@@ -48,12 +48,14 @@ step "tests"
 cargo test --workspace
 
 step "clean checkout: no vendored tools"
-# A fresh clone has no vendor/bin. A declared external binary that is absent stops
-# the Tauri build script, so the tree must compile without the tools.
-mv vendor/bin vendor/bin.preflight-moved
-rm -f crates/convertme-gui/tauri.conf.json
+# A fresh clone has no staged Linux payload; a declared external binary that is absent
+# stops the Tauri build script, so the tree must compile without staged tools.
+payload=vendor/linux/x86_64-unknown-linux-gnu/tools
+stashed="$payload.preflight-moved-$$"
+if [ -e "$stashed" ]; then echo "preflight: refusing to overwrite $stashed" >&2; exit 1; fi
+if [ -d "$payload" ]; then mv "$payload" "$stashed"; fi
 restore_vendor() {
-  if [ -d vendor/bin.preflight-moved ]; then mv vendor/bin.preflight-moved vendor/bin; fi
+  if [ -d "$stashed" ]; then mv "$stashed" "$payload"; fi
 }
 trap restore_vendor EXIT
 cargo check -q -p convertme-gui --tests

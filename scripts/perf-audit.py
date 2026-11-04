@@ -49,9 +49,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "target/release/convertme"
 UI_DIST = REPO / "crates/convertme-gui/ui-dist"
-DEFAULT_FIXTURES = Path(
-    os.environ.get("CONVERTME_FIXTURES", "/home/dany/Downloads/Testing Files")
-)
+DEFAULT_FIXTURES = Path(os.environ.get("CONVERTME_FIXTURES", REPO / "fixtures"))
 DEFAULT_BASELINE = REPO / "artifacts/perf/baseline.json"
 REGRESSION = 0.15
 MIB = 1024 * 1024
@@ -402,8 +400,8 @@ def run_once(case: dict, fixtures: Path, startup: float) -> dict:
 
 
 def bundle_bytes() -> int:
-    """Installed size: the binary, the vendored tools and the embedded UI."""
-    return BIN.stat().st_size + tree_bytes(REPO / "vendor/bin") + tree_bytes(UI_DIST)
+    """Installed size: the binary, the staged tools and the embedded UI."""
+    return BIN.stat().st_size + tree_bytes(REPO / "vendor/linux/x86_64-unknown-linux-gnu/tools") + tree_bytes(UI_DIST)
 
 
 def run_case(case: dict, fixtures: Path, startup: float, runs: int) -> dict:

@@ -1,0 +1,16 @@
+{
+  "appimage": {
+    "gtk_plugin_sha256": "b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171"
+  },
+  "docker": {
+    "archives": {
+      "docker-28.5.2.tgz": "ea90cfd12e1eeb12aa1c971741adb8bd4ed88e2a574eaac13f5029a1dbc6300d",
+      "docker-rootless-extras-28.5.2.tgz": "0db2681d8825cfc0295033f282849b9aa4cfcc9178293061447ab5d1d8956fab"
+    },
+    "capture_network": "vpnkit",
+    "replay_containers_network": "none",
+    "version": "28.5.2"
+  },
+  "schema": 1,
+  "target": "x86_64-unknown-linux-gnu"
+}

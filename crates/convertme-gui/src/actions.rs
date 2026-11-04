@@ -37,7 +37,7 @@ pub fn run(
             let dest = dest.ok_or_else(|| "choose a destination folder first".to_string())?;
             move_many(paths, dest).map(|_| ()).map_err(|e| e.message)
         }
-        "share" => share(paths),
+        "share" => share(app, paths),
         other => Err(format!("unknown action {other:?}")),
     }
 }
@@ -45,13 +45,29 @@ pub fn run(
 pub fn open_with_default(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args(["/C", "start", ""])
-            .arg(path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(())
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::{PCWSTR, w};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(wide.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize <= 32 {
+            Err(std::io::Error::other(format!(
+                "ShellExecuteW failed: {}",
+                result.0 as isize
+            )))
+        } else {
+            Ok(())
+        }
     }
     #[cfg(unix)]
     {
@@ -67,11 +83,20 @@ pub fn open_with_default(path: &Path) -> std::io::Result<()> {
 pub fn reveal(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
-            .stdout(Stdio::null())
-            .spawn()?;
-        Ok(())
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::System::Com::CoTaskMemFree;
+        use windows::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName};
+        use windows::core::PCWSTR;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let mut pidl = std::ptr::null_mut();
+            SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let result = SHOpenFolderAndSelectItems(pidl, None, 0)
+                .map_err(|e| std::io::Error::other(e.to_string()));
+            CoTaskMemFree(Some(pidl.cast()));
+            result
+        }
     }
     #[cfg(unix)]
     {
@@ -89,8 +114,8 @@ pub fn open_terminal(path: &Path) -> std::io::Result<()> {
             return Ok(());
         }
         Command::new("powershell")
-            .args(["-NoExit", "-Command", "Set-Location -LiteralPath"])
-            .arg(dir)
+            .args(["-NoExit", "-NoProfile"])
+            .current_dir(dir)
             .spawn()?;
         Ok(())
     }
@@ -313,19 +338,25 @@ fn percent_encode(s: &str) -> String {
 /// receiving app (mail, chat, file manager) pastes. Linux has no equivalent
 /// system-wide share sheet, so the action is omitted there.
 #[cfg(windows)]
-pub fn share(paths: &[PathBuf]) -> Result<(), String> {
-    clipboard_files::set(paths).map_err(|e| e.to_string())
+pub fn share(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
+    use tauri::Manager;
+    let window = app
+        .get_webview_window("main")
+        .or_else(|| app.webview_windows().into_values().next())
+        .ok_or_else(|| "no window available to own the clipboard".to_string())?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    clipboard_files::set(hwnd, paths)
 }
 
 #[cfg(not(windows))]
-pub fn share(_paths: &[PathBuf]) -> Result<(), String> {
+pub fn share(_app: &tauri::AppHandle, _paths: &[PathBuf]) -> Result<(), String> {
     Err("sharing is a Windows-only action".into())
 }
 
 #[cfg(windows)]
 mod clipboard_files {
     use std::path::PathBuf;
-    use windows::Win32::Foundation::{HANDLE, HWND};
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
@@ -333,7 +364,7 @@ mod clipboard_files {
     use windows::Win32::System::Ole::CF_HDROP;
     use windows::Win32::UI::Shell::DROPFILES;
 
-    pub fn set(paths: &[PathBuf]) -> Result<(), String> {
+    pub fn set(hwnd: HWND, paths: &[PathBuf]) -> Result<(), String> {
         // The clipboard DROPFILES payload: header, then a double-NUL-terminated
         // list of wide paths.
         let mut list: Vec<u16> = Vec::new();
@@ -350,6 +381,15 @@ mod clipboard_files {
         // the allocation is handed to the OS by SetClipboardData on success.
         unsafe {
             let mem = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| e.to_string())?;
+            struct Allocation(HGLOBAL);
+            impl Drop for Allocation {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = GlobalFree(Some(self.0));
+                    }
+                }
+            }
+            let allocation = Allocation(mem);
             let ptr = GlobalLock(mem);
             if ptr.is_null() {
                 return Err("GlobalLock failed".into());
@@ -364,11 +404,12 @@ mod clipboard_files {
             std::ptr::copy_nonoverlapping(list.as_ptr(), dest, list.len());
             let _ = GlobalUnlock(mem);
 
-            OpenClipboard(Some(HWND::default())).map_err(|e| e.to_string())?;
+            OpenClipboard(Some(hwnd)).map_err(|e| e.to_string())?;
             let result = (|| -> Result<(), String> {
                 EmptyClipboard().map_err(|e| e.to_string())?;
                 SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(mem.0)))
                     .map_err(|e| e.to_string())?;
+                std::mem::forget(allocation);
                 Ok(())
             })();
             let _ = CloseClipboard();

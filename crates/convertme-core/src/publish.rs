@@ -57,33 +57,75 @@ pub fn publish_file(
 pub fn publish_dir(artifact: &Path, desired: &Path) -> Result<PathBuf, JobError> {
     let dir = desired.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| JobError::io("creating the output directory", &e))?;
-    let mut candidate = desired.to_path_buf();
-    let mut n = 2;
-    while candidate.exists() {
-        candidate = dir.join(format!(
-            "{} ({n})",
-            desired
-                .file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-                .unwrap_or_default()
+
+    for n in 1..=9999 {
+        let candidate = if n == 1 {
+            desired.to_path_buf()
+        } else {
+            dir.join(format!(
+                "{} ({n})",
+                desired
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ))
+        };
+        match rename_dir_noreplace(artifact, &candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if is_cross_device(&e) => {
+                let staging = create_sibling_staging_dir(&candidate)?;
+                if let Err(err) = copy_dir_all(artifact, &staging) {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    return Err(err);
+                }
+                match rename_dir_noreplace(&staging, &candidate) {
+                    Ok(()) => return Ok(candidate),
+                    Err(e) if is_already_exists(&e) => {
+                        let _ = std::fs::remove_dir_all(&staging);
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&staging);
+                        return Err(JobError::io("publishing the folder", &e));
+                    }
+                }
+            }
+            Err(e) if is_already_exists(&e) => continue,
+            Err(e) => return Err(JobError::io("publishing the folder", &e)),
+        }
+    }
+    Err(JobError::new(
+        ErrorCode::Io,
+        "could not find an unused output folder name",
+    ))
+}
+
+fn create_sibling_staging_dir(candidate: &Path) -> Result<PathBuf, JobError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = candidate.parent().unwrap_or_else(|| Path::new("."));
+    let stem = candidate
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    for _ in 0..100 {
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staging = parent.join(format!(
+            ".{stem}.convertme-stage-{}-{seq}",
+            std::process::id()
         ));
-        n += 1;
-        if n > 9999 {
-            break;
+        match std::fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(JobError::io("creating a staging folder", &e)),
         }
     }
-    match std::fs::rename(artifact, &candidate) {
-        Ok(()) => Ok(candidate),
-        Err(e) if is_cross_device(&e) => {
-            copy_dir_all(artifact, &candidate)?;
-            Ok(candidate)
-        }
-        Err(e) => Err(JobError::io("publishing the folder", &e)),
-    }
+    Err(JobError::new(
+        ErrorCode::Io,
+        "could not create a unique staging folder",
+    ))
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), JobError> {
-    std::fs::create_dir_all(to).map_err(|e| JobError::io("creating the output folder", &e))?;
     for entry in walkdir::WalkDir::new(from).min_depth(1) {
         let entry =
             entry.map_err(|e| JobError::new(ErrorCode::Io, format!("walking {from:?}: {e}")))?;
@@ -103,6 +145,64 @@ fn copy_dir_all(from: &Path, to: &Path) -> Result<(), JobError> {
         }
     }
     Ok(())
+}
+
+fn is_already_exists(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::AlreadyExists
+}
+
+#[cfg(target_os = "linux")]
+fn rename_dir_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    // SAFETY: both C strings are NUL-terminated; RENAME_NOREPLACE prevents a
+    // concurrent publisher from replacing a destination created after our check.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_dir_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::MoveFileExW;
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: nul-terminated paths remain alive for this call; flags 0 disallow replacement.
+    unsafe {
+        MoveFileExW(
+            windows::core::PCWSTR(from.as_ptr()),
+            windows::core::PCWSTR(to.as_ptr()),
+            Default::default(),
+        )
+    }
+    .map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn rename_dir_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ));
+    }
+    std::fs::rename(from, to)
 }
 
 fn dedupe(desired: &Path, policy: Overwrite) -> PathBuf {
@@ -273,5 +373,21 @@ mod tests {
         let once = publish_dir(&art, &target).unwrap();
         assert_eq!(once, target);
         assert_eq!(std::fs::read(target.join("inner/a.txt")).unwrap(), b"a");
+    }
+
+    #[test]
+    fn publish_dir_never_replaces_an_existing_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("stage");
+        std::fs::create_dir_all(&artifact).unwrap();
+        std::fs::write(artifact.join("payload"), b"new").unwrap();
+        let desired = dir.path().join("result");
+        std::fs::create_dir(&desired).unwrap();
+
+        let published = publish_dir(&artifact, &desired).unwrap();
+
+        assert_eq!(published.file_name().unwrap(), "result (2)");
+        assert!(desired.is_dir());
+        assert_eq!(std::fs::read(published.join("payload")).unwrap(), b"new");
     }
 }

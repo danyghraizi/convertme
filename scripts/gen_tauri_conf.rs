@@ -11,9 +11,6 @@
 
 include!("../crates/convertme-core/src/identity.rs");
 
-/// The external tools bundled per platform. `cargo xtask vendor` places
-/// `<name>-<target-triple>[.exe]` next to them.
-const BUNDLED_TOOLS: &[&str] = &["ffmpeg", "ffprobe", "magick", "gs", "qpdf", "pdftoppm", "pdftotext", "pandoc", "7zz", "tesseract", "convertme-pdf"];
 
 /// Endpoint URLs for the updater, in the placeholder dialect Tauri understands.
 fn update_endpoints() -> Vec<String> {
@@ -46,51 +43,51 @@ fn json_array(items: &[String]) -> String {
 }
 
 /// The app directory (the crate that owns this config), resolved from the caller's
-/// `CARGO_MANIFEST_DIR`. Absolute paths in `beforeBuildCommand` are safe here: the
-/// config itself is generated on each build and never committed.
+/// `CARGO_MANIFEST_DIR`.
 fn app_dir() -> String {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let path = std::path::PathBuf::from(&manifest);
-    // `cargo xtask gen-conf` runs from the workspace's xtask crate.
     if path.file_name().map(|n| n == "xtask").unwrap_or(false)
-        && let Some(root) = path.parent() {
-            return root.join("crates").join("convertme-gui").display().to_string();
-        }
+        && let Some(root) = path.parent()
+    {
+        return root.join("crates").join("convertme-gui").display().to_string();
+    }
     path.display().to_string()
+}
+
+fn target_triple() -> String {
+    std::env::var("CONVERTME_TARGET")
+        .or_else(|_| std::env::var("TARGET"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "x86_64-pc-windows-msvc".into()
+            } else {
+                "x86_64-unknown-linux-gnu".into()
+            }
+        })
 }
 
 /// The full config text.
 pub fn tauri_conf_json() -> String {
+    let target = target_triple();
+    tauri_conf_json_for_target(&target)
+}
+
+pub fn tauri_conf_json_for_target(target: &str) -> String {
     let app = app_dir();
     let root = std::path::Path::new(&app)
         .parent()
         .and_then(|crates| crates.parent())
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "..".to_string());
-    let ui = format!("{root}/ui");
-    let gate = format!("{root}/scripts/debrand.py");
-    // A tool that is not vendored yet must not be declared, or `tauri_build` refuses
-    // to compile the crate ("resource path does not exist") and a plain `cargo check`
-    // needs half a gigabyte of binaries. `scripts/bundle.sh` refuses to package
-    // without them, so an artifact can never silently ship empty.
-    let external_bins: Vec<String> = BUNDLED_TOOLS
-        .iter()
-        .filter(|tool| {
-            let dir = std::path::Path::new(&root).join("vendor").join("bin");
-            std::fs::read_dir(dir)
-                .map(|entries| {
-                    entries.flatten().any(|entry| {
-                        entry
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with(&format!("{tool}-"))
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .map(|t| json_string(&format!("../../vendor/bin/{t}")))
-        .collect();
+    let windows_target = matches!(
+        target,
+        "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc"
+    );
+    let python = if target.contains("windows") { "python" } else { "python3" };
+    let external_bins: Vec<String> = Vec::new();
     let endpoints: Vec<String> = update_endpoints().iter().map(|e| json_string(e)).collect();
+
 
     let mut s = String::new();
     s.push_str("{\n");
@@ -100,7 +97,10 @@ pub fn tauri_conf_json() -> String {
     // `app.convertme.desktop`, so the id is the value that satisfies it; the binary
     // stays `convertme` (its name comes from the crate) and the display name stays
     // `ConvertMe` (the window title and the desktop entry's Name=).
-    s.push_str(&format!("  \"productName\": {},\n", json_string(APP_ID)));
+    s.push_str(&format!(
+        "  \"productName\": {},\n",
+        json_string(if windows_target { "ConvertMe" } else { APP_ID })
+    ));
     // One source of truth: the workspace version in `Cargo.toml`. `gen-conf` runs
     // from `xtask` and the build script from the GUI crate; both inherit it.
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
@@ -109,12 +109,15 @@ pub fn tauri_conf_json() -> String {
     s.push_str("  \"build\": {\n");
     s.push_str(&format!(
         "    \"beforeDevCommand\": {},\n",
-        json_string(&format!("npm --prefix {ui} run dev"))
+        hook_object(&root, "npm --prefix ui run dev")
     ));
     s.push_str("    \"devUrl\": \"http://localhost:1420\",\n");
     s.push_str(&format!(
         "    \"beforeBuildCommand\": {},\n",
-        json_string(&format!("python3 {gate} --src && npm --prefix {ui} run build"))
+        hook_object(
+            &root,
+            &format!("{python} scripts/debrand.py --src && npm --prefix ui run build")
+        )
     ));
     s.push_str("    \"frontendDist\": \"ui-dist\"\n");
     s.push_str("  },\n");
@@ -179,15 +182,27 @@ pub fn tauri_conf_json() -> String {
     s.push_str(&format!("        \"desktopTemplate\": {}\n", json_string(&format!("{root}/packaging/app.convertme.desktop"))));
     s.push_str("      }\n");
     s.push_str("    },\n");
-    s.push_str("    \"windows\": {\n");
-    s.push_str("      \"nsis\": {\n");
-    s.push_str("        \"installMode\": \"currentUser\",\n");
-    s.push_str("        \"languages\": [\"English\"],\n");
-    s.push_str("        \"displayLanguageSelector\": false\n");
-    s.push_str("      },\n");
-    s.push_str("      \"allowDowngrades\": false\n");
-    s.push_str("    },\n");
-    s.push_str(&format!("    \"resources\": {},\n", json_array(&[json_string("../../NOTICE"), json_string("../../LICENSE")])));
+    if windows_target {
+        s.push_str("    \"windows\": {\n");
+        s.push_str("      \"nsis\": {\n");
+        s.push_str("        \"installMode\": \"currentUser\",\n");
+        s.push_str("        \"languages\": [\"English\"],\n");
+        s.push_str("        \"displayLanguageSelector\": false,\n");
+        s.push_str(&format!(
+            "        \"installerHooks\": {}\n",
+            json_string("../../packaging/windows/hooks.nsh")
+        ));
+        s.push_str("      },\n");
+        s.push_str("      \"allowDowngrades\": false,\n");
+        s.push_str("      \"webviewInstallMode\": {\"type\": \"skip\"}\n");
+        s.push_str("    },\n");
+    } else {
+        s.push_str("    \"windows\": {\"nsis\": {\"installMode\": \"currentUser\"}, \"allowDowngrades\": false},\n");
+    }
+    s.push_str(&format!(
+        "    \"resources\": {},\n",
+        resources_value(&root, &target, windows_target)
+    ));
     // Signed update artifacts need the private key; without it the bundle step
     // would fail, so the flag follows the environment instead of being hardcoded.
     // An empty value counts as absent: CI passes `${{ secrets.X }}` as "" when the
@@ -206,6 +221,58 @@ pub fn tauri_conf_json() -> String {
     s.push_str("  }\n");
     s.push_str("}\n");
     s
+}
+
+fn hook_object(cwd: &str, script: &str) -> String {
+    format!(
+        "{{\"cwd\": {}, \"script\": {}}}",
+        json_string(cwd),
+        json_string(script)
+    )
+}
+
+fn resources_value(root: &str, target: &str, windows_target: bool) -> String {
+    let root = std::path::Path::new(root);
+    if !windows_target {
+        let mut entries = vec![
+            format!("{}: {}", json_string("../../NOTICE"), json_string("NOTICE")),
+            format!("{}: {}", json_string("../../LICENSE"), json_string("LICENSE")),
+        ];
+        if root.join("vendor/linux").join(target).join("tools").is_dir() {
+            entries.push(format!(
+                "{}: {}",
+                json_string(&format!("../../vendor/linux/{target}/tools/**/*")),
+                json_string("tools/")
+            ));
+        }
+        return format!("{{{}}}", entries.join(", "));
+    }
+    let mut entries = vec![
+        format!("{}: {}", json_string("../../NOTICE"), json_string("NOTICE")),
+        format!("{}: {}", json_string("../../LICENSE"), json_string("LICENSE")),
+        format!(
+            "{}: {}",
+            json_string("../../packaging/windows/hooks.nsh"),
+            json_string("hooks.nsh")
+        ),
+    ];
+    if root.join("vendor/windows").join(target).join("tools").is_dir() {
+        entries.push(format!(
+            "{}: {}",
+            json_string(&format!(
+                "../../vendor/windows/{target}/tools/**/*"
+            )),
+            json_string("tools/")
+        ));
+    }
+    if let Some(compliance) = std::env::var_os("CONVERTME_COMPLIANCE_DIR") {
+        entries.push(format!(
+            "{}: {}",
+            json_string(&compliance.to_string_lossy()),
+            json_string("third-party/")
+        ));
+    }
+    format!("{{{}}}", entries.join(", "))
 }
 
 /// Write the config next to the GUI crate's manifest. Returns the path written.

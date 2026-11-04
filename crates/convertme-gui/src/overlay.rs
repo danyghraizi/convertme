@@ -80,22 +80,51 @@ pub fn show_wheel(app: &tauri::AppHandle, x: Option<f64>, y: Option<f64>) -> Res
         }
         Backend::Windows | Backend::X11 => {
             window.set_fullscreen(false).map_err(|e| e.to_string())?;
-            let size = window.outer_size().map_err(|e| e.to_string())?;
             let (px, py) = match (x, y) {
                 (Some(x), Some(y)) => (x, y),
                 _ => pointer_position(app).unwrap_or((400.0, 400.0)),
             };
-            let pos = PhysicalPosition::new(
-                (px - size.width as f64 / 2.0).max(0.0) as i32,
-                (py - size.height as f64 / 2.0).max(0.0) as i32,
-            );
-            window.set_position(pos).map_err(|e| e.to_string())?;
-            window
-                .set_size(tauri::PhysicalSize::new(
-                    WHEEL_SIZE as u32,
-                    WHEEL_SIZE as u32,
-                ))
-                .map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            {
+                let monitor = window
+                    .monitor_from_point(px, py)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "no monitor at pointer position".to_string())?;
+                let area = monitor.work_area();
+                let size = ((WHEEL_SIZE * monitor.scale_factor()).round() as u32)
+                    .min(area.size.width)
+                    .min(area.size.height);
+                if size == 0 {
+                    return Err("pointer monitor has an empty work area".into());
+                }
+                window
+                    .set_size(tauri::PhysicalSize::new(size, size))
+                    .map_err(|e| e.to_string())?;
+                let left = area.position.x as i64;
+                let top = area.position.y as i64;
+                let x = ((px - f64::from(size) / 2.0).round() as i64)
+                    .clamp(left, left + i64::from(area.size.width - size));
+                let y = ((py - f64::from(size) / 2.0).round() as i64)
+                    .clamp(top, top + i64::from(area.size.height - size));
+                window
+                    .set_position(PhysicalPosition::new(x as i32, y as i32))
+                    .map_err(|e| e.to_string())?;
+            }
+            #[cfg(not(windows))]
+            {
+                let size = window.outer_size().map_err(|e| e.to_string())?;
+                let pos = PhysicalPosition::new(
+                    (px - size.width as f64 / 2.0).max(0.0) as i32,
+                    (py - size.height as f64 / 2.0).max(0.0) as i32,
+                );
+                window.set_position(pos).map_err(|e| e.to_string())?;
+                window
+                    .set_size(tauri::PhysicalSize::new(
+                        WHEEL_SIZE as u32,
+                        WHEEL_SIZE as u32,
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
         }
     }
     window.show().map_err(|e| e.to_string())?;

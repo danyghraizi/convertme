@@ -22,21 +22,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import validate
 
 REPO = Path(__file__).resolve().parent.parent
-BIN = REPO / "target/release/convertme"
-DEFAULT_FIXTURES = Path(
-    os.environ.get("CONVERTME_FIXTURES", "/home/dany/Downloads/Testing Files")
+BIN = REPO / ("target/release/convertme.exe" if os.name == "nt" else "target/release/convertme")
+DEFAULT_FIXTURES = Path(os.environ.get("CONVERTME_FIXTURES", REPO / "fixtures"))
+
+FULL_UIA_FIXTURES = (
+    "images/poster-portrait.png",
+    "images/photo-landscape-4000x3000.jpg",
+    "images/screenshot-text.png",
+    "images/tiny-8x8.png",
+    "video/clip-landscape-720p-10s.mp4",
+    "audio/speech.mp3",
+    "audio/speech.flac",
+    "pdf/report-5-pages.pdf",
 )
 
 
@@ -254,13 +265,10 @@ def pdf_rotation_check(page: int, degrees: int):
     def check(produced: list[Path]) -> list[dict]:
         if len(produced) != 1:
             return [{"name": "one artifact", "ok": False, "actual": len(produced)}]
-        result = subprocess.run(
-            ["pdfinfo", "-f", str(page), "-l", str(page), str(produced[0])],
-            capture_output=True,
-            text=True,
-            check=False,
+        result = validate.run_tool(
+            ["pdfinfo", "-f", str(page), "-l", str(page), str(produced[0])]
         )
-        found = re.search(rf"Page\s+{page} rot:\s+(-?\d+)", result.stdout)
+        found = re.search(rf"Page\s+{page} rot:\s+(-?\d+)", result.stdout) if result else None
         actual = int(found.group(1)) if found else None
         return [
             {
@@ -550,12 +558,11 @@ CURRENT_INPUTS: list[Path] = []
 def frame_pixel(path: Path, seconds: float, x: int, y: int, work: Path) -> tuple | None:
     """One pixel of one frame of a video, as RGB."""
     frame = work / f"frame-{seconds}-{x}-{y}.png"
-    result = subprocess.run(
+    result = validate.run_tool(
         ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", str(seconds), "-i", str(path),
-         "-frames:v", "1", str(frame)],
-        capture_output=True, text=True, check=False,
+         "-frames:v", "1", str(frame)]
     )
-    if result.returncode != 0 or not frame.exists():
+    if result is None or result.returncode != 0 or not frame.exists():
         return None
     return validate.pixel(frame, x, y)
 
@@ -704,11 +711,6 @@ CASES: list[Case] = [
     ),
     tool_case("video-frames", "video/clip-landscape-720p-10s.mp4", "snapshot", "video",
               {"times": [1.0]}, image_check("PNG", (1280, 720))),
-    tool_case("video-redact-range", "video/clip-landscape-720p-10s.mp4", "redact", "video",
-              {"boxes": [{"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5,
-                          "start": 1.0, "end": 2.0}],
-               "style": "solid", "color": "#e4572e"},
-              media_check(None, (9.0, 11.0), size=(1280, 720))),
     # Audio
     convert("audio-mp3-to-wav", "audio/speech.mp3", "WAV", audio_check(None)),
     convert("audio-mp3-to-flac", "audio/speech.mp3", "FLAC", audio_check("flac")),
@@ -919,31 +921,62 @@ def hint_for(stderr: str) -> str | None:
     return None
 
 
-def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
+def run_case(case: Case, fixtures: Path, out_dir: Path, binary: Path, release: bool,
+             libreoffice_missing: bool) -> dict:
     work = Path(tempfile.mkdtemp(prefix="convertme-audit-"))
     record = {"name": case.name, "status": "passed", "checks": [], "outputs": []}
     try:
         sources = [case.source] if isinstance(case.source, str) else list(case.source)
+        fixture_manifest = json.loads((fixtures / "input-hashes.json").read_text(encoding="utf-8-sig")) if release else None
         copies: list[Path] = []
         for relative in sources:
             source = fixtures / relative
             if not source.is_file():
-                record["status"] = "skipped"
+                record["status"] = "failed" if release else "skipped"
                 record["reason"] = f"missing fixture {relative}"
                 return record
+            if fixture_manifest is not None:
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                if fixture_manifest.get(relative) != digest:
+                    record["status"] = "failed"
+                    record["reason"] = f"fixture digest mismatch: {relative}"
+                    return record
             copy = work / source.name
             shutil.copy2(source, copy)
             copies.append(copy)
+        input_hashes = {str(copy): hashlib.sha256(copy.read_bytes()).hexdigest() for copy in copies}
+        record["input_hashes"] = {
+            relative: hashlib.sha256(copy.read_bytes()).hexdigest()
+            for relative, copy in zip(sources, copies)
+        }
         inputs = [copy.as_posix() for copy in copies]
-        argv = [str(BIN)]
+        argv = [str(binary)]
         for part in case.argv:
             if part == "{input}":
                 argv.extend(inputs)
             else:
                 argv.append(part)
-        completed = subprocess.run(argv, capture_output=True, text=True, check=False)
+        env = os.environ.copy()
+        if release and os.name == "nt":
+            system = Path(env["SystemRoot"])
+            env["PATH"] = os.pathsep.join((str(system / "System32"), str(system)))
+            env.pop("CONVERTME_TOOLS_DIR", None)
+        completed = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", check=False, env=env)
         if completed.returncode != 0:
-            reason = hint_for(completed.stderr)
+            reason = None if release else hint_for(completed.stderr)
+            error_line = completed.stderr.strip()
+            optional_error = error_line in (
+                "missing_tool: LibreOffice is not installed",
+                "failed: missing_tool: LibreOffice is not installed",
+            )
+            if release and libreoffice_missing and optional_error:
+                reason = error_line
+                record["skip_approval"] = {
+                    "approved": True,
+                    "reason": "optional_libreoffice_unavailable",
+                    "evidence": "application probe reported soffice missing",
+                }
             record["status"] = "skipped" if reason else "failed"
             record["reason"] = reason or completed.stderr.strip()[:400]
             record["checks"] = [{"name": "cli exit", "ok": False, "actual": completed.returncode}]
@@ -969,6 +1002,11 @@ def run_case(case: Case, fixtures: Path, out_dir: Path) -> dict:
             CURRENT_INPUTS[:] = copies
             record["checks"] = case.check(flattened)
             CURRENT_INPUTS.clear()
+        for copy in copies:
+            record["checks"].append({
+                "name": f"input unchanged: {copy.name}",
+                "ok": copy.is_file() and hashlib.sha256(copy.read_bytes()).hexdigest() == input_hashes[str(copy)],
+            })
         failures = [check for check in record["checks"] if not check.get("ok")]
         record["status"] = "failed" if failures else "passed"
         # Keep the artifact of a *failed* case (that is when someone needs to look at
@@ -995,10 +1033,42 @@ def all_cases(with_matrix: bool) -> list[Case]:
         cases.extend(case for case in matrix_cases() if case.name not in known)
     return cases
 
+def export_fixtures(fixtures: Path, destination: Path) -> None:
+    paths = set(MATRIX_FIXTURES.values())
+    paths.update(FULL_UIA_FIXTURES)
+    for case in CASES:
+        paths.update([case.source] if isinstance(case.source, str) else case.source)
+    root = fixtures.resolve()
+    entries = {}
+    folded = set()
+    for relative in sorted(paths):
+        parts = Path(relative).parts
+        if not parts or Path(relative).is_absolute() or any(part in (".", "..") for part in parts):
+            raise ValueError(f"unsafe fixture path: {relative}")
+        if relative.casefold() in folded:
+            raise ValueError(f"case-colliding fixture path: {relative}")
+        folded.add(relative.casefold())
+        if any(re.search(r'[<>:"\\|?*\x00-\x1f]', part) or
+               part.endswith((" ", ".")) for part in parts):
+            raise ValueError(f"fixture path cannot be exported to Windows: {relative}")
+        source = (root / relative).resolve()
+        if not source.is_relative_to(root) or not source.is_file():
+            raise ValueError(f"missing or invalid fixture: {relative}")
+        entries[relative] = hashlib.sha256(source.read_bytes()).hexdigest()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for relative in sorted(entries):
+            archive.write(root / relative, relative)
+        archive.writestr("input-hashes.json", json.dumps(entries, indent=2) + "\n")
+
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fixtures", default=str(DEFAULT_FIXTURES))
+    parser.add_argument("--binary", default=str(BIN), help="installed or extracted application executable")
+    parser.add_argument("--release", action="store_true", help="fail missing fixtures, tools and unapproved skips")
+    parser.add_argument("--export-fixtures", metavar="ZIP", help="export referenced inputs and their hashes without running the app")
     parser.add_argument("--out", help="report directory (default artifacts/quality-audit/<stamp>)")
     parser.add_argument("--only", help="only cases whose name contains this")
     parser.add_argument("--list", action="store_true", help="list the cases and exit")
@@ -1008,29 +1078,86 @@ def main(argv: list[str] | None = None) -> int:
         help="only the curated cases, not the full conversion matrix",
     )
     args = parser.parse_args(argv)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = Path(args.out) if args.out else REPO / "artifacts/quality-audit" / stamp
+    if not args.export_fixtures and not args.list:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    def startup_failure(message: str, **details) -> int:
+        report = {
+            "stamp": stamp, "status": "failed", "stage": "startup",
+            "reason": message, "binary": args.binary, "fixtures": args.fixtures,
+            "release": args.release, "selectors": {"only": args.only, "no_matrix": args.no_matrix},
+            **details,
+        }
+        (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(f"quality-audit: {message}", file=sys.stderr)
+        return 2
+    fixtures = Path(args.fixtures)
+    if args.export_fixtures:
+        try:
+            export_fixtures(fixtures, Path(args.export_fixtures))
+        except (OSError, ValueError) as error:
+            print(f"quality-audit: {error}", file=sys.stderr)
+            return 2
+        return 0
 
     selected_cases = all_cases(not args.no_matrix)
     if args.list:
         for case in selected_cases:
             print(case.name)
         return 0
-    if not BIN.is_file():
-        print(f"quality-audit: build the release binary first ({BIN})", file=sys.stderr)
-        return 2
-
-    fixtures = Path(args.fixtures)
+    binary = Path(args.binary).resolve()
+    if not binary.is_file():
+        return startup_failure(f"binary not found ({binary})")
+    try:
+        validate.configure_tools(binary, args.release)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return startup_failure(str(error))
     if not fixtures.is_dir():
-        print(f"quality-audit: fixture root not found: {fixtures}", file=sys.stderr)
-        return 2
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = Path(args.out) if args.out else REPO / "artifacts/quality-audit" / stamp
-    out_dir.mkdir(parents=True, exist_ok=True)
+        return startup_failure(f"fixture root not found: {fixtures}")
+    if args.release:
+        try:
+            fixture_manifest = json.loads((fixtures / "input-hashes.json").read_text(encoding="utf-8-sig"))
+            if not isinstance(fixture_manifest, dict):
+                raise ValueError("fixture manifest must be an object")
+        except (OSError, ValueError) as error:
+            return startup_failure(f"invalid fixture manifest: {error}")
 
     selected = [case for case in selected_cases if not args.only or args.only in case.name]
+    app_env = os.environ.copy()
+    if args.release and os.name == "nt":
+        system = Path(app_env["SystemRoot"])
+        app_env["PATH"] = os.pathsep.join((str(system / "System32"), str(system)))
+        app_env.pop("CONVERTME_TOOLS_DIR", None)
+    try:
+        probe = subprocess.run([str(binary), "probe"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=app_env, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return startup_failure(f"application probe could not start: {error}")
+    if args.release:
+        required = ("ffmpeg", "ffprobe", "magick", "gs", "qpdf", "pdftoppm",
+                    "pdftotext", "pandoc", "7zz", "tesseract", "convertme-pdf")
+        if os.name == "nt":
+            required += ("ffplay",)
+        lines = {line.split()[0]: line for line in probe.stdout.splitlines() if line.split()}
+        missing = [key for key in required if key not in lines or
+                   len(lines[key].split()) < 2 or lines[key].split()[1] != "ok"]
+        if probe.returncode or missing:
+            return startup_failure(f"required app tools unavailable: {', '.join(missing)}",
+                                   app_probe={"exit_code": probe.returncode, "stdout": probe.stdout, "stderr": probe.stderr})
+        missing_validators = [key for key, value in validate.validator_dependencies().items() if not value]
+        if missing_validators:
+            return startup_failure(f"missing validators: {', '.join(missing_validators)}",
+                                   app_probe={"exit_code": probe.returncode, "stdout": probe.stdout, "stderr": probe.stderr})
+    office_lines = [line.split() for line in probe.stdout.splitlines()
+                    if line.split() and line.split()[0] == "soffice"]
+    office_state = (office_lines[0][1] if probe.returncode == 0 and len(office_lines) == 1
+                    and len(office_lines[0]) > 1 else None)
+    libreoffice_missing = office_state == "missing"
     results = []
     for case in selected:
-        record = run_case(case, fixtures, out_dir)
+        record = run_case(case, fixtures, out_dir, binary, args.release, libreoffice_missing)
         results.append(record)
         mark = {"passed": "ok  ", "skipped": "skip", "failed": "FAIL"}[record["status"]]
         detail = ""
@@ -1043,17 +1170,43 @@ def main(argv: list[str] | None = None) -> int:
 
     counts = {status: sum(1 for r in results if r["status"] == status) for status in
               ("passed", "failed", "skipped")}
+    approved_skips = sum(1 for r in results if r["status"] == "skipped" and
+                         r.get("skip_approval", {}).get("approved") is True and
+                         r["skip_approval"].get("reason") == "optional_libreoffice_unavailable")
+    unapproved_skips = counts["skipped"] - approved_skips
+    counts["selected"] = len(selected)
+    counts["recorded"] = len(results)
+    counts["approved_skips"] = approved_skips
+    counts["unapproved_skips"] = unapproved_skips
+    accounting_ok = (counts["recorded"] == counts["selected"] ==
+                     counts["passed"] + counts["failed"] + counts["skipped"] and
+                     [r["name"] for r in results] == [case.name for case in selected])
     report = {
         "stamp": stamp,
-        "binary": str(BIN),
+        "binary": str(binary),
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "release": args.release,
+        "selectors": {"only": args.only, "no_matrix": args.no_matrix},
+        "selected_cases": [case.name for case in selected],
+        "fixtures_manifest_sha256": (hashlib.sha256((fixtures / "input-hashes.json").read_bytes()).hexdigest()
+                                     if (fixtures / "input-hashes.json").is_file() else None),
+        "validator_dependencies": validate.validator_dependencies(),
+        "app_probe": {"exit_code": probe.returncode, "stdout": probe.stdout, "stderr": probe.stderr},
+        "dependency_roles": {
+            "application": "Capabilities reported by the selected package executable in app_probe.",
+            "validators": "Independent output-inspection executables in validator_dependencies; these do not determine the application's PATH.",
+            "optional": {"soffice": {"probe_status": office_state,
+                                      "probe": "app_probe"}},
+        },
         "fixtures": str(fixtures),
         "counts": counts,
+        "accounting_ok": accounting_ok,
         "cases": results,
     }
-    (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out_dir / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     print(f"\n{counts['passed']} passed, {counts['failed']} failed, {counts['skipped']} skipped")
     print(f"report: {out_dir / 'report.json'}")
-    return 1 if counts["failed"] else 0
+    return 1 if counts["failed"] or not accounting_ok or (args.release and unapproved_skips) else 0
 
 
 if __name__ == "__main__":

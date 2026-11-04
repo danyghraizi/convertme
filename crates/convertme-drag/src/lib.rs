@@ -225,9 +225,7 @@ pub mod windows_backend {
     use super::*;
     use std::sync::OnceLock;
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_LBUTTON, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
     };
@@ -254,7 +252,11 @@ pub mod windows_backend {
                 &*(lparam.0 as *const windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT)
             };
             if let Some(key) = modifier_of(info.vkCode) {
-                let down = wparam.0 == 0x0100; // WM_KEYDOWN
+                let down = match wparam.0 {
+                    0x0100 | 0x0104 => true,  // WM_KEYDOWN / WM_SYSKEYDOWN
+                    0x0101 | 0x0105 => false, // WM_KEYUP / WM_SYSKEYUP
+                    _ => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
+                };
                 if let Some(sender) = SENDER.get() {
                     let _ = sender.try_send(Signal::Modifier { key, active: down });
                 }
@@ -274,14 +276,15 @@ pub mod windows_backend {
                     let _ = sender.try_send(Signal::DragObserved { active: dragging });
                     if dragging {
                         // Key state at drag start, so a key already held still counts.
-                        for (vk, key) in [
-                            (VK_LSHIFT.0, ModifierKey::Shift),
-                            (VK_CONTROL.0, ModifierKey::Control),
-                            (VK_LMENU.0, ModifierKey::Alt),
-                            (VK_LWIN.0, ModifierKey::Meta),
+                        for ((left, right), key) in [
+                            ((0xA0, 0xA1), ModifierKey::Shift),
+                            ((0xA2, 0xA3), ModifierKey::Control),
+                            ((0xA4, 0xA5), ModifierKey::Alt),
+                            ((0x5B, 0x5C), ModifierKey::Meta),
                         ] {
-                            let down =
-                                (unsafe { GetAsyncKeyState(vk as i32) } as u16) & 0x8000 != 0;
+                            let down = [left, right]
+                                .into_iter()
+                                .any(|vk| (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0);
                             if down {
                                 let _ = sender.try_send(Signal::Modifier { key, active: true });
                             }

@@ -10,6 +10,7 @@
 //!   selection cannot starve a running conversion.
 
 use crate::proc::{self, Cmd};
+use convertme_core::capability::ToolKey;
 use convertme_core::error::{ErrorCode, JobError};
 use convertme_core::job::JobCtx;
 use sha2::{Digest, Sha256};
@@ -257,8 +258,8 @@ impl PreviewCache {
             return Ok(path);
         }
 
-        let magick =
-            crate::probe::which("magick").ok_or_else(|| JobError::missing_tool("ImageMagick"))?;
+        let magick = crate::probe::locate(ToolKey::Magick, &crate::probe::ProbeOptions::from_env())
+            .ok_or_else(|| JobError::missing_tool("ImageMagick"))?;
         let tmp = path.with_extension("tmp.jpg");
         let result = proc::run(
             Cmd::new(magick)
@@ -333,8 +334,8 @@ impl PreviewCache {
         std::fs::create_dir_all(&dir)
             .map_err(|e| JobError::io("creating the filmstrip cache", &e))?;
 
-        let ffmpeg =
-            crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
+        let ffmpeg = crate::probe::locate(ToolKey::Ffmpeg, &crate::probe::ProbeOptions::from_env())
+            .ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
         let out_pattern = dir.join("frame%03d.jpg");
         proc::run(
             Cmd::new(ffmpeg)
@@ -394,8 +395,8 @@ impl PreviewCache {
         std::fs::create_dir_all(&dir)
             .map_err(|e| JobError::io("creating the playback cache", &e))?;
 
-        let ffmpeg =
-            crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
+        let ffmpeg = crate::probe::locate(ToolKey::Ffmpeg, &crate::probe::ProbeOptions::from_env())
+            .ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
         let out_pattern = dir.join("frame%03d.jpg");
         proc::run(
             Cmd::new(ffmpeg)
@@ -465,8 +466,8 @@ impl PreviewCache {
             return Ok(w);
         }
 
-        let ffmpeg =
-            crate::probe::which("ffmpeg").ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
+        let ffmpeg = crate::probe::locate(ToolKey::Ffmpeg, &crate::probe::ProbeOptions::from_env())
+            .ok_or_else(|| JobError::missing_tool("FFmpeg"))?;
         let raw = cache.with_extension("raw");
         let mut cmd = Cmd::new(ffmpeg).arg("-y").arg("-i").arg(source);
         if let Some(filter) = filter {
@@ -720,7 +721,7 @@ fn render_pdf_pages(
         return Ok(Vec::new());
     }
     std::fs::create_dir_all(dir).map_err(|e| JobError::io("creating the page cache", &e))?;
-    let pdftoppm = crate::probe::which("pdftoppm")
+    let pdftoppm = crate::probe::locate(ToolKey::Pdftoppm, &crate::probe::ProbeOptions::from_env())
         .ok_or_else(|| JobError::missing_tool("Poppler (pdftoppm)"))?;
     let prefix = dir.join("page");
     proc::run(

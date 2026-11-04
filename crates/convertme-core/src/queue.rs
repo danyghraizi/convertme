@@ -615,10 +615,24 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
-    // A dead pid's dir is swept; without a handle API in this crate, treat
-    // unknown pids as alive so a live process is never robbed of its work dir.
-    let _ = pid;
-    true
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    unsafe {
+        match OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        ) {
+            Ok(handle) => {
+                let status = WaitForSingleObject(handle, 0);
+                let _ = CloseHandle(handle);
+                status != WAIT_OBJECT_0
+            }
+            Err(error) => error.code() != ERROR_INVALID_PARAMETER.to_hresult(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -959,5 +973,23 @@ mod tests {
         assert!(!dead.exists(), "a dead process's work dir must be swept");
         assert!(live.exists(), "a live process's work dir must be kept");
         assert!(unrelated.exists(), "unrelated entries must be left alone");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn exited_child_workdir_is_swept() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let work = root
+            .path()
+            .join(format!("{}-{pid}-1", crate::identity::TMP_PREFIX));
+        std::fs::create_dir_all(&work).unwrap();
+        child.wait().unwrap();
+        drop(child);
+        assert_eq!(sweep_temp_dirs_in(root.path()), 1);
+        assert!(!work.exists());
     }
 }

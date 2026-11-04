@@ -12,6 +12,19 @@ fn main() {
     // Derive identity strings, then the config that consumes it.
     println!("cargo:rerun-if-changed=../../crates/convertme-core/src/identity.rs");
     println!("cargo:rerun-if-changed=../../scripts/gen_tauri_conf.rs");
+    println!("cargo:rerun-if-changed=../../packaging/windows/tools.lock.json");
+    println!("cargo:rerun-if-changed=../../packaging/windows/hooks.nsh");
+    println!("cargo:rerun-if-env-changed=CONVERTME_PACKAGE_BUILD");
+    if let Ok(target) = std::env::var("TARGET") {
+        println!("cargo:rerun-if-changed=../../vendor/windows/{target}/tools/manifest.json");
+        println!("cargo:rerun-if-changed=../../vendor/linux/{target}/tools/manifest.json");
+    }
+    if let Some(compliance) = std::env::var_os("CONVERTME_COMPLIANCE_DIR") {
+        println!(
+            "cargo:rerun-if-changed={}",
+            std::path::PathBuf::from(compliance).display()
+        );
+    }
     let path = write_conf();
     println!("cargo:rerun-if-changed={}", path.display());
     // The frontend bundle is embedded at compile time, so a rebuilt UI must force a

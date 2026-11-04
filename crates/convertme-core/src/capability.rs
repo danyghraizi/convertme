@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 pub enum ToolKey {
     Ffmpeg,
     Ffprobe,
+    Ffplay,
     Magick,
-    Gs,
     Qpdf,
+    Gs,
     Pdftoppm,
     Pdftotext,
     Pandoc,
@@ -27,9 +28,10 @@ pub enum ToolKey {
 }
 
 impl ToolKey {
-    pub const ALL: [ToolKey; 12] = [
+    pub const ALL: [ToolKey; 13] = [
         ToolKey::Ffmpeg,
         ToolKey::Ffprobe,
+        ToolKey::Ffplay,
         ToolKey::Magick,
         ToolKey::Gs,
         ToolKey::Qpdf,
@@ -46,6 +48,7 @@ impl ToolKey {
         match self {
             ToolKey::Ffmpeg => "ffmpeg",
             ToolKey::Ffprobe => "ffprobe",
+            ToolKey::Ffplay => "ffplay",
             ToolKey::Magick => "magick",
             ToolKey::Gs => "gs",
             ToolKey::Qpdf => "qpdf",
@@ -81,6 +84,7 @@ impl ToolKey {
             ToolKey::Sidecar => &["convertme-pdf"],
             ToolKey::Ffmpeg => &["ffmpeg"],
             ToolKey::Ffprobe => &["ffprobe"],
+            ToolKey::Ffplay => &["ffplay"],
             ToolKey::Gs => &["gs"],
             ToolKey::Qpdf => &["qpdf"],
             ToolKey::Pdftoppm => &["pdftoppm"],
@@ -93,6 +97,7 @@ impl ToolKey {
     pub fn label(self) -> &'static str {
         match self {
             ToolKey::Ffmpeg | ToolKey::Ffprobe => "FFmpeg",
+            ToolKey::Ffplay => "Audio preview player",
             ToolKey::Magick => "ImageMagick",
             ToolKey::Gs => "Ghostscript",
             ToolKey::Qpdf => "qpdf",
@@ -286,5 +291,14 @@ mod tests {
         caps.save(&path).unwrap();
         let loaded = Capabilities::load(&path);
         assert!(!loaded.available(ToolKey::Magick));
+    }
+
+    #[test]
+    fn ffplay_is_a_distinct_audio_preview_capability() {
+        assert_eq!(ToolKey::parse("ffplay"), Some(ToolKey::Ffplay));
+        assert_eq!(ToolKey::Ffplay.candidates(), &["ffplay"]);
+        assert_eq!(ToolKey::Ffplay.label(), "Audio preview player");
+        assert!(ToolKey::ALL.contains(&ToolKey::Ffplay));
+        assert_eq!(ToolKey::Ffplay.as_str(), "ffplay");
     }
 }

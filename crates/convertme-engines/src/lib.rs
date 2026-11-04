@@ -90,6 +90,7 @@ impl Toolset {
             && cap.ok
             && let Some(path) = &cap.path
             && path.exists()
+            && probe::locate(key, &self.opts).as_ref() == Some(path)
         {
             return Ok(path.clone());
         }
@@ -342,4 +343,46 @@ pub(crate) fn ensure_file(path: &Path, what: &str) -> Result<(), JobError> {
 /// Width and height of an image, read from its header (no decode).
 pub fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
     ::image::image_dimensions(path).ok()
+}
+
+#[cfg(test)]
+mod toolset_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn cached_capability_from_an_old_root_is_not_reused() {
+        let package = tempfile::tempdir().unwrap();
+        let old = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
+        let packaged_tool = package.path().join(name);
+        let old_tool = old.path().join(name);
+        std::fs::write(&packaged_tool, b"not a real executable").unwrap();
+        std::fs::write(&old_tool, b"old executable").unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&packaged_tool, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::fs::set_permissions(&old_tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut capabilities = Capabilities::default();
+        capabilities.put(convertme_core::capability::Capability {
+            key: ToolKey::Ffmpeg.as_str().into(),
+            path: Some(old_tool),
+            version: Some("cached".into()),
+            ok: true,
+            features: vec![],
+            mtime: None,
+        });
+        let mut options = probe::ProbeOptions::from_env();
+        options.tools_dir = Some(package.path().to_path_buf());
+        let tools = Toolset::new(Arc::new(RwLock::new(capabilities)), options);
+
+        assert_eq!(tools.path(ToolKey::Ffmpeg).unwrap(), packaged_tool);
+    }
 }

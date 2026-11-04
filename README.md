@@ -26,8 +26,8 @@ source file is never modified — every job writes a new file next to it.
 cargo xtask gen-conf            # crates/convertme-gui/tauri.conf.json
 cargo xtask fixtures            # one tiny file per input format
 npm --prefix ui ci && npm --prefix ui run build
-cargo xtask vendor              # copy the bundled tools into vendor/bin
 ./sidecars/pdf/build.sh         # the Python sidecar
+cargo xtask vendor --sidecar sidecars/pdf/dist/convertme-pdf
 cargo build --release -p convertme-gui --bin convertme
 ```
 
@@ -42,11 +42,16 @@ The bundler runs the identity gate, which needs the token list:
 export DEBRAND_TOKENS_FILE=~/.config/convertme/forbidden.txt   # one lowercase token per line
 ```
 
-`./scripts/bundle.sh deb,appimage` produces `app.convertme_<version>_amd64.deb` and
-`app.convertme_<version>_amd64.AppImage` (`.rpm` where `rpmbuild` exists); the NSIS
-installer and portable zip come from the same script on Windows. The package and the
-desktop entry carry the reverse-DNS id — `app.convertme.desktop`, `Name=ConvertMe`,
-`Exec=convertme` — while the binary and the CLI are `convertme`.
+`./scripts/bundle.sh deb` (or `deb,rpm`) is the Linux package entry point; it requires
+the pinned Ubuntu 24.04 x86_64 build environment and stops when payloads or packaging
+tools are absent. AppImage builds currently fail closed until portable ELF dependencies
+and Ghostscript/Tesseract data paths are proven. A local build is not clean-machine evidence.
+
+Windows NSIS and portable artifacts use `scripts/bundle-windows.ps1` with an explicit
+MSVC target. The build requires x64 CPython 3.12, the matching Microsoft-signed offline
+WebView2 installer, a verified compliance directory, and the target's pinned tool
+payload. Missing or conflicting inputs stop packaging; the script does not fall back
+to PATH tools.
 
 ## Running
 

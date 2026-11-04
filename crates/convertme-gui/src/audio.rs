@@ -85,9 +85,17 @@ impl AudioSink {
 /// the simple sinks (`paplay`, `pw-play`, `aplay`) cannot seek, so a trimmed preview
 /// asks for one of the two capable players rather than silently playing from zero.
 fn player_command(source: &Path, start: f64) -> Result<(String, Command), String> {
+    let options = probe::ProbeOptions::from_env();
     let player = ["ffplay", "mpv", "paplay", "pw-play", "aplay"]
         .iter()
-        .find_map(|name| probe::which(name).map(|program| (*name, program)))
+        .find_map(|name| {
+            let program = if *name == "ffplay" {
+                probe::locate(convertme_core::capability::ToolKey::Ffplay, &options)
+            } else {
+                probe::which(name)
+            }?;
+            Some((*name, program))
+        })
         .ok_or_else(|| {
             "no audio player is installed (ffplay, mpv, paplay, pw-play or aplay)".to_string()
         })?;
@@ -97,7 +105,7 @@ fn player_command(source: &Path, start: f64) -> Result<(String, Command), String
     } else {
         0.0
     };
-    let mut command = Command::new(program);
+    let mut command = Command::new(&program);
     match name {
         "ffplay" => {
             command.args(["-nodisp", "-autoexit", "-loglevel", "quiet"]);
@@ -123,6 +131,8 @@ fn player_command(source: &Path, start: f64) -> Result<(String, Command), String
             command.arg(source);
         }
     }
+    convertme_engines::proc::configure_tool_environment(&mut command, &program);
+    convertme_engines::proc::configure_background(&mut command);
     Ok((name.to_string(), command))
 }
 

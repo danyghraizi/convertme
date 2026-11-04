@@ -15,12 +15,12 @@ pub const APP_NAME: &str = "ConvertMe";
 pub const APP_ID: &str = "app.convertme";
 /// Binary name, CLI name and install directory leaf.
 pub const BIN: &str = "convertme";
-/// Windows named pipe for the single-instance hand-off.
-pub const PIPE: &str = r"\\.\pipe\convertme-ipc";
+/// Base name for the per-user, per-session Windows single-instance pipe.
+pub const PIPE: &str = "convertme-ipc";
 /// Linux socket path relative to `$XDG_RUNTIME_DIR`.
 pub const SOCKET_REL: &str = "convertme/ipc.sock";
-/// Windows named mutex used for the single-instance lock.
-pub const MUTEX: &str = r"Global\convertme-single";
+/// Base name for the per-user, per-session Windows single-instance mutex.
+pub const MUTEX: &str = "convertme-single";
 /// Prefix of every temp work directory: `<tmp>/convertme-<pid>-<seq>`.
 pub const TMP_PREFIX: &str = "convertme";
 /// Directory name used under the platform data/config/cache roots.

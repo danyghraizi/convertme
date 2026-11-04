@@ -10,6 +10,7 @@ Rust side surfaces as `engine_failed` with the stderr tail.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from . import docx as docx_mod
 from . import epub as epub_mod
@@ -33,7 +34,10 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     if argv[0] in ("--version", "-V"):
-        print(f"convertme-pdf {VERSION}")
+        stamp = ""
+        if getattr(sys, "frozen", False):
+            stamp = " " + (Path(sys._MEIPASS) / "convertme-pdf-build-stamp.txt").read_text(encoding="ascii").strip()
+        print(f"convertme-pdf {VERSION}{stamp}")
         return 0
     if argv[0] in ("--help", "-h"):
         print(__doc__)

@@ -6,7 +6,7 @@
 #     weights are dead weight in a 320 MB product.
 #   * `onnxruntime` (~30 MB) — only reachable through those models.
 #
-# Build with: `pyinstaller --noconfirm --clean convertme-pdf.spec`
+# Build with `python build.py`, which supplies the embedded source stamp.
 
 import os
 import sys
@@ -21,6 +21,8 @@ datas = [
     for entry in collect_data_files("pymupdf")
     if "layout/resources" not in entry[0].replace(os.sep, "/")
 ]
+datas.append((os.environ["CONVERTME_PDF_STAMP_FILE"], "."))
+
 
 hiddenimports = (
     collect_submodules("pymupdf")

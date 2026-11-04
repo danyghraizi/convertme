@@ -286,8 +286,166 @@ pub fn run_with_lines(
     .with_stderr(&stderr))
 }
 
+/// Keep helper processes from creating a console window on Windows.
+pub fn configure_background(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
+/// Point portable helper processes at the data trees shipped beside them.
+pub fn configure_tool_environment(command: &mut Command, program: &Path) {
+    #[cfg(windows)]
+    {
+        let Some(root) = program
+            .ancestors()
+            .find(|dir| dir.join("manifest.json").is_file())
+        else {
+            return;
+        };
+        let Ok(manifest) = std::fs::read(root.join("manifest.json")) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&manifest) else {
+            return;
+        };
+        let Some(resources) = value.get("resource_dirs").and_then(|v| v.as_object()) else {
+            return;
+        };
+        let resource = |name: &str| -> Option<PathBuf> {
+            let relative = resources.get(name)?.as_str()?;
+            let path = root.join(relative);
+            path.is_dir().then_some(path)
+        };
+        if let Some(path) = resource("tessdata") {
+            command.env("TESSDATA_PREFIX", path);
+        }
+        if let Some(home) = resource("imagemagick_home") {
+            command.env("MAGICK_HOME", &home);
+            let configure = home.join("etc");
+            if configure.is_dir() {
+                command.env("MAGICK_CONFIGURE_PATH", configure);
+            }
+            let coders = home.join("modules").join("coders");
+            if coders.is_dir() {
+                command.env("MAGICK_CODER_MODULE_PATH", coders);
+            }
+        }
+        if let Some(dirs) = resources.get("ghostscript_lib").and_then(|v| v.as_array()) {
+            let paths: Vec<PathBuf> = dirs
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(|relative| root.join(relative))
+                .filter(|path| path.is_dir())
+                .collect();
+            if !paths.is_empty() {
+                command.env("GS_LIB", std::env::join_paths(paths).unwrap_or_default());
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(program_path) = std::fs::canonicalize(program) {
+        if let Some(root) = program_path.ancestors().find(|dir| dir.join("manifest.json").is_file()) {
+            configure_linux_tool_environment(command, &program_path, root);
+        }
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        let _ = (command, program);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_tool_environment(command: &mut Command, program: &Path, root: &Path) {
+    let Ok(root) = std::fs::canonicalize(root) else { return };
+    let Ok(program_path) = std::fs::canonicalize(program) else { return };
+    let Ok(bytes) = std::fs::read(root.join("manifest.json")) else { return };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
+    if manifest.get("schema_version").and_then(|v| v.as_u64()) != Some(1)
+        || manifest.get("helper_arch").and_then(|v| v.as_str()) != Some("x86_64") { return; }
+    let Some(executables) = manifest.get("executables").and_then(|v| v.as_object()) else { return };
+    let Some((key, _)) = executables.iter().find(|(_, value)| {
+        value.as_str().and_then(|p| std::fs::canonicalize(root.join(p)).ok())
+            .is_some_and(|p| p.starts_with(&root) && p == program_path)
+    }) else { return };
+    let Some(dirs) = manifest.get("library_dirs").and_then(|v| v.get(key)).and_then(|v| v.as_array()) else { return };
+    let mut libraries = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        let Some(relative) = dir.as_str() else { return };
+        let path = Path::new(relative);
+        if path.as_os_str().is_empty() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) { return; }
+        let Ok(path) = std::fs::canonicalize(root.join(path)) else { return };
+        if !path.starts_with(&root) || !path.is_dir() { return; }
+        libraries.push(path);
+    }
+    let Ok(library_path) = std::env::join_paths(libraries) else { return };
+    command.env_remove("LD_PRELOAD").env_remove("LD_LIBRARY_PATH");
+    if !library_path.is_empty() { command.env("LD_LIBRARY_PATH", library_path); }
+    let Some(name) = program.file_name().and_then(OsStr::to_str) else {
+        return;
+    };
+    let share = root.join("runtime-data/usr/share");
+    match name {
+        "gs" => {
+            let mut paths = Vec::new();
+            if let Ok(versions) = std::fs::read_dir(share.join("ghostscript")) {
+                for entry in versions.flatten() {
+                    let version = entry.path();
+                    if !version.is_dir() {
+                        continue;
+                    }
+                    for subdir in ["Resource", "lib"] {
+                        let path = version.join(subdir);
+                        if path.is_dir() {
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+            let fonts = share.join("fonts/type1/urw-base35");
+            if fonts.is_dir() {
+                paths.push(fonts);
+            }
+            if !paths.is_empty()
+                && let Ok(paths) = std::env::join_paths(paths)
+            {
+                command.env("GS_LIB", paths);
+            }
+        }
+        "tesseract" => {
+            let mut data_dirs = Vec::new();
+            if let Ok(versions) = std::fs::read_dir(share.join("tesseract-ocr")) {
+                for entry in versions.flatten() {
+                    let data = entry.path().join("tessdata");
+                    if data.join("eng.traineddata").is_file() {
+                        data_dirs.push(data);
+                    }
+                }
+            }
+            if data_dirs.len() == 1 {
+                command.env("TESSDATA_PREFIX", &data_dirs[0]);
+            }
+        }
+        "pdftoppm" | "pdftotext" | "pdfinfo" => {
+            let data = share.join("poppler");
+            if data.is_dir() {
+                command.env("POPPLER_DATADIR", data);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build(cmd: &Cmd) -> Command {
     let mut command = Command::new(verbatim_path(&cmd.program));
+    configure_background(&mut command);
+    configure_tool_environment(&mut command, &cmd.program);
     command.args(&cmd.args);
     command.stdin(if cmd.stdin_data.is_some() {
         Stdio::piped()
@@ -318,8 +476,11 @@ fn build(cmd: &Cmd) -> Command {
     command.env("MAGICK_MAP_LIMIT", "2GiB");
     command.env("MAGICK_DISK_LIMIT", "16GiB");
     // Keep tool output machine-readable regardless of the user's locale.
-    command.env("LC_ALL", "C.UTF-8");
-    command.env("LANG", "C.UTF-8");
+    #[cfg(unix)]
+    {
+        command.env("LC_ALL", "C.UTF-8");
+        command.env("LANG", "C.UTF-8");
+    }
     // Nothing may phone home from a conversion.
     command.env("GS_OPTIONS", "-P-");
 
@@ -388,7 +549,14 @@ fn terminate(child: &mut Child, graceful: bool) {
     {
         let _ = graceful;
         // taskkill /T takes the whole tree; CREATE_NO_WINDOW keeps it silent.
-        let _ = Command::new("taskkill")
+        let system_root =
+            std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
+        let taskkill = PathBuf::from(system_root)
+            .join("System32")
+            .join("taskkill.exe");
+        let mut command = Command::new(taskkill);
+        configure_background(&mut command);
+        let _ = command
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -485,8 +653,17 @@ fn exit_status_fallback() -> std::process::ExitStatus {
 mod tests {
     use super::*;
 
-    fn sh(script: &str) -> Cmd {
-        Cmd::new("/bin/sh").arg("-c").arg(script)
+    fn child(mode: &str) -> Cmd {
+        static CHILD: std::sync::LazyLock<(tempfile::TempDir, PathBuf)> = std::sync::LazyLock::new(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let executable = dir.path().join(if cfg!(windows) { "process_child.exe" } else { "process_child" });
+            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/process_child.rs");
+            let status = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .arg(source).arg("-o").arg(&executable).status().expect("starting native rustc");
+            assert!(status.success(), "compiling process fixture failed: {status}");
+            (dir, executable)
+        });
+        Cmd::new(&CHILD.1).arg(mode)
     }
 
     #[test]
@@ -495,7 +672,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let names = [
             "sp ace.txt",
+            #[cfg(unix)]
             "q\"uote.txt",
+            #[cfg(unix)]
             "line\nbreak.txt",
             "émoji🎬.txt",
             "amp&semi;colon.txt",
@@ -505,12 +684,7 @@ mod tests {
             let path = dir.path().join(name);
             std::fs::write(&path, b"payload").unwrap();
             let out = run(
-                Cmd::new("/bin/sh")
-                    .arg("-c")
-                    .arg("cat \"$1\"")
-                    .arg("sh")
-                    .arg(&path)
-                    .stdout_piped(),
+                child("echo-file").arg(&path).stdout_piped(),
                 &JobCtx::new(),
             )
             .unwrap();
@@ -521,7 +695,7 @@ mod tests {
     #[test]
     fn nonzero_exit_carries_the_stderr_tail() {
         let ctx = JobCtx::new();
-        let err = run(sh("echo boom >&2; exit 3"), &ctx).unwrap_err();
+        let err = run(child("stderr-exit"), &ctx).unwrap_err();
         assert_eq!(err.code, ErrorCode::EngineFailed);
         assert!(err.message.contains('3'));
         assert!(err.stderr_tail.unwrap().contains("boom"));
@@ -529,6 +703,7 @@ mod tests {
 
     #[test]
     fn cancellation_kills_the_process_and_reports_cancelled() {
+        let command = child("sleep");
         let ctx = JobCtx::new();
         let flag = ctx.clone();
         std::thread::spawn(move || {
@@ -536,7 +711,7 @@ mod tests {
             flag.cancel();
         });
         let start = Instant::now();
-        let err = run(sh("sleep 30"), &ctx).unwrap_err();
+        let err = run(command, &ctx).unwrap_err();
         assert_eq!(err.code, ErrorCode::Cancelled);
         assert!(
             start.elapsed() < Duration::from_secs(5),
@@ -547,15 +722,10 @@ mod tests {
     #[test]
     fn watchdog_fires_and_reports_timed_out() {
         let ctx = JobCtx::new();
+        let command = child("sleep").budget_duration(Duration::from_millis(300));
         // A 300 ms budget stands in for the 5-minute one, same code path.
         let start = Instant::now();
-        let err = run(
-            Cmd::new("/bin/sh")
-                .arg("-c")
-                .arg("sleep 30")
-                .budget_duration(Duration::from_millis(300)),
-            &ctx,
-        )
+        let err = run(command, &ctx)
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(5));
@@ -575,9 +745,7 @@ mod tests {
     fn stdout_lines_reach_the_callback() {
         let mut lines = Vec::new();
         let out = run_with_lines(
-            Cmd::new("/bin/sh")
-                .arg("-c")
-                .arg("printf 'a\\nb\\nc\\n'")
+            child("lines")
                 .stdout_piped(),
             &JobCtx::new(),
             |line| lines.push(line.to_string()),
@@ -585,5 +753,92 @@ mod tests {
         .unwrap();
         assert_eq!(lines, vec!["a", "b", "c"]);
         assert_eq!(out.stdout.trim(), "a\nb\nc");
+    }
+    #[test]
+    fn cancellation_terminates_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("descendant-alive");
+        let command = child("spawn-descendant").arg(&marker).stdout_piped();
+        let ctx = JobCtx::new();
+        let cancel = ctx.clone();
+        let mut observed_pid = false;
+        let err = run_with_lines(command, &ctx, |line| {
+            observed_pid = line.parse::<u32>().is_ok();
+            cancel.cancel();
+        }).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Cancelled);
+        assert!(observed_pid, "child did not report its descendant");
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(!marker.exists(), "descendant survived cancellation");
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runtime_data_sets_tool_specific_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let share = root.path().join("runtime-data/usr/share");
+        let resource = share.join("ghostscript/10.02/Resource");
+        let gs_lib = share.join("ghostscript/10.02/lib");
+        let fonts = share.join("fonts/type1/urw-base35");
+        let tessdata = share.join("tesseract-ocr/5/tessdata");
+        let poppler = share.join("poppler");
+        for path in [&resource, &gs_lib, &fonts, &tessdata, &poppler] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(tessdata.join("eng.traineddata"), b"data").unwrap();
+        std::fs::create_dir_all(root.path().join("bin")).unwrap();
+        std::fs::create_dir_all(root.path().join("lib")).unwrap();
+        for name in ["gs", "tesseract", "pdftotext"] {
+            std::fs::write(root.path().join("bin").join(name), b"tool").unwrap();
+        }
+        std::fs::write(root.path().join("manifest.json"), r#"{"schema_version":1,"helper_arch":"x86_64","executables":{"gs":"bin/gs","tesseract":"bin/tesseract","pdftotext":"bin/pdftotext"},"library_dirs":{"gs":["lib"],"tesseract":["lib"],"pdftotext":["lib"]}}"#).unwrap();
+
+        let mut gs = Command::new("gs");
+        configure_linux_tool_environment(&mut gs, &root.path().join("bin/gs"), root.path());
+        let envs: Vec<_> = gs.get_envs().collect();
+        assert!(envs.iter().any(|(key, value)| *key == OsStr::new("LD_PRELOAD") && value.is_none()));
+        assert!(envs.iter().any(|(key, value)| *key == OsStr::new("LD_LIBRARY_PATH")
+            && value == &Some(root.path().join("lib").as_os_str())));
+        let gs_paths = gs
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == OsStr::new("GS_LIB")).then(|| value.unwrap().to_os_string())
+            })
+            .unwrap();
+        assert_eq!(
+            std::env::split_paths(&gs_paths).collect::<Vec<_>>(),
+            vec![resource, gs_lib, fonts]
+        );
+
+        let mut tesseract = Command::new("tesseract");
+        configure_linux_tool_environment(
+            &mut tesseract,
+            &root.path().join("bin/tesseract"),
+            root.path(),
+        );
+        assert_eq!(
+            tesseract
+                .get_envs()
+                .find_map(|(name, value)| {
+                    (name == OsStr::new("TESSDATA_PREFIX")).then(|| value.unwrap().to_os_string())
+                })
+                .unwrap(),
+            tessdata.into_os_string()
+        );
+
+        let mut pdftotext = Command::new("pdftotext");
+        configure_linux_tool_environment(
+            &mut pdftotext,
+            &root.path().join("bin/pdftotext"),
+            root.path(),
+        );
+        assert_eq!(
+            pdftotext
+                .get_envs()
+                .find_map(|(name, value)| {
+                    (name == OsStr::new("POPPLER_DATADIR")).then(|| value.unwrap().to_os_string())
+                })
+                .unwrap(),
+            poppler.into_os_string()
+        );
     }
 }

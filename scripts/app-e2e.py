@@ -48,9 +48,7 @@ sys.path.insert(0, os.path.join(REPO, "scripts"))
 import validate  # noqa: E402 - shared artifact validators
 BIN = os.path.join(REPO, "target/release/convertme")
 UI_DIST = os.path.join(REPO, "crates/convertme-gui/ui-dist")
-DEFAULT_FIXTURES = os.environ.get(
-    "CONVERTME_FIXTURES", "/home/dany/Downloads/Testing Files"
-)
+DEFAULT_FIXTURES = os.environ.get("CONVERTME_FIXTURES", os.path.join(REPO, "fixtures"))
 PREVIEW_SHOT = (1400, 1000)
 # Set by the worker; published artifacts are copied here so the report survives the
 # throwaway profile.
@@ -5988,19 +5986,38 @@ def worker(args) -> int:
 
 def tool_versions(prefix: str | None = None) -> dict:
     out = {}
-    for name, cmd in (
+    tools = (
         ("magick", ["magick", "-version"]),
         ("ffmpeg", ["ffmpeg", "-version"]),
         ("pdfinfo", ["pdfinfo", "-v"]),
-        ("identify", ["identify", "-version"]),
-        # The sidecar is copied beside the binary at build time, so it can be an older
-        # build than vendor/bin's: this line says which one answered.
+        # The separately built sidecar is checked independently from the helpers.
         ("convertme-pdf", ["convertme-pdf", "--version"]),
-    ):
-        binary = os.path.join(prefix, name) if prefix else name
-        if prefix and not os.path.exists(binary):
-            out[name] = "not bundled"
-            continue
+    )
+    manifest_tools = None
+    executables = {}
+    if prefix:
+        for candidate in (
+            os.path.join(prefix, "tools"),
+            os.path.abspath(os.path.join(prefix, "..", "lib", "app.convertme", "tools")),
+        ):
+            manifest = os.path.join(candidate, "manifest.json")
+            if os.path.isfile(manifest):
+                manifest_tools = os.path.realpath(candidate)
+                with open(manifest, encoding="utf-8") as stream:
+                    executables = json.load(stream).get("executables", {})
+                break
+    for name, cmd in tools:
+        if prefix:
+            relative = executables.get(name)
+            if not manifest_tools or not isinstance(relative, str):
+                out[name] = "not bundled"
+                continue
+            binary = os.path.realpath(os.path.join(manifest_tools, relative))
+            if os.path.commonpath((manifest_tools, binary)) != manifest_tools or not os.path.isfile(binary):
+                out[name] = "unavailable"
+                continue
+        else:
+            binary = name
         try:
             result = run([binary, *cmd[1:]], timeout=20)
             line = (result.stdout or result.stderr).splitlines()

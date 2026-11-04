@@ -3,7 +3,7 @@
 //! * `gen-conf`   – regenerate `crates/convertme-gui/tauri.conf.json`
 //! * `snapshot`   – rewrite the registry snapshot used by the planner test
 //! * `fixtures`   – (re)generate one tiny file per input format
-//! * `vendor`     – copy the bundled tools into `vendor/bin/<triple>`
+//! * `vendor`     – stage the locked platform tools payload
 //! * `debrand`    – run the identity gate over the tree and the artifacts
 //! * `perf`       – measure the budgets from the plan and fail when they regress
 //! * `release`    – gate, build, measure the bundle
@@ -28,10 +28,10 @@ fn main() -> ExitCode {
     let task = args.first().map(String::as_str).unwrap_or("help");
     let rest = if args.len() > 1 { &args[1..] } else { &[][..] };
     let result = match task {
-        "gen-conf" => gen_conf(),
+        "gen-conf" => gen_conf(rest),
         "snapshot" => snapshot(),
         "fixtures" => fixtures(),
-        "vendor" => vendor(),
+        "vendor" => vendor(rest),
         "debrand" => debrand(),
         "perf" => perf(rest),
         "release" => release(),
@@ -53,12 +53,23 @@ fn main() -> ExitCode {
     }
 }
 
-fn gen_conf() -> Result<(), String> {
+fn gen_conf(args: &[String]) -> Result<(), String> {
+    let target = match args {
+        [] => host_triple()?,
+        [flag, value] if flag == "--target" => value.clone(),
+        _ => return Err("gen-conf accepts only --target <triple>".into()),
+    };
+    if !matches!(
+        target.as_str(),
+        "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc"
+    ) {
+        return Err(format!("unsupported config target {target:?}"));
+    }
     let root = repo_root();
-    let manifest_dir = root.join("crates/convertme-gui");
-    let path = manifest_dir.join("tauri.conf.json");
-    std::fs::write(&path, tauri_conf_json()).map_err(|e| format!("writing {path:?}: {e}"))?;
-    println!("wrote {}", path.display());
+    let path = root.join("crates/convertme-gui").join("tauri.conf.json");
+    std::fs::write(&path, tauri_conf_json_for_target(&target))
+        .map_err(|e| format!("writing {path:?}: {e}"))?;
+    println!("wrote {} for {target}", path.display());
     Ok(())
 }
 
@@ -244,7 +255,9 @@ fn fixtures() -> Result<(), String> {
     std::fs::create_dir_all(&hostile).map_err(|e| e.to_string())?;
     let hostile_names = [
         "sp ace.png",
+        #[cfg(unix)]
         "q\"uote.png",
+        #[cfg(unix)]
         "line\nbreak.png",
         "émoji🎬.png",
         &format!("{}.png", "x".repeat(200)),
@@ -548,68 +561,95 @@ fn write_minimal_ods(path: &Path) -> Result<(), String> {
 // Vendoring
 // ---------------------------------------------------------------------------
 
-fn host_triple() -> String {
+fn host_triple() -> Result<String, String> {
     let out = Command::new("rustc")
-        .args(["--print", "host-tuple"])
+        .args(["-vV"])
         .output()
-        .or_else(|_| Command::new("rustc").args(["-vV"]).output())
-        .expect("rustc must be on PATH");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        .map_err(|e| format!("running rustc to determine host target: {e}"))?;
+    if !out.status.success() {
+        return Err("rustc could not determine the host target".into());
+    }
+    let text =
+        String::from_utf8(out.stdout).map_err(|e| format!("invalid rustc host output: {e}"))?;
     text.lines()
-        .find_map(|line| {
-            line.strip_prefix("host: ").or(if text.contains("host:") {
-                None
-            } else {
-                Some(line.trim())
-            })
-        })
-        .unwrap_or("x86_64-unknown-linux-gnu")
-        .trim()
-        .to_string()
+        .find_map(|line| line.strip_prefix("host: "))
+        .filter(|host| !host.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "rustc did not report a host target".into())
 }
 
-/// `vendor/bin/<tool>-<triple>` is what Tauri's `externalBin` resolves.
-fn vendor() -> Result<(), String> {
-    let root = repo_root();
-    let triple = host_triple();
-    let dir = root.join("vendor").join("bin");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let tools = [
-        ("ffmpeg", "ffmpeg"),
-        ("ffprobe", "ffprobe"),
-        ("magick", "magick"),
-        ("gs", "gs"),
-        ("qpdf", "qpdf"),
-        ("pdftoppm", "pdftoppm"),
-        ("pdftotext", "pdftotext"),
-        ("pandoc", "pandoc"),
-        ("7zz", "7zz"),
-        ("tesseract", "tesseract"),
-        ("convertme-pdf", "convertme-pdf"),
-    ];
-    let mut total = 0u64;
-    for (name, binary) in tools {
-        let Some(source) = which(binary) else {
-            println!("skip  {name:<14} not found on PATH");
-            continue;
+/// Vendor tools for the selected target; Windows retains complete tool trees.
+fn vendor(args: &[String]) -> Result<(), String> {
+    let mut target = None;
+    let mut python = None;
+    let mut helper_payload = None;
+    let mut sidecar = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let slot = match arg.as_str() {
+            "--target" => &mut target,
+            "--python" => &mut python,
+            "--helper-payload" => &mut helper_payload,
+            "--sidecar" => &mut sidecar,
+            _ => return Err(format!("unknown vendor argument {arg:?}")),
         };
-        let target = dir.join(format!(
-            "{name}-{triple}{}",
-            if cfg!(windows) { ".exe" } else { "" }
-        ));
-        std::fs::copy(&source, &target)
-            .map_err(|e| format!("copying {source:?} → {target:?}: {e}"))?;
-        let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        total += size;
-        println!(
-            "vendor {name:<14} {:>6.1} MB  {}",
-            size as f64 / 1e6,
-            source.display()
+        if slot.is_some() {
+            return Err(format!("duplicate vendor argument {arg}"));
+        }
+        *slot = Some(
+            iter.next()
+                .ok_or_else(|| format!("{arg} requires a value"))?
+                .clone(),
         );
     }
-    println!("total bundled tool size: {:.1} MB", total as f64 / 1e6);
-    Ok(())
+    let root = repo_root();
+    let triple = match target {
+        Some(target) => target,
+        None => host_triple()?,
+    };
+    match triple.as_str() {
+        "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc" => {
+            if sidecar.is_some() { return Err("--sidecar is a Linux vendor option".into()); }
+            let interpreter =
+                python
+                    .as_deref()
+                    .unwrap_or(if cfg!(windows) { "python" } else { "python3" });
+            let mut command = Command::new(interpreter);
+            command
+                .arg(root.join("scripts/vendor-windows.py"))
+                .arg("--target")
+                .arg(&triple);
+            if let Some(interpreter) = &python {
+                command.arg("--python").arg(interpreter);
+            }
+            if let Some(payload) = &helper_payload {
+                command.arg("--helper-payload").arg(payload);
+            }
+            let status = command
+                .current_dir(&root)
+                .status()
+                .map_err(|e| format!("starting Windows vendoring: {e}"))?;
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Windows vendoring failed: {status}"))
+            };
+        }
+        "x86_64-unknown-linux-gnu" => {
+            if triple != host_triple()? {
+                return Err("Linux vendoring must run on its native target".into());
+            }
+            if helper_payload.is_some() {
+                return Err("--helper-payload is a Windows vendor option".into());
+            }
+            let mut command = Command::new(python.as_deref().unwrap_or("python3"));
+            command.arg(root.join("scripts/vendor-linux.py")).current_dir(&root);
+            command.arg("--sidecar").arg(sidecar.as_deref().ok_or("Linux vendoring requires --sidecar <path>")?);
+            let status = command.status().map_err(|e| format!("starting Linux vendoring: {e}"))?;
+            if status.success() { Ok(()) } else { Err(format!("Linux vendoring failed: {status}")) }
+        }
+        _ => Err(format!("unsupported vendor target {triple:?}")),
+    }
 }
 
 fn which(binary: &str) -> Option<PathBuf> {

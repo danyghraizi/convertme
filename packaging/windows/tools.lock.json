@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "helper_arch": "x86_64",
+  "sources": {
+    "ffmpeg": {
+      "supply": "project-build",
+      "build_lock": "packaging/windows/ffmpeg.lock.json",
+      "version": "9.0",
+      "archive_root": ""
+    },
+    "imagemagick": {
+      "url": "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-35/ImageMagick-7.1.2-35-portable-Q16-HDRI-x64.7z",
+      "sha256": "34db4364da26c88d6b8cc5bbc1fff22b85d00d3b399c82fe85ee4790efacbbf1",
+      "version": "7.1.2-35",
+      "source": "https://github.com/ImageMagick/ImageMagick",
+      "archive_root": ""
+    },
+    "ghostscript": {
+      "url": "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe",
+      "sha256": "52a91b8bf09298788d7a57b9206127026c23eacd75405f0a131e26dc381dce50",
+      "version": "gs10080",
+      "source": "https://github.com/ArtifexSoftware/ghostpdl-downloads",
+      "archive_root": "",
+      "duplicate_members": {
+        "path": "lib/gssetgs.bat",
+        "count": 2,
+        "selected_variant": "gssetgs64.bat",
+        "variants": [
+          {"source": "lib/gssetgs.bat", "size": 552, "sha256": "ca207628a1dd76951dd7b750ec733b2be09a463bc761e9b17e4cd7e0e9c54356"},
+          {"source": "lib/gssetgs64.bat", "size": 380, "sha256": "babee67366808cf4f4c5724783c3975f3c07db62e0f4754c144aeb8e8d0ecd0b"}
+        ]
+      }
+    },
+    "qpdf": {
+      "url": "https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-msvc64.zip",
+      "sha256": "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d",
+      "version": "12.4.2",
+      "source": "https://github.com/qpdf/qpdf",
+      "archive_root": "qpdf-12.4.2-msvc64"
+    },
+    "poppler": {
+      "supply": "conda-prefix",
+      "build_lock": "packaging/windows/poppler-explicit.lock",
+      "version": "26.09.0=h924501e_0",
+      "archive_root": ""
+    },
+    "pandoc": {
+      "url": "https://github.com/jgm/pandoc/releases/download/3.13/pandoc-3.13-windows-x86_64.zip",
+      "sha256": "23e1f2e978a3df80db8bf65c9c59534f41a23140480cfb4f783a882ab7dc6a4e",
+      "version": "3.13",
+      "source": "https://github.com/jgm/pandoc",
+      "archive_root": "pandoc-3.13"
+    },
+    "7zip": {
+      "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.exe",
+      "sha256": "fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0",
+      "version": "26.05",
+      "source": "https://github.com/ip7z/7zip",
+      "archive_root": "",
+      "required_members": [
+        "7z.exe",
+        "7z.dll",
+        "License.txt"
+      ]
+    },
+    "extra": {
+      "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-extra.7z",
+      "sha256": "f27a8f103c84785026edcba1f67faf1357225df9d19ddb0b7760d55947141bc7",
+      "version": "26.05",
+      "source": "https://github.com/ip7z/7zip",
+      "archive_root": "",
+      "required_members": [
+        "x64/7za.exe"
+      ]
+    },
+    "7zr": {
+      "url": "https://github.com/ip7z/7zip/releases/download/26.05/7zr.exe",
+      "sha256": "9bf582b894dfa665f852d7e9112b02290a1c303c2d95a21fcdc41ffcb03143b7",
+      "version": "26.05",
+      "source": "https://github.com/ip7z/7zip"
+    },
+    "tesseract": {
+      "url": "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe",
+      "sha256": "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4",
+      "version": "5.5.3.20260724",
+      "source": "https://github.com/tesseract-ocr/tesseract",
+      "archive_root": ""
+    },
+    "eng": {
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "version": "4.1.0",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/tree/4.1.0",
+      "destination": "tesseract/tessdata/eng.traineddata"
+    }
+  },
+  "executables": {
+    "ffmpeg": "ffmpeg/bin/ffmpeg.exe",
+    "ffprobe": "ffmpeg/bin/ffprobe.exe",
+    "ffplay": "ffmpeg/bin/ffplay.exe",
+    "magick": "imagemagick/magick.exe",
+    "gs": "ghostscript/bin/gswin64c.exe",
+    "qpdf": "qpdf/bin/qpdf.exe",
+    "pdftoppm": "poppler/Library/bin/pdftoppm.exe",
+    "pdftotext": "poppler/Library/bin/pdftotext.exe",
+    "pdfinfo": "poppler/Library/bin/pdfinfo.exe",
+    "pandoc": "pandoc/pandoc.exe",
+    "7zz": "7zip/7z.exe",
+    "tesseract": "tesseract/tesseract.exe",
+    "convertme-pdf": "pdf/convertme-pdf.exe"
+  },
+  "resource_dirs": {
+    "tessdata": "tesseract/tessdata",
+    "ghostscript_lib": [
+      "ghostscript/lib",
+      "ghostscript/Resource"
+    ],
+    "imagemagick_home": "imagemagick"
+  }
+}

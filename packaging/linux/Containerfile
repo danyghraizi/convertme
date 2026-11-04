@@ -1,0 +1,15 @@
+# BASE_IMAGE must be the captured Ubuntu 24.04 amd64 image by sha256 digest.
+# This image is assembled only during explicit connected input capture. The
+# packages directory must contain the complete, verified snapshot .deb closure.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY packages/ /tmp/convertme-packages/
+COPY toolchains/rust.tar.xz toolchains/node.tar.xz /tmp/convertme-toolchains/
+RUN --network=none (dpkg -i /tmp/convertme-packages/*.deb || dpkg --configure -a) \
+    && mkdir -p /tmp/rust /opt/node \
+    && tar -xJf /tmp/convertme-toolchains/rust.tar.xz -C /tmp/rust --strip-components=1 \
+    && /tmp/rust/install.sh --prefix=/opt/rust --disable-ldconfig \
+    && tar -xJf /tmp/convertme-toolchains/node.tar.xz -C /opt/node --strip-components=1 \
+    && rm -rf /tmp/convertme-packages /tmp/convertme-toolchains /tmp/rust
+ENV PATH="/opt/rust/bin:/opt/node/bin:${PATH}"
+WORKDIR /work/convertme

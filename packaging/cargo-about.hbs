@@ -1,0 +1,17 @@
+# Third-party Rust dependency licenses
+
+Generated from the locked Cargo dependency graph. The corresponding crate sources and license files are included with these materials.
+
+{{#each licenses}}
+## {{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}
