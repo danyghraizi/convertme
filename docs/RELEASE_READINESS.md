@@ -7,6 +7,11 @@ product and engineering invariants remain in `AGENTS.md`, `docs/HANDOFF.md`, and
 
 ## Current state
 
+- Source checkpoint: `work/commercial-windows-image-2026-11-04` is committed locally.
+  The push attempt failed because the configured `127.0.0.1` proxy could not reach
+  GitHub. Push this branch from a network-enabled checkout before expecting the
+  commercial Windows GitHub Actions workflow to run.
+
 - Product direction from the maintainer (2026-11-04): build a sellable Windows product
   without paid third-party software licenses. The existing full-featured repository is
   GPL-3.0-or-later; its PDF sidecar uses AGPL PyMuPDF and its helper list includes

@@ -3,11 +3,19 @@
 ## 2026-11-04 commercial Windows continuation
 
 The Windows commercial work is on branch `work/commercial-windows-image-2026-11-04` at
-the current `HEAD`,
-based on `6fda71c`. Keep the existing GPL product and the proprietary candidate separate:
+the current `HEAD`, based on `6fda71c`. Keep the existing GPL product and the
+proprietary candidate separate:
 the full product still links a GPL/AGPL closure, while `commercial-windows/` is a clean,
 proprietary image app with PNG/JPEG/WebP/BMP/GIF/TIFF conversion, resize, and rotation.
 Do not advertise this as full ConvertMe feature parity.
+
+This checkpoint is committed locally but was not pushed: `git push` could not reach
+GitHub because the configured `127.0.0.1` proxy is unavailable in this environment.
+From a network-enabled checkout, publish it with:
+
+```bash
+git push -u origin work/commercial-windows-image-2026-11-04
+```
 
 To rebuild the candidate from the repository root, run:
 
