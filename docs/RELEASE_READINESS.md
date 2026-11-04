@@ -106,6 +106,21 @@ acceptance cell, and evidence report from the same candidate state.
 
 ## Supporting records
 
+The 2026-11-04 continuation-input snapshot is attached to the draft GitHub release
+`continuation-inputs-2026-11-04`. It is about 337 MB and is intentionally marked
+incomplete. Download it from an authenticated clone with:
+
+```bash
+gh release download continuation-inputs-2026-11-04 \
+  --repo danyghraizi/convertme \
+  --pattern 'convertme-continuation-inputs-2026-11-04.tar.gz*'
+sha256sum -c convertme-continuation-inputs-2026-11-04.tar.gz.sha256
+tar -xzf convertme-continuation-inputs-2026-11-04.tar.gz
+```
+
+Archive SHA-256: `ec2401bc31c2ef33879bc719fa158225a05fc8a38bd30455eb729dd901c091af`.
+The archive embeds `INPUTS-MANIFEST.json` with the size and SHA-256 of each input.
+
 The previous OMP session's detailed implementation notes and scenario worksheets
 were local to that machine. This guide preserves the current decisions and execution
 contracts needed to resume independently. The repository scripts and acceptance
