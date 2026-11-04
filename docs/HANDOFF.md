@@ -1,5 +1,52 @@
 # Handoff
 
+## 2026-11-04 commercial Windows continuation
+
+The Windows commercial work is on branch `work/commercial-windows-image-2026-11-04` at
+the current `HEAD`,
+based on `6fda71c`. Keep the existing GPL product and the proprietary candidate separate:
+the full product still links a GPL/AGPL closure, while `commercial-windows/` is a clean,
+proprietary image app with PNG/JPEG/WebP/BMP/GIF/TIFF conversion, resize, and rotation.
+Do not advertise this as full ConvertMe feature parity.
+
+To rebuild the candidate from the repository root, run:
+
+```powershell
+.\scripts\bundle-commercial-windows.ps1
+```
+
+The script checks/tests the Rust app, generates target-specific crate and Rust standard
+library notices, verifies the locked Microsoft WebView2 installer hash and signature,
+builds the x64 executable, and writes a portable ZIP plus a third-party source ZIP.
+The third-party source ZIP contains MPL-2.0 crate sources and notices, not proprietary
+ConvertMe source. Its internal file hashes were verified locally. The current unsigned
+candidate and source ZIP are ignored under `artifacts/commercial-windows/`; the GitHub
+workflow uploads only explicitly named current ZIP patterns.
+
+Four commercial conversion tests pass, `cargo check` passes, and the x64 release build
+completes. A local startup smoke launch exits from Tauri window setup with Windows
+`Access is denied` (101). Clean desktop launch/installer acceptance remains open; do
+not interpret the restricted-process result as clean-machine evidence. No signing
+certificate is installed, and `commercial-windows/LICENSE` still needs the legal
+copyright holder's identity and customer license terms before public sale. The package
+is intentionally marked unsigned until a trusted signing certificate is supplied.
+
+The ignored local `artifacts/commercial-windows/` directory also contains superseded
+staging output from failed packaging attempts. Do not upload that directory wholesale;
+share only the two filenames listed by the successful bundler. CI uses narrow upload
+patterns. Root `scripts/bundle-windows.ps1 -Edition commercial` remains fail-closed for
+the full application; the new image product uses `scripts/bundle-commercial-windows.ps1`.
+
+Before this handoff, `cargo fmt --all --check` passed. The full
+`cargo test --workspace --locked --offline` did not complete: test binaries linking
+`convertme-engines` and `convertme-gui` fail with unresolved `OrtGetApiBase` because
+this checkout has no offline ONNX Runtime import library (`ORT_LIB_PATH` is unset).
+The commercial app's own four tests pass. `scripts/preflight.sh` was attempted through
+Git Bash but the restricted process sandbox denied Bash's signal-pipe creation (Win32
+error 5); the configured debrand token file is also absent. Do not claim full preflight.
+Push commits without `[skip ci]` so GitHub Actions provides the remaining repository
+checks.
+
 ConvertMe is a local Tauri app: a wheel picks a category, a format and a tool; the tool
 opens **one dialog sheet**; the job runs through the engines crate and publishes beside
 the source. 307 conversion options, 33 backend tools, everything offline.
@@ -15,14 +62,15 @@ native-export rounds).
 
 | | |
 |---|---|
-| Branch | `master` |
-| Last code commit | `83e6996` — "tools: EPUB hierarchy, mixed merge and native PDF/ODS [skip ci]" (Rounds 9–12) |
+| Current branch | `work/commercial-windows-image-2026-11-04` |
+| Current checkpoint | `HEAD` — commercial Windows image candidate |
+| Previous baseline commit | `6fda71c` — documentation and continuation-input snapshot |
 | Previous code commit | `1f25fb7` — "tools: previews, playback and outputs follow the user" (Rounds 5–8) |
 | Revert point | branch + annotated tag `savepoint/pre-alignment-2026-10-31` |
 | Proof | `artifacts/round9/audit-pdf` (28 CLI PDF cases), `artifacts/round9/app-pdf` (11 real-window PDF scenarios), `artifacts/round9/app-documents` (Documents merge), `artifacts/round9/ui-final` (52 mock dialogs), `artifacts/round9/ui-documents` (Documents layout), `artifacts/round9/audit-ods` (native ODS), `artifacts/round9/app-doc-pdf` and `app-sheet-pdf` (native PDF), `artifacts/round9/app-errors` (visible failure), `artifacts/round9/app-split-final` (split folder), `artifacts/round9/app-folders` (folder artifacts), `artifacts/round9/ui-pdf` (PDF layout + drag probes), `artifacts/round9/app-drag`, `app-split`, `app-pages`, `app-frames`, `app-vsplit`, `app-compress`, `app-dialogs-pdf`, `app-docx` (real window), `artifacts/round9/audit-docx` (CLI DOCX); older: `artifacts/round8/ui-full`, `artifacts/round8/app-full`, `artifacts/round8/targeted`, `artifacts/round7/*`, `artifacts/round6/*`, `artifacts/round5/*`, `artifacts/final5/audit` (CLI matrix), `artifacts/perf/run4` (perf) |
 
-Rounds 9–12 are committed and pushed as `83e6996` on `master`. The commit carries
-`[skip ci]`, so no GitHub Actions run was created; the local preflight + full
+Historical Linux rounds 9–12 were committed and pushed as `83e6996` on `master`. That
+commit carries `[skip ci]`, so no GitHub Actions run was created at that time; the local preflight + full
 `ui-shots`/`app-e2e` runs are the acceptance proof above. The previous commits are also
 pushed, and they carry `[skip ci]` for the same reason.
 

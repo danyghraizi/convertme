@@ -609,7 +609,9 @@ fn vendor(args: &[String]) -> Result<(), String> {
     };
     match triple.as_str() {
         "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc" => {
-            if sidecar.is_some() { return Err("--sidecar is a Linux vendor option".into()); }
+            if sidecar.is_some() {
+                return Err("--sidecar is a Linux vendor option".into());
+            }
             let interpreter =
                 python
                     .as_deref()
@@ -643,10 +645,22 @@ fn vendor(args: &[String]) -> Result<(), String> {
                 return Err("--helper-payload is a Windows vendor option".into());
             }
             let mut command = Command::new(python.as_deref().unwrap_or("python3"));
-            command.arg(root.join("scripts/vendor-linux.py")).current_dir(&root);
-            command.arg("--sidecar").arg(sidecar.as_deref().ok_or("Linux vendoring requires --sidecar <path>")?);
-            let status = command.status().map_err(|e| format!("starting Linux vendoring: {e}"))?;
-            if status.success() { Ok(()) } else { Err(format!("Linux vendoring failed: {status}")) }
+            command
+                .arg(root.join("scripts/vendor-linux.py"))
+                .current_dir(&root);
+            command.arg("--sidecar").arg(
+                sidecar
+                    .as_deref()
+                    .ok_or("Linux vendoring requires --sidecar <path>")?,
+            );
+            let status = command
+                .status()
+                .map_err(|e| format!("starting Linux vendoring: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Linux vendoring failed: {status}"))
+            }
         }
         _ => Err(format!("unsupported vendor target {triple:?}")),
     }

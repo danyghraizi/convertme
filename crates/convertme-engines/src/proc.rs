@@ -351,7 +351,10 @@ pub fn configure_tool_environment(command: &mut Command, program: &Path) {
     }
     #[cfg(target_os = "linux")]
     if let Ok(program_path) = std::fs::canonicalize(program) {
-        if let Some(root) = program_path.ancestors().find(|dir| dir.join("manifest.json").is_file()) {
+        if let Some(root) = program_path
+            .ancestors()
+            .find(|dir| dir.join("manifest.json").is_file())
+        {
             configure_linux_tool_environment(command, &program_path, root);
         }
     }
@@ -363,30 +366,69 @@ pub fn configure_tool_environment(command: &mut Command, program: &Path) {
 
 #[cfg(target_os = "linux")]
 fn configure_linux_tool_environment(command: &mut Command, program: &Path, root: &Path) {
-    let Ok(root) = std::fs::canonicalize(root) else { return };
-    let Ok(program_path) = std::fs::canonicalize(program) else { return };
-    let Ok(bytes) = std::fs::read(root.join("manifest.json")) else { return };
-    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return;
+    };
+    let Ok(program_path) = std::fs::canonicalize(program) else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("manifest.json")) else {
+        return;
+    };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
     if manifest.get("schema_version").and_then(|v| v.as_u64()) != Some(1)
-        || manifest.get("helper_arch").and_then(|v| v.as_str()) != Some("x86_64") { return; }
-    let Some(executables) = manifest.get("executables").and_then(|v| v.as_object()) else { return };
+        || manifest.get("helper_arch").and_then(|v| v.as_str()) != Some("x86_64")
+    {
+        return;
+    }
+    let Some(executables) = manifest.get("executables").and_then(|v| v.as_object()) else {
+        return;
+    };
     let Some((key, _)) = executables.iter().find(|(_, value)| {
-        value.as_str().and_then(|p| std::fs::canonicalize(root.join(p)).ok())
+        value
+            .as_str()
+            .and_then(|p| std::fs::canonicalize(root.join(p)).ok())
             .is_some_and(|p| p.starts_with(&root) && p == program_path)
-    }) else { return };
-    let Some(dirs) = manifest.get("library_dirs").and_then(|v| v.get(key)).and_then(|v| v.as_array()) else { return };
+    }) else {
+        return;
+    };
+    let Some(dirs) = manifest
+        .get("library_dirs")
+        .and_then(|v| v.get(key))
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
     let mut libraries = Vec::with_capacity(dirs.len());
     for dir in dirs {
         let Some(relative) = dir.as_str() else { return };
         let path = Path::new(relative);
-        if path.as_os_str().is_empty() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) { return; }
-        let Ok(path) = std::fs::canonicalize(root.join(path)) else { return };
-        if !path.starts_with(&root) || !path.is_dir() { return; }
+        if path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return;
+        }
+        let Ok(path) = std::fs::canonicalize(root.join(path)) else {
+            return;
+        };
+        if !path.starts_with(&root) || !path.is_dir() {
+            return;
+        }
         libraries.push(path);
     }
-    let Ok(library_path) = std::env::join_paths(libraries) else { return };
-    command.env_remove("LD_PRELOAD").env_remove("LD_LIBRARY_PATH");
-    if !library_path.is_empty() { command.env("LD_LIBRARY_PATH", library_path); }
+    let Ok(library_path) = std::env::join_paths(libraries) else {
+        return;
+    };
+    command
+        .env_remove("LD_PRELOAD")
+        .env_remove("LD_LIBRARY_PATH");
+    if !library_path.is_empty() {
+        command.env("LD_LIBRARY_PATH", library_path);
+    }
     let Some(name) = program.file_name().and_then(OsStr::to_str) else {
         return;
     };
@@ -654,15 +696,29 @@ mod tests {
     use super::*;
 
     fn child(mode: &str) -> Cmd {
-        static CHILD: std::sync::LazyLock<(tempfile::TempDir, PathBuf)> = std::sync::LazyLock::new(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let executable = dir.path().join(if cfg!(windows) { "process_child.exe" } else { "process_child" });
-            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/process_child.rs");
-            let status = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
-                .arg(source).arg("-o").arg(&executable).status().expect("starting native rustc");
-            assert!(status.success(), "compiling process fixture failed: {status}");
-            (dir, executable)
-        });
+        static CHILD: std::sync::LazyLock<(tempfile::TempDir, PathBuf)> =
+            std::sync::LazyLock::new(|| {
+                let dir = tempfile::tempdir().unwrap();
+                let executable = dir.path().join(if cfg!(windows) {
+                    "process_child.exe"
+                } else {
+                    "process_child"
+                });
+                let source =
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/process_child.rs");
+                let status =
+                    Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                        .arg(source)
+                        .arg("-o")
+                        .arg(&executable)
+                        .status()
+                        .expect("starting native rustc");
+                assert!(
+                    status.success(),
+                    "compiling process fixture failed: {status}"
+                );
+                (dir, executable)
+            });
         Cmd::new(&CHILD.1).arg(mode)
     }
 
@@ -683,11 +739,7 @@ mod tests {
         for name in names {
             let path = dir.path().join(name);
             std::fs::write(&path, b"payload").unwrap();
-            let out = run(
-                child("echo-file").arg(&path).stdout_piped(),
-                &JobCtx::new(),
-            )
-            .unwrap();
+            let out = run(child("echo-file").arg(&path).stdout_piped(), &JobCtx::new()).unwrap();
             assert_eq!(out.stdout.trim_end(), "payload", "failed for {name:?}");
         }
     }
@@ -725,8 +777,7 @@ mod tests {
         let command = child("sleep").budget_duration(Duration::from_millis(300));
         // A 300 ms budget stands in for the 5-minute one, same code path.
         let start = Instant::now();
-        let err = run(command, &ctx)
-        .unwrap_err();
+        let err = run(command, &ctx).unwrap_err();
         assert_eq!(err.code, ErrorCode::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(5));
     }
@@ -744,12 +795,9 @@ mod tests {
     #[test]
     fn stdout_lines_reach_the_callback() {
         let mut lines = Vec::new();
-        let out = run_with_lines(
-            child("lines")
-                .stdout_piped(),
-            &JobCtx::new(),
-            |line| lines.push(line.to_string()),
-        )
+        let out = run_with_lines(child("lines").stdout_piped(), &JobCtx::new(), |line| {
+            lines.push(line.to_string())
+        })
         .unwrap();
         assert_eq!(lines, vec!["a", "b", "c"]);
         assert_eq!(out.stdout.trim(), "a\nb\nc");
@@ -765,7 +813,8 @@ mod tests {
         let err = run_with_lines(command, &ctx, |line| {
             observed_pid = line.parse::<u32>().is_ok();
             cancel.cancel();
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert_eq!(err.code, ErrorCode::Cancelled);
         assert!(observed_pid, "child did not report its descendant");
         std::thread::sleep(Duration::from_secs(4));
@@ -795,9 +844,15 @@ mod tests {
         let mut gs = Command::new("gs");
         configure_linux_tool_environment(&mut gs, &root.path().join("bin/gs"), root.path());
         let envs: Vec<_> = gs.get_envs().collect();
-        assert!(envs.iter().any(|(key, value)| *key == OsStr::new("LD_PRELOAD") && value.is_none()));
-        assert!(envs.iter().any(|(key, value)| *key == OsStr::new("LD_LIBRARY_PATH")
-            && value == &Some(root.path().join("lib").as_os_str())));
+        assert!(
+            envs.iter()
+                .any(|(key, value)| *key == OsStr::new("LD_PRELOAD") && value.is_none())
+        );
+        assert!(
+            envs.iter()
+                .any(|(key, value)| *key == OsStr::new("LD_LIBRARY_PATH")
+                    && value == &Some(root.path().join("lib").as_os_str()))
+        );
         let gs_paths = gs
             .get_envs()
             .find_map(|(name, value)| {

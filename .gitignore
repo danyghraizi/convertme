@@ -1,8 +1,10 @@
 /target
+**/target/
 **/node_modules
 /crates/convertme-gui/ui-dist
 /crates/convertme-gui/tauri.conf.json
 /crates/convertme-gui/gen
+/commercial-windows/gen/
 /fixtures/*
 !/fixtures/README.md
 /vendor/*/*

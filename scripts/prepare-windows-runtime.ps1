@@ -20,6 +20,22 @@ function Inspect([string] $path) {
     if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') { throw "Invalid Microsoft signature: $path" }
     return @{ sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); size = $item.Length; file_version = $item.VersionInfo.FileVersion; product_version = $item.VersionInfo.ProductVersion; signer_subject = $sig.SignerCertificate.Subject; signer_thumbprint = $sig.SignerCertificate.Thumbprint }
 }
+function Replace-File([string] $Source, [string] $Destination) {
+    # File.Replace with a null backup path fails on Windows PowerShell/.NET
+    # Framework. Use same-volume renames and retain the old file if promotion
+    # fails so a refresh never destroys the last verified runtime or lock.
+    $backup = "$Destination.$([guid]::NewGuid().ToString('N')).backup"
+    [IO.File]::Move($Destination, $backup)
+    try {
+        [IO.File]::Move($Source, $Destination)
+    } catch {
+        if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Destination)) {
+            [IO.File]::Move($backup, $Destination)
+        }
+        throw
+    }
+    Remove-Item -LiteralPath $backup -Force
+}
 function Fetch([string] $url, [string] $dest) {
     $request = [Net.HttpWebRequest]::Create($url)
     $request.AllowAutoRedirect = $true
@@ -65,13 +81,13 @@ try {
         foreach ($key in @('sha256','size','file_version','product_version','signer_subject','signer_thumbprint')) { if ($info[$key] -ne $record.$key) { throw "Runtime $key does not match $arch lock" } }
     }
     if ($temp -ne $dest) {
-        if (Test-Path -LiteralPath $dest) { [IO.File]::Replace($temp, $dest, $null) } else { [IO.File]::Move($temp, $dest) }
+        if (Test-Path -LiteralPath $dest) { Replace-File $temp $dest } else { [IO.File]::Move($temp, $dest) }
     }
     if ($CaptureLock) {
         $lockTemp = "$lockPath.$([guid]::NewGuid().ToString('N')).tmp"
         try {
             [IO.File]::WriteAllText($lockTemp, $newLock, (New-Object Text.UTF8Encoding $false))
-            if (Test-Path -LiteralPath $lockPath) { [IO.File]::Replace($lockTemp, $lockPath, $null) } else { [IO.File]::Move($lockTemp, $lockPath) }
+            if (Test-Path -LiteralPath $lockPath) { Replace-File $lockTemp $lockPath } else { [IO.File]::Move($lockTemp, $lockPath) }
         } finally { if (Test-Path -LiteralPath $lockTemp) { Remove-Item -LiteralPath $lockTemp -Force } }
     }
     Write-Output $dest

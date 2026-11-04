@@ -26,6 +26,7 @@ step() { printf '\n== %s\n' "$*"; }
 
 step "identity gate"
 python3 scripts/debrand.py --all
+python3 scripts/test-release-materials.py
 
 step "format"
 cargo fmt --all --check

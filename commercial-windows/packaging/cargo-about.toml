@@ -1,0 +1,8 @@
+# Permissive licenses accepted for the standalone commercial Windows app.
+# `cargo about` fails if a dependency uses an unapproved or unidentified license.
+accepted = [
+  "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+  "Unicode-3.0", "Unicode-DFS-2016", "CC0-1.0", "Unlicense", "BSL-1.0",
+  "0BSD", "MPL-2.0", "OpenSSL", "CDLA-Permissive-2.0",
+]
+private = { ignore = true }

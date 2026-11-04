@@ -1,0 +1,29 @@
+{
+    "architectures":  {
+                          "x64":  {
+                                      "architecture":  "x64",
+                                      "origin_url":  "https://go.microsoft.com/fwlink/?linkid=2124701",
+                                      "final_url":  "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/d5cc3c1c-bb59-4158-aedc-db0035e44466/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+                                      "file":  "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+                                      "sha256":  "62863f0f0611a16ccf124b4f15650c3b66624504eba74d7cde1e2ae5d951249b",
+                                      "size":  215017168,
+                                      "file_version":  "1.3.307.15",
+                                      "product_version":  "1.3.307.15",
+                                      "signer_subject":  "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+                                      "signer_thumbprint":  "4028CAD637509D4744B17EC5B42AED8D7A31E6AF"
+                                  },
+                          "arm64":  {
+                                        "architecture":  "arm64",
+                                        "origin_url":  "https://go.microsoft.com/fwlink/?linkid=2099616",
+                                        "final_url":  "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/7da04b46-7e81-4f30-9852-6af198acc279/MicrosoftEdgeWebView2RuntimeInstallerARM64.exe",
+                                        "file":  "MicrosoftEdgeWebView2RuntimeInstallerARM64.exe",
+                                        "sha256":  "9e095f5ad0b42338823c2de143a0b7a97934a9bcec07c0400bb1f149709b3e64",
+                                        "size":  218245328,
+                                        "file_version":  "1.3.307.15",
+                                        "product_version":  "1.3.307.15",
+                                        "signer_subject":  "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+                                        "signer_thumbprint":  "4028CAD637509D4744B17EC5B42AED8D7A31E6AF"
+                                    }
+                      },
+    "schema_version":  1
+}

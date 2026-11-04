@@ -47,11 +47,14 @@ the pinned Ubuntu 24.04 x86_64 build environment and stops when payloads or pack
 tools are absent. AppImage builds currently fail closed until portable ELF dependencies
 and Ghostscript/Tesseract data paths are proven. A local build is not clean-machine evidence.
 
-Windows NSIS and portable artifacts use `scripts/bundle-windows.ps1` with an explicit
-MSVC target. The build requires x64 CPython 3.12, the matching Microsoft-signed offline
-WebView2 installer, a verified compliance directory, and the target's pinned tool
-payload. Missing or conflicting inputs stop packaging; the script does not fall back
-to PATH tools.
+The full-featured Windows NSIS and portable artifacts use `scripts/bundle-windows.ps1`
+with an explicit edition; this packager currently builds only `-Edition gpl` and
+requires its helper payload and source/notice inputs. A separate, closed-source
+Windows x64 image product lives in `commercial-windows/`; it avoids the GPL/AGPL
+engine crates and packages only PNG, JPEG, WebP, BMP, GIF, and TIFF conversion. Run
+`scripts/bundle-commercial-windows.ps1` to build its portable candidate and matching
+third-party source archive. That candidate is unsigned unless a trusted signing
+certificate is supplied, and it does not claim parity with the full application.
 
 ## Running
 
@@ -65,6 +68,9 @@ convertme history --limit 20
 
 Flags are parsed strictly: an unknown or misspelled flag is an error with the usage,
 never a silently skipped word. `convertme <command> --help` prints the grammar.
+
+For payload diagnostics, `CONVERTME_TOOLS_DIR` accepts either the helper directory or
+its `manifest.json` path; helper availability is resolved from that manifest.
 
 ## Living in the background
 

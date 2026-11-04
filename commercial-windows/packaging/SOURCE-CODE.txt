@@ -1,0 +1,1 @@
+The matching third-party source archive is emitted alongside this portable package by the release bundler. It contains the dependency lockfile, the third-party license inventory, and the source packages for dependencies distributed under MPL-2.0. ConvertMe's first-party source is proprietary and is not included in this archive.

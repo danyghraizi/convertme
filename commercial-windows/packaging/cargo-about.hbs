@@ -1,0 +1,17 @@
+# Third-party Rust dependency licenses
+
+Generated from the Windows x64 target's locked Cargo dependency graph. This file includes the third-party license texts required with the distributed binary; the pinned crate names and versions identify their upstream source packages. Source code for the MPL-2.0 crates is included in the matching source archive under `third-party-source/mpl-2.0/`.
+
+{{#each licenses}}
+## {{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

@@ -1,0 +1,38 @@
+name: Commercial Windows candidate
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'commercial-windows/**'
+      - 'scripts/bundle-commercial-windows.ps1'
+      - 'scripts/gen-commercial-notices.ps1'
+      - 'scripts/prepare-windows-runtime.ps1'
+      - 'scripts/prepare-cargo-about.py'
+      - 'packaging/windows/webview2.lock.json'
+      - 'packaging/sources.lock.json'
+      - '.github/workflows/commercial-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-x64-candidate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build reproducible candidate packages
+        shell: pwsh
+        run: .\scripts\bundle-commercial-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConvertMeImage-Windows-x64-unsigned-candidate
+          path: |
+            artifacts/commercial-windows/ConvertMeImage-*-candidate-unsigned-portable.zip
+            artifacts/commercial-windows/ConvertMeImage-*-candidate-signed-portable.zip
+            artifacts/commercial-windows/ConvertMeImage-*-third-party-source.zip
+          if-no-files-found: error
+          retention-days: 30

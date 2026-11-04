@@ -191,7 +191,18 @@ fn rename_dir_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
             Default::default(),
         )
     }
-    .map_err(|e| std::io::Error::other(e.to_string()))
+    .map_err(|e| {
+        // `windows::core::Error` carries Win32 failures as HRESULT_FROM_WIN32
+        // values (for example, 0x800700B7 for an existing destination). Restore
+        // the Win32 code so callers can recognize AlreadyExists and try the
+        // next collision suffix instead of surfacing a generic I/O failure.
+        let hresult = e.code().0 as u32;
+        if hresult & 0xffff_0000 == 0x8007_0000 {
+            std::io::Error::from_raw_os_error((hresult & 0xffff) as i32)
+        } else {
+            std::io::Error::other(e.to_string())
+        }
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -340,12 +351,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ro = dir.path().join("ro");
         std::fs::create_dir(&ro).unwrap();
-        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        let perms = std::fs::metadata(&ro).unwrap().permissions();
         #[cfg(unix)]
-        {
+        let perms = {
             use std::os::unix::fs::PermissionsExt;
+            let mut perms = perms;
             perms.set_mode(0o555);
-        }
+            perms
+        };
         std::fs::set_permissions(&ro, perms).unwrap();
 
         if !dir_is_writable(&ro) {

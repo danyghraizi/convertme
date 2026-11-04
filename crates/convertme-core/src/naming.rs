@@ -159,13 +159,16 @@ mod tests {
     #[test]
     fn naming_collision_appends_suffix() {
         // `photo.webp` exists → `photo (2).webp`; `photo (2).webp` exists too → `(3)`.
-        let existing = ["/d/photo.webp", "/d/photo (2).webp"];
+        let existing = [
+            Path::new("/d/photo.webp").to_path_buf(),
+            Path::new("/d/photo (2).webp").to_path_buf(),
+        ];
         let out = resolve_with(
             Path::new("/d/photo.jpg"),
             "webp",
             Overwrite::Never,
             None,
-            |p| existing.contains(&p.to_str().unwrap()),
+            |p| existing.iter().any(|existing| existing == p),
         );
         assert_eq!(out, Path::new("/d/photo (3).webp"));
     }

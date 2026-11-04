@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "convertme-commercial"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.99"
+license = "LicenseRef-ConvertMe-Commercial"
+publish = false
+
+[package.metadata.tauri-winres]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tauri = { version = "2.12.5", features = ["custom-protocol"] }
+tauri-plugin-dialog = "2.8.4"
+
+[dev-dependencies]
+tempfile = "3"

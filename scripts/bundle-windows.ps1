@@ -4,6 +4,9 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')]
     [string] $Target,
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('gpl', 'commercial')]
+    [string] $Edition,
     [string] $Python = 'python',
     [Parameter(Mandatory = $true)]
     [string] $HelperPayload,
@@ -14,6 +17,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $root = Split-Path -Parent $PSScriptRoot
+$Edition = $Edition.ToLowerInvariant()
+if ($Edition -eq 'commercial') {
+    throw 'The commercial edition is not configured: the current app and Windows helper closure are GPL/AGPL. Keep using the GPL edition until an approved proprietary dependency and feature manifest exists.'
+}
 $arch = if ($Target -eq 'x86_64-pc-windows-msvc') { 'x64' } else { 'arm64' }
 $runtimeArch = if ($arch -eq 'x64') { 'X64' } else { 'ARM64' }
 $tools = Join-Path $root "vendor/windows/$Target/tools"

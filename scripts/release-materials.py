@@ -33,6 +33,12 @@ def die(message):
     raise RuntimeError(message)
 
 
+def cargo_about_host():
+    machine = platform.machine().lower()
+    arch = {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
+    return ('windows-' if os.name == 'nt' else 'linux-') + arch
+
+
 def regular(root, relative, allow_empty=False):
     parts = vendor.safe_relative(relative).parts
     path = root
@@ -200,8 +206,7 @@ def assemble(target, payload, inputs, out):
     cargo = lock.get('cargo_about')
     if not isinstance(cargo, dict) or not all(cargo.get(k) for k in ('binaries', 'template', 'template_sha256', 'config', 'config_sha256', 'version')):
         die('missing pinned cargo-about binaries, version, template or configuration')
-    machine = platform.machine().lower()
-    host = ('windows-' if os.name == 'nt' else 'linux-') + ('arm64' if machine in ('arm64', 'aarch64') else machine)
+    host = cargo_about_host()
     pin = cargo['binaries'].get(host)
     if not pin:
         die(f'no pinned cargo-about executable for host {host}')

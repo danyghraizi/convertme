@@ -30,6 +30,8 @@ jobs:
           python-version: "3.12"
       - name: gate self-test
         run: bash scripts/debrand_selftest.sh
+      - name: release-materials host mapping
+        run: python scripts/test-release-materials.py
       - name: scan the tree
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
@@ -88,7 +90,7 @@ jobs:
       - name: Bundle
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: ./scripts/bundle-windows.ps1 -Target x86_64-pc-windows-msvc
+        run: ./scripts/bundle-windows.ps1 -Edition gpl -Target x86_64-pc-windows-msvc
       - run: cargo test --workspace --lib --tests
       - name: Portable CLI smoke
         shell: pwsh
@@ -106,6 +108,7 @@ jobs:
 
   windows-arm64:
     name: Windows ARM64 build, tests and package smoke
+    if: ${{ vars.CONVERTME_ARM64_RELEASE_ACCEPTED == 'true' }}
     needs: windows-x64
     runs-on: windows-11-arm
     timeout-minutes: 120
@@ -129,7 +132,7 @@ jobs:
       - name: Bundle using x64 helpers
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: ./scripts/bundle-windows.ps1 -Target aarch64-pc-windows-msvc -HelperPayload "$pwd/helper-payload"
+        run: ./scripts/bundle-windows.ps1 -Edition gpl -Target aarch64-pc-windows-msvc -HelperPayload "$pwd/helper-payload"
       - run: cargo test --workspace --lib --tests
       - name: Portable CLI smoke
         shell: pwsh

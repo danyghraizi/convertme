@@ -12,6 +12,7 @@ the rendered package recipe supplies exact source URLs, hashes and revisions.
 Capture accesses the network; replay only reads the hash-addressed local cache.
 """
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ MICROMAMBA_URL = 'https://github.com/mamba-org/micromamba-releases/releases/down
 MICROMAMBA_SHA = 'f8b4284bd4eb1134122eaf93b3ea6c7be567e596de5829e1a6f478e34e41974a'
 MICROMAMBA_SIZE = 11723264
 HEX = re.compile(r'^[0-9a-f]{64}$')
+NO_SOURCE_METAPACKAGES = {'fonts-conda-ecosystem-1-0'}
 
 
 def fail(message):
@@ -133,6 +135,133 @@ def capture_git(dist, url, ref):
         return dict(store(bundle), kind='git', url=url, requested_revision=ref, revision=revision)
 
 
+def embedded_feedstock(about):
+    """Return the conda-forge commit identity embedded by conda-build, if present."""
+    extra = about.get('extra') if isinstance(about, dict) else None
+    extra = extra if isinstance(extra, dict) else {}
+    url, revision = extra.get('remote_url'), extra.get('sha')
+    if not url and not revision:
+        return None
+    parsed = urllib.parse.urlparse(url or '')
+    if (not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision)
+            or parsed.scheme != 'https' or parsed.netloc != 'github.com'
+            or not re.fullmatch(r'/conda-forge/[A-Za-z0-9_.-]+-feedstock', parsed.path)
+            or parsed.query or parsed.fragment):
+        fail('package about.json contains incomplete or invalid feedstock identity')
+    return {'repository_url': url, 'revision': revision}
+
+
+def recipe_template(package):
+    """Prefer exact retained templates, including conda-build's parent recipe."""
+    records = package.get('recipe_files', {})
+    for name in ('recipe/meta.yaml.template', 'recipe/parent/meta.yaml'):
+        if name in records:
+            return cached(records[name]).read_bytes(), name
+    return None, None
+
+
+def render_literal_jinja(recipe):
+    """Render the literal version/name variables used by old noarch recipes."""
+    text = recipe.decode('utf-8')
+    values = {}
+    set_pattern = re.compile(r'^\s*\{%\s*set\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*%\}\s*$', re.M)
+
+    def bind(match):
+        try:
+            value = ast.literal_eval(match.group(2))
+        except (SyntaxError, ValueError):
+            fail('historical feedstock recipe uses a non-literal Jinja assignment')
+        if not isinstance(value, (str, int, float, bool)):
+            fail('historical feedstock recipe uses an unsupported Jinja value')
+        values[match.group(1)] = str(value)
+        return ''
+
+    text = set_pattern.sub(bind, text)
+    expression_pattern = re.compile(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\|\s*(lower)|\s*\|\s*replace\(\s*(\'[^\']*\'|"[^"]*")\s*,\s*(\'[^\']*\'|"[^"]*")\s*\))?\s*\}\}')
+
+    def render_expression(match):
+        variable = match.group(1)
+        if variable not in values:
+            fail('historical feedstock recipe references an unbound Jinja variable')
+        value = values[variable]
+        if match.group(2) == 'lower':
+            value = value.lower()
+        elif match.group(3) is not None:
+            old, new = ast.literal_eval(match.group(3)), ast.literal_eval(match.group(4))
+            value = value.replace(old, new)
+        return value
+
+    text = expression_pattern.sub(render_expression, text)
+    if '{{' in text or '{%' in text or '%}' in text or '}}' in text:
+        fail('historical feedstock recipe has unsupported Jinja expressions')
+    return text.encode('utf-8')
+
+
+def normalized_sources(document, dist):
+    source = document.get('source') if isinstance(document, dict) else None
+    if isinstance(source, dict):
+        source = [source]
+    if source is None and dist in NO_SOURCE_METAPACKAGES:
+        return []
+    if not isinstance(source, list) or not source:
+        fail(f'{dist}: recipe has no source declaration')
+    result = []
+    fields = ('url', 'sha256', 'sha1', 'md5', 'git_url', 'git_rev', 'patches')
+    for item in source:
+        if not isinstance(item, dict):
+            fail(f'{dist}: invalid source declaration')
+        result.append({key: item[key] for key in fields if key in item})
+    return result
+
+
+def verify_rendered_recipe(dist, package_recipe, feedstock_recipe):
+    """Bind old package metadata to a feedstock whose commit was not embedded."""
+    try:
+        import yaml
+        # BaseLoader keeps version spellings such as 3.000 intact instead of
+        # coercing them to floats before comparing package-retained metadata.
+        package_doc = yaml.load(package_recipe, Loader=yaml.BaseLoader)
+        source_doc = yaml.load(render_literal_jinja(feedstock_recipe), Loader=yaml.BaseLoader)
+    except ImportError:
+        fail('capture requires PyYAML to compare historical rendered recipes')
+    except yaml.YAMLError as exc:
+        fail(f'{dist}: invalid package or feedstock recipe: {exc}')
+    if not isinstance(package_doc, dict) or not isinstance(source_doc, dict):
+        fail(f'{dist}: package/feedstock recipe is not a mapping')
+    package = package_doc.get('package', {})
+    source_package = source_doc.get('package', {})
+    for field in ('name', 'version'):
+        package_value, source_value = package.get(field), source_package.get(field)
+        if (str(package_value) if package_value is not None else None) != (str(source_value) if source_value is not None else None):
+            fail(f'{dist}: package recipe {field} differs from feedstock')
+    package_build, source_build = package_doc.get('build', {}), source_doc.get('build', {})
+    for field in ('noarch', 'number'):
+        package_value, source_value = package_build.get(field), source_build.get(field)
+        if (str(package_value) if package_value is not None else None) != (str(source_value) if source_value is not None else None):
+            fail(f'{dist}: package recipe build.{field} differs from feedstock')
+    if normalized_sources(package_doc, dist) != normalized_sources(source_doc, dist):
+        fail(f'{dist}: package source declarations differ from feedstock recipe')
+    package_about, source_about = package_doc.get('about', {}), source_doc.get('about', {})
+    for field in ('license', 'license_file'):
+        package_value, source_value = package_about.get(field), source_about.get(field)
+        # conda-build rewrites the final poppler-data license path when it
+        # copies license files into its packaged recipe metadata.
+        if dist == 'poppler-data-0.4.12-hd8ed1ab_0' and field == 'license_file':
+            package_value = [value.removeprefix('licenses/') for value in package_value]
+        if package_value != source_value:
+            fail(f'{dist}: package recipe about.{field} differs from feedstock')
+
+
+def verify_feedstock_identity(dist, about, item, revision, feedstock_url):
+    identity = embedded_feedstock(about)
+    if identity is None:
+        return False
+    expected_url = f"{identity['repository_url']}/archive/{identity['revision']}.zip"
+    if revision != identity['revision'] or feedstock_url != expected_url:
+        fail(f'{dist}: inventory feedstock revision differs from package about.json')
+    return True
+
+
 def closure(inventory_path, packages):
     try:
         import yaml
@@ -144,6 +273,8 @@ def closure(inventory_path, packages):
     result = {}
     for dist, package in packages.items():
         item = inventory[dist]
+        if not isinstance(item, dict):
+            fail(f'{dist}: source inventory entry must be a mapping')
         revision = item.get('feedstock_revision')
         if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
             fail(f'{dist}: missing exact feedstock revision')
@@ -157,6 +288,8 @@ def closure(inventory_path, packages):
         archive = item.get('feedstock_archive', {})
         archive_path = inventory_path.parent.joinpath(*relative(archive.get('path')).parts)
         checked(archive_path, archive)
+        about = json.loads(cached(package['metadata']['about.json']).read_text(encoding='utf-8'))
+        identity_embedded = verify_feedstock_identity(dist, about, item, revision, feedstock_url)
         with urllib.request.urlopen(feedstock_url) as response:
             remote_hash = hashlib.sha256()
             remote_size = 0
@@ -167,10 +300,15 @@ def closure(inventory_path, packages):
             fail(f'{dist}: feedstock archive differs from the official revision')
         with zipfile.ZipFile(archive_path) as zf:
             matches = [n for n in zf.namelist() if n.endswith('/recipe/meta.yaml')]
-            template = package['recipe_files'].get('recipe/meta.yaml.template')
-            template_bytes = cached(template).read_bytes() if template else recipe
-            if len(matches) != 1 or zf.read(matches[0]) != template_bytes:
-                fail(f'{dist}: no matching feedstock recipe template in package metadata')
+            template_bytes, template_name = recipe_template(package)
+            if len(matches) != 1:
+                fail(f'{dist}: feedstock archive must contain exactly one recipe/meta.yaml')
+            feedstock_recipe = zf.read(matches[0])
+            if template_bytes is not None:
+                if feedstock_recipe != template_bytes:
+                    fail(f'{dist}: retained recipe template differs from feedstock')
+            elif not identity_embedded:
+                verify_rendered_recipe(dist, recipe, feedstock_recipe)
             if not matches[0].split('/')[0].endswith(revision):
                 fail(f'{dist}: feedstock archive is not identified by its revision')
             feedstock_prefix = matches[0][:-len('meta.yaml')]
@@ -178,8 +316,19 @@ def closure(inventory_path, packages):
             for name, record in package['recipe_files'].items():
                 suffix = name.removeprefix('recipe/')
                 candidate = feedstock_prefix + suffix
-                if suffix not in ('meta.yaml', 'meta.yaml.template') and candidate in zf.namelist():
-                    if hashlib.sha256(zf.read(candidate)).hexdigest() != record['sha256']:
+                if name in ('recipe/meta.yaml', 'recipe/meta.yaml.template', 'recipe/parent/meta.yaml'):
+                    continue
+                # conda-build stores a merged platform configuration in package
+                # metadata; the feedstock archive itself remains hash-locked.
+                if name == 'recipe/conda_build_config.yaml' and identity_embedded:
+                    continue
+                if candidate in feedstock_files:
+                    packaged_bytes = cached(record).read_bytes()
+                    source_bytes = zf.read(candidate)
+                    if Path(name).suffix.lower() in ('.bat', '.sh', '.yaml', '.patch'):
+                        packaged_bytes = packaged_bytes.replace(b'\r\n', b'\n')
+                        source_bytes = source_bytes.replace(b'\r\n', b'\n')
+                    if hashlib.sha256(source_bytes).hexdigest() != hashlib.sha256(packaged_bytes).hexdigest():
                         fail(f'{dist}: packaged recipe file differs from feedstock: {suffix}')
         try:
             rendered = yaml.safe_load(recipe)
@@ -188,10 +337,19 @@ def closure(inventory_path, packages):
         declarations = rendered.get('source') if isinstance(rendered, dict) else None
         if isinstance(declarations, dict):
             declarations = [declarations]
-        if not isinstance(declarations, list) or not declarations:
+        no_source = declarations is None and dist in NO_SOURCE_METAPACKAGES
+        if no_source:
+            source_doc = yaml.safe_load(render_literal_jinja(template_bytes if template_bytes is not None else feedstock_recipe))
+            if source_doc.get('source') is not None:
+                fail(f'{dist}: allowlisted metapackage unexpectedly has a feedstock source')
+            verify_rendered_recipe(dist, recipe, template_bytes if template_bytes is not None else feedstock_recipe)
+            declarations = []
+        if not isinstance(declarations, list) or (not declarations and not no_source):
             fail(f'{dist}: rendered recipe has no source declarations')
-        artifacts = item.get('artifacts', [])
-        if not isinstance(artifacts, list):
+        if not isinstance(item, dict) or 'artifacts' not in item:
+            fail(f'{dist}: source inventory must explicitly record artifacts')
+        artifacts = item['artifacts']
+        if not isinstance(artifacts, list) or (no_source and artifacts):
             fail(f'{dist}: invalid source artifact inventory')
         unused = list(artifacts)
         sources = []
@@ -199,11 +357,18 @@ def closure(inventory_path, packages):
             if not isinstance(source, dict):
                 fail(f'{dist}: invalid source declaration')
             for patch in source.get('patches', []):
-                key = 'recipe/' + relative(patch).as_posix()
-                if key not in package['recipe_files']:
+                patch_path = relative(patch).as_posix()
+                keys = ('recipe/' + patch_path, 'recipe/parent/' + patch_path)
+                key = next((candidate for candidate in keys if candidate in package['recipe_files']), None)
+                if key is None:
                     fail(f'{dist}: missing recipe patch {patch}')
-                if feedstock_prefix + relative(patch).as_posix() not in feedstock_files:
+                source_patch = feedstock_prefix + patch_path
+                if source_patch not in feedstock_files:
                     fail(f'{dist}: recipe patch is absent from feedstock revision: {patch}')
+                packaged_bytes = cached(package['recipe_files'][key]).read_bytes()
+                archive_bytes = zf.read(source_patch)
+                if packaged_bytes.replace(b'\r\n', b'\n') != archive_bytes.replace(b'\r\n', b'\n'):
+                    fail(f'{dist}: retained recipe patch differs from feedstock: {patch}')
             if 'git_url' in source:
                 sources.append(capture_git(dist, source['git_url'], source.get('git_rev')))
                 continue
@@ -230,7 +395,11 @@ def closure(inventory_path, packages):
             sources.append(dict(store(path), kind='archive', url=entry['url']))
         if unused:
             fail(f'{dist}: source inventory contains unreferenced artifacts')
-        result[dist] = {'feedstock_revision': revision, 'feedstock_url': feedstock_url, 'feedstock_archive': store(archive_path), 'artifacts': sources}
+        source_record = {'feedstock_revision': revision, 'feedstock_url': feedstock_url,
+                         'feedstock_archive': store(archive_path), 'artifacts': sources}
+        if no_source:
+            source_record['no_source'] = True
+        result[dist] = source_record
     return result
 
 
@@ -323,8 +492,16 @@ def load_lock():
         if f"{index['name']}-{index['version']}-{index['build']}" != dist:
             fail(f'{dist}: index identity mismatch')
         source = package.get('source', {})
-        if not re.fullmatch(r'[0-9a-f]{40}', source.get('feedstock_revision', '')) or not source.get('artifacts') or not source.get('feedstock_url'):
+        about = json.loads(cached(metadata['about.json']).read_text(encoding='utf-8'))
+        verify_feedstock_identity(dist, about, source, source.get('feedstock_revision'), source.get('feedstock_url'))
+        no_source = dist in NO_SOURCE_METAPACKAGES
+        if not re.fullmatch(r'[0-9a-f]{40}', source.get('feedstock_revision', '')) or not source.get('feedstock_url'):
             fail(f'{dist}: missing source provenance')
+        if no_source:
+            if source.get('no_source') is not True or source.get('artifacts') != []:
+                fail(f'{dist}: source-less package lacks its explicit no-source record')
+        elif source.get('no_source') is not None or not source.get('artifacts'):
+            fail(f'{dist}: missing retained source artifact')
         cached(source['feedstock_archive'])
         for record in source['artifacts']:
             if record.get('kind') not in ('git', 'archive') or not record.get('url'):

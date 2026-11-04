@@ -34,6 +34,27 @@
           "sha256": "caf199e3f233f1290b27d0972d636f66c303355f2353309b7bfddf1edda06b3d",
           "size": 90851112
         }
+      ],
+      "licenses": [
+        {
+          "path": "ghostscript/verified-license/LICENSE",
+          "sha256": "8ce064f423b7c24a011b6ebf9431b8bf9861a5255e47c84bfb23fc526d030a8b",
+          "size": 1976,
+          "source_archive": "ghostscript/ghostscript-10.08.0.tar.gz",
+          "source_member": "ghostscript-10.08.0/LICENSE"
+        }
+      ],
+      "recipes": [
+        {
+          "path": "ghostscript/recipe/windows-tools.lock.json",
+          "sha256": "f95aef99c5247a1c44fef331621d15879a12c719c77f7c88dcebe6efe002ba70",
+          "size": 4777
+        },
+        {
+          "path": "ghostscript/recipe/vendor-windows.py",
+          "sha256": "638bd7fce49b574318543215751ee5aecb733ec59b452f7d89b5fef9c5b41a37",
+          "size": 20855
+        }
       ]
     }
   }

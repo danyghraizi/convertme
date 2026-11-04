@@ -23,11 +23,9 @@ uuid = { version = "1.29.0", features = ["v4"] }
 sha2 = "0.11.1"
 base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+color_quant = "1.1.0"
 oxipng = { version = "10.2.1", default-features = false }
 png = "0.18.1"
-# The libimagequant algorithm behind pngquant. Single-threaded keeps the artifact
-# deterministic and avoids pulling in rayon's thread-local pool.
-imagequant = { version = "4.4.1", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 dirs = "7.0.0"
 walkdir = "2.5.0"

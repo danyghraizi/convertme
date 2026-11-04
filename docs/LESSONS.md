@@ -331,13 +331,17 @@ viewport, no horizontal overflow, preview image loaded), not only save pictures.
 reaches 17 KB) and still writes a truecolour PNG unless asked for an indexed one. Feeding
 its output back through oxipng cannot recover the palette space it never used.
 
-**Rule.** Use the real quantizer (imagequant, the libimagequant behind pngquant) and write
-the indexed stream yourself with an explicit palette, tRNS for partial alpha and an sRGB
-chunk. Keep the option **off by default** and hide it unless every selected file is a PNG;
+**Rule.** Write the indexed stream yourself with an explicit palette, tRNS for partial
+alpha and an sRGB chunk. Keep the option **off by default** and hide it unless every
+selected file is a PNG;
 the engine rejects `colours` for any other output rather than writing palette bytes under
 a `.jpg` name. Run the palette step **before** the never-grow comparison, so a smaller
 lossy artifact wins but a palette that grew still falls back to the source. One
 `produce_compress` function feeds both the preview and the job, so the two cannot drift.
+
+**Current implementation.** The historical measurements below came from imagequant.
+The current build uses MIT-licensed `color_quant` NeuQuant plus app-owned
+Floyd–Steinberg dithering; remeasure those fixtures before release.
 
 **Evidence.** 2,000×3,000 16-bit poster: lossless 96,910 → 81,917 B; ≤256 colours (162
 used) 16,955 B; 64 colours 16,802 B. Tests pin colour type 3, palette ≤ the requested
@@ -1823,3 +1827,50 @@ as equivalent to a green CI run; it is a deliberate local gate.
 **Evidence.** `83e6996` carries the marker, was pushed to `origin/master`, and `gh run
 list --branch master` still showed the previous run; the handoff records preflight,
 `ui-shots` (52/59 dialogs) and the targeted `app-e2e`/`quality-audit` results.
+
+## 121. A commercial edition needs its own code and payload boundary
+
+**Trap.** Changing a package label or build flag does not remove the existing app's
+GPL/AGPL code and helper closure. A second archive made from the same GUI/engine crates
+would still carry that closure, even if its dependency list looked smaller.
+
+**Rule.** Keep the GPL product intact and implement a deliberately narrow proprietary
+app from code that does not depend on the GPL engine crates. Audit the exact locked
+Windows graph and every shipped binary. If the graph contains MPL-2.0 crates, include
+their exact source and license terms in a separately named source archive; never put
+the proprietary app source in that archive.
+
+**Evidence.** `commercial-windows/` builds a raster image subset independently. The
+license inventory identified five MPL-2.0 crates; the third-party source archive
+contains their Cargo registry sources and the matching locked dependency map. The
+portable candidate's per-file manifest was verified before handoff.
+
+## 122. Filter release artifacts by explicit names
+
+**Trap.** A local artifact directory can contain partial or superseded packages after
+a failed run. Uploading `artifacts/**/*.zip` can publish a stale archive with a
+different source-disclosure boundary than the current candidate.
+
+**Rule.** Give candidate and source archives distinct names and configure CI to upload
+only those explicit patterns. Verify every packaged file against its generated hash
+manifest, and record any stale local artifacts as quarantined rather than presenting
+the entire output directory as release-ready.
+
+**Evidence.** A pre-compliance source archive was quarantined locally. The commercial
+workflow now uploads only `candidate-{signed,unsigned}-portable.zip` and
+`third-party-source.zip` patterns.
+
+## 123. A successful native build is not a launch test
+
+**Trap.** `cargo check`, tests, and an optimized Windows link do not establish that
+Tauri can create a WebView window or that an installer works in a normal user session.
+Restricted process environments can also return OS errors during WebView setup.
+
+**Rule.** Run the exact candidate on a clean Windows desktop profile and record launch,
+conversion, install, uninstall, and reputation results separately from compile/test
+results. Do not waive a failed smoke launch without reproducing it in an unrestricted
+environment.
+
+**Evidence.** The commercial x64 app compiles and its format tests pass, but a local
+smoke launch exited with Windows `Access is denied` during Tauri window setup. Clean
+desktop acceptance remains outstanding.

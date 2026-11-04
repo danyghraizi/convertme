@@ -482,11 +482,12 @@ fn compress(job: &Job, cx: &Context<'_>, params: &ToolParams) -> Result<Vec<Path
 
 /// Bump when the encoder output for the same request changes: the key otherwise only
 /// covers the source file and the parameters, so an old preview would be reused.
-/// v5: PNG target searches use imagequant, and a small palette falls back to a flat
+/// v5: PNG target searches use a dedicated palette quantizer, and a small palette falls back to a flat
 /// remap when dithering made it larger than the lossless encode.
 /// v6: the optimizer runs before the never-grow comparison, and a resize is its own
 /// artifact — both change the bytes a given request produces.
-const COMPRESS_CACHE_VERSION: &str = "v6";
+/// v7: the palette quantizer and error-diffusion implementation changed.
+const COMPRESS_CACHE_VERSION: &str = "v7";
 
 /// One cache identity per compression request: the output extension plus every
 /// parameter, sorted so the same request always renders the same string.
@@ -603,10 +604,9 @@ fn produce_compress(
     prefer_smaller(job, optimized, ext, cx)
 }
 
-/// Lossy palette reduction with libimagequant, the quantizer behind pngquant, writing
-/// an indexed PNG. Absent `colours` leaves the encoder output untouched: the default
-/// stays lossless. ImageMagick's own `-colors` is deliberately not used; its quantizer
-/// is much weaker (74 KB at 256 colours where this reaches 18 KB on the same poster).
+/// Lossy palette reduction with the MIT-licensed NeuQuant implementation, writing an
+/// indexed PNG. Absent `colours` leaves the encoder output untouched: the default stays
+/// lossless. ImageMagick's own `-colors` is deliberately not used.
 fn reduce_colours(
     path: PathBuf,
     ext: &str,
@@ -639,7 +639,7 @@ fn reduce_colours(
 }
 
 /// Quantize a PNG to an indexed palette and write it to `out`. `dithering` is 0–1;
-/// libimagequant's 1.0 spreads the palette error, 0.0 picks the nearest colour.
+/// 1.0 applies Floyd–Steinberg error diffusion and 0.0 picks the nearest palette colour.
 fn quantize_png(
     input: &Path,
     colours: u32,
@@ -657,37 +657,35 @@ fn quantize_png(
             format!("decoding the PNG for colour reduction: {e}"),
         )
     })?;
-    let (width, height) = (decoded.width(), decoded.height());
-    // libimagequant works on 8-bit RGBA; a 16-bit source is reduced here, which is
-    // exactly what the palette is for.
+    // Palette quantization works on 8-bit RGBA; a 16-bit source is reduced here.
     let rgba = decoded.to_rgba8();
-    let pixels: Vec<imagequant::RGBA> = rgba
-        .pixels()
-        .map(|p| imagequant::RGBA::new(p[0], p[1], p[2], p[3]))
-        .collect();
+    encode_indexed_png(
+        rgba.width(),
+        rgba.height(),
+        rgba.as_raw(),
+        colours,
+        dithering,
+        out,
+    )
+}
 
-    let quantize_error = |e: imagequant::Error| {
-        JobError::new(ErrorCode::EngineFailed, format!("reducing colours: {e}"))
-    };
-    let mut attributes = imagequant::new();
-    attributes.set_max_colors(colours).map_err(quantize_error)?;
-    // 0 as the minimum means "do not give up": the request is the palette size.
-    attributes.set_quality(0, 100).map_err(quantize_error)?;
-    attributes.set_speed(4).map_err(quantize_error)?;
-    let mut image = attributes
-        .new_image(pixels, width as usize, height as usize, 0.0)
-        .map_err(quantize_error)?;
-    let mut result = attributes.quantize(&mut image).map_err(quantize_error)?;
-    result
-        .set_dithering_level(dithering)
-        .map_err(quantize_error)?;
-    let (palette, indices) = result.remapped(&mut image).map_err(quantize_error)?;
+fn encode_indexed_png(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    colours: u32,
+    dithering: f32,
+    out: &Path,
+) -> Result<(), JobError> {
+    let quantizer = color_quant::NeuQuant::new(4, colours as usize, pixels);
+    let palette = quantizer.color_map_rgba();
+    let indices = remap_rgba(&quantizer, &palette, pixels, width, height, dithering);
 
-    let mut rgb = Vec::with_capacity(palette.len() * 3);
-    let mut alpha = Vec::with_capacity(palette.len());
-    for entry in &palette {
-        rgb.extend([entry.r, entry.g, entry.b]);
-        alpha.push(entry.a);
+    let mut rgb = Vec::with_capacity(palette.len() / 4 * 3);
+    let mut alpha = Vec::with_capacity(palette.len() / 4);
+    for entry in palette.as_chunks::<4>().0 {
+        rgb.extend([entry[0], entry[1], entry[2]]);
+        alpha.push(entry[3]);
     }
     // tRNS may stop at the last non-opaque entry; the rest is implicitly opaque.
     let transparency = alpha
@@ -705,7 +703,7 @@ fn quantize_png(
         encoder.set_trns(alpha[..transparency].to_vec());
     }
     encoder.set_compression(png::Compression::High);
-    // imagequant works in sRGB; say so instead of leaving the viewer to guess.
+    // Palette values retain the decoded sRGB channel values.
     encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
     let write_error = |e: png::EncodingError| {
         JobError::new(
@@ -717,6 +715,71 @@ fn quantize_png(
     writer.write_image_data(&indices).map_err(write_error)?;
     writer.finish().map_err(write_error)?;
     Ok(())
+}
+
+/// Map RGBA pixels to a trained palette. Error diffusion runs in RGB so transparent
+/// pixels do not spread hidden colour into their neighbours.
+fn remap_rgba(
+    quantizer: &color_quant::NeuQuant,
+    palette: &[u8],
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    dithering: f32,
+) -> Vec<u8> {
+    let mut indices = Vec::with_capacity(width as usize * height as usize);
+    if dithering <= 0.0 {
+        indices.extend(
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|pixel| quantizer.index_of(pixel) as u8),
+        );
+        return indices;
+    }
+
+    let mut current = vec![[0.0_f32; 3]; width as usize + 2];
+    let mut next = vec![[0.0_f32; 3]; width as usize + 2];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let offset = (y * width as usize + x) * 4;
+            let source = &pixels[offset..offset + 4];
+            let adjusted = [
+                (source[0] as f32 + current[x + 1][0])
+                    .round()
+                    .clamp(0.0, 255.0) as u8,
+                (source[1] as f32 + current[x + 1][1])
+                    .round()
+                    .clamp(0.0, 255.0) as u8,
+                (source[2] as f32 + current[x + 1][2])
+                    .round()
+                    .clamp(0.0, 255.0) as u8,
+                source[3],
+            ];
+            let index = quantizer.index_of(&adjusted) as u8;
+            indices.push(index);
+
+            if source[3] == 0 {
+                continue;
+            }
+            let palette_offset = index as usize * 4;
+            let error = [
+                (adjusted[0] as f32 - palette[palette_offset] as f32) * dithering,
+                (adjusted[1] as f32 - palette[palette_offset + 1] as f32) * dithering,
+                (adjusted[2] as f32 - palette[palette_offset + 2] as f32) * dithering,
+            ];
+            for channel in 0..3 {
+                current[x + 2][channel] += error[channel] * (7.0 / 16.0);
+                next[x][channel] += error[channel] * (3.0 / 16.0);
+                next[x + 1][channel] += error[channel] * (5.0 / 16.0);
+                next[x + 2][channel] += error[channel] * (1.0 / 16.0);
+            }
+        }
+        std::mem::swap(&mut current, &mut next);
+        next.fill([0.0; 3]);
+    }
+    indices
 }
 
 /// What the dialog shows before the user commits: the encoded file itself, with its
@@ -906,9 +969,8 @@ impl TargetSearch<'_> {
             if !lossy {
                 // A lossless format ignores `-quality`, so the only levers are the palette
                 // and the dimensions. PNG gets the real quantizer, starting at the palette
-                // the user chose (or 256): ImageMagick's `-colors` reached 74 KB at 256
-                // colours where libimagequant reaches 17 KB, which made a small target
-                // unreachable and ignored "Reduce colours" inside the search.
+                // the user chose (or 256). The palette pass also lets the target search
+                // reduce colour count after lossless encoders have reached their floor.
                 if ext == "png" {
                     let mut palette = colours.unwrap_or(256).clamp(2, 256);
                     loop {
@@ -3240,6 +3302,103 @@ mod tests {
     use super::*;
     use convertme_core::job::{JobCtx, WorkDir};
     use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn palette_quantizer_bounds_colours_and_preserves_transparent_pixels() {
+        let width = 400_u32;
+        let height = 400_u32;
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        let mut random = 0xA5C3_17D9_u32;
+        for _y in 0..height {
+            for x in 0..width {
+                if x >= width / 2 {
+                    pixels.extend([255, 0, 255, 0]);
+                } else {
+                    random ^= random << 13;
+                    random ^= random >> 17;
+                    random ^= random << 5;
+                    let gray = (random >> 24) as u8;
+                    pixels.extend([gray, gray, gray, 255]);
+                }
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut lossless = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut lossless, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::High);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        }
+        let output = temp.path().join("quantized.png");
+        encode_indexed_png(width, height, &pixels, 16, 1.0, &output).unwrap();
+        assert!(
+            std::fs::metadata(&output).unwrap().len() < lossless.len() as u64,
+            "indexed output should be smaller than the lossless source"
+        );
+        let encoded = std::fs::read(&output).unwrap();
+        let reader = png::Decoder::new(std::io::Cursor::new(&encoded))
+            .read_info()
+            .unwrap();
+        let info = reader.info();
+        assert_eq!(info.color_type, png::ColorType::Indexed);
+        assert_eq!((info.width, info.height), (width, height));
+        let palette_len = info.palette.as_ref().unwrap().len() / 3;
+        assert!(
+            (2..=16).contains(&palette_len),
+            "palette has {palette_len} entries"
+        );
+        let decoded = ::image::load_from_memory(&encoded).unwrap().to_rgba8();
+        let used: BTreeSet<_> = decoded.pixels().map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        assert!(
+            used.len() <= 16,
+            "decoded output has {} unique colors",
+            used.len()
+        );
+        assert!(
+            decoded
+                .pixels()
+                .enumerate()
+                .all(|(i, p)| { i % (width as usize) < (width / 2) as usize || p[3] == 0 }),
+            "transparent pixels stay transparent"
+        );
+
+        let mut squared_error = 0.0_f64;
+        let mut samples = 0_u64;
+        for (pixel, output) in pixels.as_chunks::<4>().0.iter().zip(decoded.pixels()) {
+            if pixel[3] == 0 {
+                continue;
+            }
+            for channel in 0..3 {
+                let difference = pixel[channel] as f64 - output[channel] as f64;
+                squared_error += difference * difference;
+                samples += 1;
+            }
+        }
+        let rmse = (squared_error / samples as f64).sqrt();
+        assert!(rmse < 42.0, "gradient RGB RMSE was {rmse:.2}");
+
+        let two_colour_output = temp.path().join("quantized-2.png");
+        encode_indexed_png(width, height, &pixels, 2, 0.0, &two_colour_output).unwrap();
+        let two_colour = ::image::open(&two_colour_output).unwrap().to_rgba8();
+        let two_colour_set: BTreeSet<_> = two_colour
+            .pixels()
+            .map(|p| [p[0], p[1], p[2], p[3]])
+            .collect();
+        assert!(
+            two_colour_set.len() <= 2,
+            "2-colour output has {} unique colors",
+            two_colour_set.len()
+        );
+        assert_eq!(two_colour.dimensions(), (width, height));
+    }
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -5026,7 +5185,7 @@ mod tests {
     }
 
     /// Target size and Reduce colours are one search, not two stages: the target ladder
-    /// quantizes with imagequant and downscales, so "both options" cannot return a file
+    /// quantizes and downscales, so "both options" cannot return a file
     /// larger than either option alone.
     #[test]
     fn target_and_colours_are_searched_together() {
