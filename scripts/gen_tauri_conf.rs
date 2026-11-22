@@ -201,7 +201,7 @@ pub fn tauri_conf_json_for_target(target: &str) -> String {
     }
     s.push_str(&format!(
         "    \"resources\": {},\n",
-        resources_value(&root, &target, windows_target)
+        resources_value(&root, target, windows_target)
     ));
     // Signed update artifacts need the private key; without it the bundle step
     // would fail, so the flag follows the environment instead of being hardcoded.

@@ -48,7 +48,11 @@ impl ProbeOptions {
             || (cfg!(target_os = "linux") && option_env!("CONVERTME_PACKAGE_BUILD") == Some("1"));
         let override_dir = std::env::var_os(identity::ENV_TOOLS_DIR).map(PathBuf::from);
         #[cfg(target_os = "linux")]
-        let discovery = if override_dir.is_some() { Ok(None) } else { discover_linux_tools() };
+        let discovery = if override_dir.is_some() {
+            Ok(None)
+        } else {
+            discover_linux_tools()
+        };
         #[cfg(not(target_os = "linux"))]
         let discovery: Result<Option<PathBuf>, String> = Ok(default_tools_dir());
         let (discovered, discovery_error) = match discovery {
@@ -56,8 +60,10 @@ impl ProbeOptions {
             Err(error) => (None, Some(error)),
         };
         let tools_dir = override_dir.or(discovered);
-        let (manifest, manifest_error) = tools_dir.as_deref()
-            .map(load_tools_manifest).unwrap_or((None, discovery_error));
+        let (manifest, manifest_error) = tools_dir
+            .as_deref()
+            .map(load_tools_manifest)
+            .unwrap_or((None, discovery_error));
         let manifest_error = if packaged && tools_dir.is_none() {
             Some("the packaged tools directory is missing".to_string())
         } else if packaged && manifest.is_none() {
@@ -110,17 +116,26 @@ fn load_tools_manifest(
         }
         #[cfg(target_os = "linux")]
         {
-            let root = std::fs::canonicalize(tools_dir).map_err(|e| format!("canonicalizing tools root: {e}"))?;
+            let root = std::fs::canonicalize(tools_dir)
+                .map_err(|e| format!("canonicalizing tools root: {e}"))?;
             if manifest.library_dirs.len() != manifest.executables.len() {
                 return Err("library_dirs must cover every executable".into());
             }
             for key in manifest.executables.keys() {
-                let dirs = manifest.library_dirs.get(key).ok_or_else(|| format!("missing library_dirs for {key}"))?;
+                let dirs = manifest
+                    .library_dirs
+                    .get(key)
+                    .ok_or_else(|| format!("missing library_dirs for {key}"))?;
                 for relative in dirs {
-                    if relative.as_os_str().is_empty() || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                    if relative.as_os_str().is_empty()
+                        || relative
+                            .components()
+                            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                    {
                         return Err(format!("invalid library directory for {key}"));
                     }
-                    let path = std::fs::canonicalize(root.join(relative)).map_err(|e| format!("resolving library directory for {key}: {e}"))?;
+                    let path = std::fs::canonicalize(root.join(relative))
+                        .map_err(|e| format!("resolving library directory for {key}: {e}"))?;
                     if !path.starts_with(&root) || !path.is_dir() {
                         return Err(format!("library directory escapes tools root for {key}"));
                     }
@@ -138,11 +153,18 @@ fn load_tools_manifest(
 /// Locate the package tools root adjacent to the executable or in its resource tree.
 pub fn default_tools_dir() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
-    { discover_linux_tools().ok().flatten() }
+    {
+        discover_linux_tools().ok().flatten()
+    }
     #[cfg(windows)]
-    { let path = std::env::current_exe().ok()?.parent()?.join("tools"); path.exists().then_some(path) }
+    {
+        let path = std::env::current_exe().ok()?.parent()?.join("tools");
+        path.exists().then_some(path)
+    }
     #[cfg(all(not(windows), not(target_os = "linux")))]
-    { None }
+    {
+        None
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -156,7 +178,10 @@ fn discover_linux_tools() -> Result<Option<PathBuf>, String> {
 fn linux_resource_tools_from_exe_dir(exe_dir: &Path) -> Result<Option<PathBuf>, String> {
     let adjacent = exe_dir.join("tools");
     let installed = exe_dir.join("../lib").join(identity::APP_ID).join("tools");
-    let candidates: Vec<_> = [adjacent, installed].into_iter().filter(|p| p.exists()).collect();
+    let candidates: Vec<_> = [adjacent, installed]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
     match candidates.as_slice() {
         [] => Ok(None),
         [candidate] => Ok(Some(candidate.clone())),
@@ -191,7 +216,6 @@ pub fn locate(key: ToolKey, opts: &ProbeOptions) -> Option<PathBuf> {
     }
     locate_on_path(key)
 }
-
 
 fn manifest_path(key: ToolKey, opts: &ProbeOptions) -> Option<PathBuf> {
     let root = opts.tools_dir.as_ref()?;
@@ -646,8 +670,13 @@ mod tests {
         let installed = app.path().join("usr/lib/app.convertme/tools");
         std::fs::create_dir_all(&exe_dir).unwrap();
         std::fs::create_dir_all(&installed).unwrap();
-        let found = linux_resource_tools_from_exe_dir(&exe_dir).unwrap().unwrap();
-        assert_eq!(std::fs::canonicalize(found).unwrap(), std::fs::canonicalize(&installed).unwrap());
+        let found = linux_resource_tools_from_exe_dir(&exe_dir)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(found).unwrap(),
+            std::fs::canonicalize(&installed).unwrap()
+        );
         std::fs::create_dir_all(exe_dir.join("tools")).unwrap();
         assert!(linux_resource_tools_from_exe_dir(&exe_dir).is_err());
     }

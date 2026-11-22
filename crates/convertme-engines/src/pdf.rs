@@ -1138,6 +1138,51 @@ mod tests {
         cmd.status().ok()?.success().then_some(pdf)
     }
 
+    /// A single-page PDF with a real text layer, assembled by hand.
+    ///
+    /// `make_pdf` goes through Magick, which writes an image and no words, so a test
+    /// that asks an extractor for those words can only fail. This writer keeps the
+    /// text the extraction tests assert on, with no extra tool on the host.
+    fn text_pdf(dir: &Path, words: &str) -> PathBuf {
+        let escaped = words
+            .replace('\\', "\\\\")
+            .replace('(', "\\(")
+            .replace(')', "\\)");
+        let stream = format!("BT /F1 18 Tf 20 150 Td ({escaped}) Tj ET\n");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in &offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        let path = dir.join("words.pdf");
+        fs::write(&path, out).expect("writing the text pdf");
+        path
+    }
+
     fn run_in(tools: &Toolset, root: &Path, job: &Job) -> Result<Vec<PathBuf>, JobError> {
         let work = WorkDir::create(root.join("work")).expect("work dir");
         let ctx = JobCtx::new();
@@ -1368,14 +1413,11 @@ mod tests {
     /// keep the page's words.
     #[test]
     fn pdf_to_markdown_keeps_the_words() {
-        let Some(tools) = host_tools(&[ToolKey::Magick, ToolKey::Pdftotext, ToolKey::Sidecar])
-        else {
+        let Some(tools) = host_tools(&[ToolKey::Sidecar]) else {
             return;
         };
         let dir = tempfile::tempdir().unwrap();
-        let Some(pdf) = make_pdf(&tools, dir.path(), "md", 1) else {
-            return;
-        };
+        let pdf = text_pdf(dir.path(), "Page one has words");
         let job = Job::new(
             pdf,
             Intent::Convert {
@@ -1385,7 +1427,7 @@ mod tests {
         let artifacts = run_in(&tools, dir.path(), &job).unwrap();
         let text = fs::read_to_string(&artifacts[0]).unwrap();
         assert!(
-            text.to_lowercase().contains("page"),
+            text.to_lowercase().contains("page one has words"),
             "the markdown lost the page's words: {text:?}"
         );
     }

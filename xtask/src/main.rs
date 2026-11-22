@@ -609,7 +609,9 @@ fn vendor(args: &[String]) -> Result<(), String> {
     };
     match triple.as_str() {
         "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc" => {
-            if sidecar.is_some() { return Err("--sidecar is a Linux vendor option".into()); }
+            if sidecar.is_some() {
+                return Err("--sidecar is a Linux vendor option".into());
+            }
             let interpreter =
                 python
                     .as_deref()
@@ -629,11 +631,11 @@ fn vendor(args: &[String]) -> Result<(), String> {
                 .current_dir(&root)
                 .status()
                 .map_err(|e| format!("starting Windows vendoring: {e}"))?;
-            return if status.success() {
+            if status.success() {
                 Ok(())
             } else {
                 Err(format!("Windows vendoring failed: {status}"))
-            };
+            }
         }
         "x86_64-unknown-linux-gnu" => {
             if triple != host_triple()? {
@@ -643,25 +645,25 @@ fn vendor(args: &[String]) -> Result<(), String> {
                 return Err("--helper-payload is a Windows vendor option".into());
             }
             let mut command = Command::new(python.as_deref().unwrap_or("python3"));
-            command.arg(root.join("scripts/vendor-linux.py")).current_dir(&root);
-            command.arg("--sidecar").arg(sidecar.as_deref().ok_or("Linux vendoring requires --sidecar <path>")?);
-            let status = command.status().map_err(|e| format!("starting Linux vendoring: {e}"))?;
-            if status.success() { Ok(()) } else { Err(format!("Linux vendoring failed: {status}")) }
+            command
+                .arg(root.join("scripts/vendor-linux.py"))
+                .current_dir(&root);
+            command.arg("--sidecar").arg(
+                sidecar
+                    .as_deref()
+                    .ok_or("Linux vendoring requires --sidecar <path>")?,
+            );
+            let status = command
+                .status()
+                .map_err(|e| format!("starting Linux vendoring: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Linux vendoring failed: {status}"))
+            }
         }
         _ => Err(format!("unsupported vendor target {triple:?}")),
     }
-}
-
-fn which(binary: &str) -> Option<PathBuf> {
-    let name = if cfg!(windows) {
-        format!("{binary}.exe")
-    } else {
-        binary.to_string()
-    };
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(&name))
-        .find(|p| p.is_file())
 }
 
 // ---------------------------------------------------------------------------

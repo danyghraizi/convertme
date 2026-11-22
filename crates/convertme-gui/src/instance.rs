@@ -9,7 +9,7 @@
 //! * Endpoint: `$XDG_RUNTIME_DIR/convertme/ipc.sock` (or `/tmp`) on Linux;
 //!   a named pipe on Windows.
 //! * Framing: one JSON object per line, `{"build": "<stamp>", "paths": [...]}`, UTF-8.
-
+//!
 //! A launch whose bundle differs from the one already running is not forwarded: the
 //! running window is out of date, so it quits and the new process takes the lock. That
 //! is what makes "rebuild, relaunch" actually show the new interface.
