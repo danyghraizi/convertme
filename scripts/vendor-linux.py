@@ -3,6 +3,7 @@
 import argparse
 import urllib.request
 import json
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import platform
