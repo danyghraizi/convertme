@@ -7,7 +7,7 @@ version = "0.1.1"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
-repository = "https://convertme.app"
+repository = "https://github.com/danyghraizi/convertme"
 
 [workspace.dependencies]
 convertme-core = { path = "crates/convertme-core" }

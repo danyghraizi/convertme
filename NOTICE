@@ -12,9 +12,11 @@ Bundled programs
 FFmpeg (`ffmpeg`, `ffprobe`)
     GPL v2 or later, built with libx264, libx265, libvpx, libaom, libopus,
     libvorbis, lame and libwebp.
-    Source for the exact build shipped with each release is published at
-    https://convertme.app/ffmpeg-source, and a written offer to supply the
-    corresponding source on physical media is included in every installer.
+    ConvertMe does not ship FFmpeg binaries in this repository. When a package
+    bundles a build of FFmpeg, that build's corresponding source is published
+    alongside the package as a release asset at
+    https://github.com/danyghraizi/convertme/releases, together with the exact
+    version and build configuration used.
     FFmpeg is invoked as a separate process; ConvertMe links no FFmpeg code.
 
 ImageMagick (`magick`)
@@ -23,8 +25,9 @@ ImageMagick (`magick`)
 
 Ghostscript (`gs`)
     AGPL v3. Invoked as a separate process over its command line, which the
-    AGPL permits; the corresponding source is available at
-    https://convertme.app/ghostscript-source and from Artifex.
+    AGPL permits; the corresponding source is available from Artifex, and any
+    bundled build's source is published with the package at
+    https://github.com/danyghraizi/convertme/releases.
 
 qpdf (`qpdf`)
     Apache-2.0. https://qpdf.readthedocs.io/en/stable/license.html
@@ -48,8 +51,8 @@ The PDF sidecar (`convertme-pdf`)
       * python-pptx — MIT
       * python-docx — MIT
       * openpyxl — MIT
-    The sidecar runs as a separate process; its source is in `sidecars/pdf/` and
-    is published at https://convertme.app/sidecar-source, satisfying the AGPL.
+    The sidecar runs as a separate process; its source is in `sidecars/pdf/` in
+    this repository, satisfying the AGPL.
 
 Detected, not bundled
 ---------------------

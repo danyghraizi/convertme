@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/danyghraizi/convertme/security/advisories/new
+    about: Report a vulnerability privately instead of opening an issue.
+  - name: Build and contribution rules
+    url: https://github.com/danyghraizi/convertme/blob/master/CONTRIBUTING.md
+    about: Build order, preflight, and the invariants a change must keep.
+  - name: Why the code looks the way it does
+    url: https://github.com/danyghraizi/convertme/blob/master/docs/LESSONS.md
+    about: The failures behind each rule, with the measurement that exposed it.

@@ -1,0 +1,42 @@
+name: Feature or new format
+description: A target, a tool, or a behaviour the wheel should offer
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open this before writing code. A new conversion target has to fit the
+        planner, the UI field contract, and the atomic-publish rules, and that is
+        cheaper to agree on in an issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What can't you do today
+      description: The real workflow that fails, not only the missing format name.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would add
+      description: |
+        Say which crate it belongs to (`convertme-core` for registry and planning,
+        `convertme-engines` for the tool) and which external program does the work.
+    validations:
+      required: true
+  - type: input
+    id: tools
+    attributes:
+      label: External program and version
+      placeholder: ffmpeg 7.1, or "none — pure Rust"
+    validations:
+      required: false
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Does it fit the invariants
+      options:
+        - label: The source file is never modified (the engine can run on a staged copy)
+        - label: The output can be produced in a temp directory and renamed into place
+        - label: The external program is invoked with an argv array, never a shell string
+        - label: The licence of anything newly bundled is compatible and will be listed in NOTICE

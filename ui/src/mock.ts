@@ -65,7 +65,7 @@ const BOOT: BootInfo = {
     kind: 'mock',
     description: 'Browser preview: fixture data, no native backend attached',
   },
-  about: { name: 'ConvertMe', version: '0.1.0', options: 0, tools: 0 },
+  about: { name: 'ConvertMe', version: '0.1.1', options: 0, tools: 0 },
   capabilities: { missing: [] },
   pending_paths: [],
 };

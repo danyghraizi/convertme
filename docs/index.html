@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ConvertMe — an offline file converter with a wheel</title>
+<meta name="description" content="ConvertMe is an offline, drag-and-drop file converter for Linux and Windows. Hold a key, get a wheel of conversion targets and file tools. Sources are never modified.">
+<meta property="og:title" content="ConvertMe — an offline file converter with a wheel">
+<meta property="og:description" content="311 conversion targets and 33 file tools behind a wheel under the pointer. Local only. GPL-3.0-or-later.">
+<meta property="og:image" content="screenshots/wheel.png">
+<link rel="icon" href="screenshots/wheel.png">
+<style>
+  :root {
+    --bg: #14161a;
+    --surface: #1c1f26;
+    --surface-2: #22262e;
+    --fg: #e9ecf2;
+    --muted: #9aa3b2;
+    --border: #2e333d;
+    --accent: #4f7bf7;
+    --accent-soft: #7d9bff;
+    --radius: 14px;
+    --max: 1080px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-soft); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .92em;
+  }
+  code { background: var(--surface-2); padding: .12em .38em; border-radius: 5px; }
+  pre {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  kbd {
+    background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 6px; padding: .1em .45em; color: var(--fg); white-space: nowrap;
+  }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+  header.top {
+    position: sticky; top: 0; z-index: 5;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+  }
+  header.top .wrap { display: flex; align-items: center; gap: 20px; height: 58px; }
+  .brand { font-weight: 650; letter-spacing: -.01em; color: var(--fg); }
+  header.top nav { margin-left: auto; display: flex; gap: 20px; font-size: 14.5px; }
+  header.top nav a { color: var(--muted); }
+  header.top nav a:hover { color: var(--fg); }
+
+  .hero { display: grid; grid-template-columns: 1.05fr .95fr; gap: 40px; align-items: center; padding: 64px 0 40px; }
+  .hero h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.1; letter-spacing: -.025em; margin: 0 0 16px; }
+  .hero p.lede { font-size: 18.5px; color: var(--muted); margin: 0 0 22px; }
+  .hero .keys { display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 14.5px; color: var(--muted); }
+  .hero .keys span { white-space: nowrap; }
+  .hero img { width: 100%; height: auto; border-radius: 24px; display: block; border: 1px solid var(--border); }
+  .actions { display: flex; gap: 12px; margin: 26px 0 0; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
+    border: 1px solid var(--border); color: var(--fg); background: var(--surface);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { text-decoration: none; filter: brightness(1.08); }
+
+  section { padding: 54px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 26px; letter-spacing: -.02em; margin: 0 0 8px; }
+  h2 + p.sub { color: var(--muted); margin: 0 0 28px; max-width: 62ch; }
+
+  .gestures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px 22px;
+  }
+  .card h3 { margin: 10px 0 6px; font-size: 16.5px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .card .keyrow { display: flex; gap: 8px; align-items: center; }
+
+  figure { margin: 0; }
+  figure img { width: 100%; border-radius: var(--radius); border: 1px solid var(--border); display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+  .grid2 figure:nth-child(n+3) { margin-top: 4px; }
+
+  .features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .features h3 { margin: 0 0 6px; font-size: 16.5px; }
+  .features p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+  td:last-child { color: var(--muted); }
+
+  footer { padding: 40px 0 60px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+  footer a { color: var(--muted); text-decoration: underline; }
+
+  @media (max-width: 860px) {
+    .hero, .grid2, .features, .gestures { grid-template-columns: 1fr; }
+    .hero { padding-top: 40px; gap: 28px; }
+    header.top nav { gap: 14px; font-size: 13.5px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <span class="brand">ConvertMe</span>
+    <nav>
+      <a href="#wheel">The wheel</a>
+      <a href="#screens">Screens</a>
+      <a href="#tools">Tools</a>
+      <a href="#cli">CLI</a>
+      <a href="#build">Build</a>
+      <a href="https://github.com/danyghraizi/convertme">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <div>
+      <h1>A file converter that fits under your pointer.</h1>
+      <p class="lede">Drag files, hold a key, and a wheel of targets and tools opens at the
+        cursor. Nothing is uploaded. A source file is never modified — every job writes a
+        new file next to it.</p>
+      <div class="keys">
+        <span><kbd>Shift</kbd> convert</span>
+        <span><kbd>Ctrl</kbd> tools</span>
+        <span><kbd>Alt</kbd> actions</span>
+        <span><kbd>Enter</kbd> run</span>
+        <span><kbd>Esc</kbd> close</span>
+      </div>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/danyghraizi/convertme/releases/latest">Download for Linux</a>
+        <a class="btn" href="https://github.com/danyghraizi/convertme">Source</a>
+      </div>
+    </div>
+    <img src="screenshots/wheel.png" alt="ConvertMe wheel showing Crop, Compress to size, Edit metadata, Redact, Collage and Annotate for two image files">
+  </div>
+
+  <section id="wheel">
+    <h2>Three rings, one gesture</h2>
+    <p class="sub">The centre of the wheel always names what is selected and how many files
+      are in the job, so the ring never asks you to remember what you dragged.</p>
+    <div class="gestures">
+      <div class="card">
+        <div class="keyrow"><kbd>Shift</kbd></div>
+        <h3>Convert</h3>
+        <p>The formats the selection can actually become, with the ones your installed
+          converters cannot write removed rather than shown dead.</p>
+      </div>
+      <div class="card">
+        <div class="keyrow"><kbd>Ctrl</kbd></div>
+        <h3>Tools</h3>
+        <p>Crop, trim, redact, compress to a target size, merge, join, strip metadata —
+          each opens one dialog sheet over the page you came from.</p>
+      </div>
+      <div class="card">
+        <div class="keyrow"><kbd>Alt</kbd></div>
+        <h3>Actions</h3>
+        <p>Reveal, open, copy path, move to trash. The file-manager chores that are
+          three right-clicks away everywhere else.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="screens">
+    <h2>What it looks like</h2>
+    <p class="sub">Screenshots are produced by <code>scripts/ui-shots.py</code>: the built
+      front end in headless Firefox against the development mock. The components and the
+      layout are real; the file data is fixture data.</p>
+    <div class="grid2">
+      <figure>
+        <img src="screenshots/main-images.png" alt="The Images page: a drop target and eight tools with one-line descriptions">
+        <figcaption><strong>Images.</strong> Eight tools, from a target-size compress to face redaction.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/main-video.png" alt="The Video page: nine tools including trim, crop, change speed, join and split">
+        <figcaption><strong>Video.</strong> Trim on a filmstrip, crop, change speed, save frames, join or split.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/dialog-crop.png" alt="Crop dialog with a draggable box, exact pixel fields and aspect-ratio presets">
+        <figcaption><strong>Crop.</strong> Drag the box, type exact pixels, or pick a ratio — for one file or every file in the job.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/dialog-trim.png" alt="Trim dialog with start and end handles, a playhead and timecode">
+        <figcaption><strong>Trim.</strong> Start and end handles on a filmstrip, frame stepping, and the audio kept in sync.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/dialog-organize.png" alt="PDF page organiser with page thumbnails">
+        <figcaption><strong>PDF pages.</strong> Reorder, rotate, delete and keep pages before writing the copy.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/dialog-visualize.png" alt="Audio visualiser with a waveform preview">
+        <figcaption><strong>Visualise audio.</strong> A waveform or spectrum image rendered from the real decode.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2>What is on the wheel</h2>
+    <p class="sub">311 conversion targets across ten categories and 33 file tools, driven by
+      the converters you already have installed. <code>convertme probe</code> prints the
+      exact set your machine can run.</p>
+    <table>
+      <thead><tr><th>Category</th><th>Tools</th></tr></thead>
+      <tbody>
+        <tr><td>Images</td><td>Compress to size, Crop, Annotate, Collage, Add background, Edit photo, Edit metadata, Redact</td></tr>
+        <tr><td>Video</td><td>Compress to size, Trim, Crop, Change speed, Mute, Save frames, Join clips, Split, Redact</td></tr>
+        <tr><td>Audio</td><td>Compress, Normalize, Trim, Channels, Visualize, Bleep, Edit metadata</td></tr>
+        <tr><td>PDF</td><td>Compress, Organize pages, Edit metadata, Merge, Split pages, Save pages as images, Extract text</td></tr>
+        <tr><td>Documents</td><td>Merge</td></tr>
+        <tr><td>Archives</td><td>Extract</td></tr>
+        <tr><td>Slides, Spreadsheets, EPUB, Subtitles</td><td>Conversion targets rather than tools</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rules the code keeps</h2>
+    <p class="sub">These are enforced by tests, not by convention.</p>
+    <div class="features">
+      <div><h3>Sources are read-only</h3><p>Engines that mutate by nature — crop, trim, redact, metadata, bleep, organize — run on a staged copy. The queue publishes the artifact, never the engine.</p></div>
+      <div><h3>Publish is atomic</h3><p>Work happens in a temp directory and is renamed into place. A cancel, a crash or a full disk leaves the folder untouched.</p></div>
+      <div><h3>No shell strings</h3><p>Every external tool gets an argv array, so spaces, quotes, newlines and emoji in filenames are ordinary input.</p></div>
+      <div><h3>Local only</h3><p>No account, no telemetry, no metering. The only network call the app can make is the optional update check.</p></div>
+    </div>
+  </section>
+
+  <section id="cli">
+    <h2>The same pipeline, from a terminal</h2>
+    <p class="sub">The CLI is not a second implementation — it plans and runs the same jobs
+      as the wheel, and Activity records the argv it used.</p>
+<pre><code>convertme convert photo.jpg --to webp
+convertme tool clip.mp4 --tool trim --params '{"start":1.5,"end":9}'
+convertme probe                  # what is installed, and what it enables
+convertme history --limit 20     # what ran, with the argv that ran it</code></pre>
+    <p class="sub" style="margin-top:18px">Flags are parsed strictly: an unknown or
+      misspelled flag is an error with the usage, never a silently skipped word.</p>
+  </section>
+
+  <section id="build">
+    <h2>Build from source</h2>
+    <p class="sub">Rust 1.99 and Node 22 are pinned by the toolchain files. The window is
+      Tauri, so the front end must be bundled before the crate compiles.</p>
+<pre><code>npm --prefix ui ci
+npm --prefix ui run build
+cargo xtask gen-conf
+cargo build --release -p convertme-gui --bin convertme
+./target/release/convertme
+./target/release/convertme probe</code></pre>
+    <p class="sub" style="margin-top:18px">System libraries on Debian/Ubuntu:</p>
+<pre><code>sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+  libxdo-dev libssl-dev pkg-config</code></pre>
+    <p class="sub">Conversion shells out to whatever is installed: FFmpeg, ImageMagick,
+      Ghostscript, qpdf, Poppler, Pandoc, LibreOffice, 7-Zip, Tesseract. Install only the
+      tools for the formats you care about — the wheel hides what is missing.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/danyghraizi/convertme">Repository</a>
+      <a class="btn" href="https://github.com/danyghraizi/convertme/blob/master/CONTRIBUTING.md">Contributing</a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>ConvertMe is free software under the <a href="https://github.com/danyghraizi/convertme/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
+      Bundled tools and their licences are listed in
+      <a href="https://github.com/danyghraizi/convertme/blob/master/NOTICE">NOTICE</a>.
+      Windows and Linux.</p>
+  </div>
+</footer>
+
+</body>
+</html>

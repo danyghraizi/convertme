@@ -30,10 +30,18 @@ jobs:
           python-version: "3.12"
       - name: gate self-test
         run: bash scripts/debrand_selftest.sh
+      # The token list is a repository secret, so a pull request from a fork cannot
+      # read it. Skipping is the honest behaviour: the gate still runs on every push
+      # to a branch of this repository, and the release workflow always requires it.
       - name: scan the tree
         env:
           DEBRAND_TOKENS: ${{ secrets.DEBRAND_TOKENS }}
-        run: python scripts/debrand.py --src
+        run: |
+          if [ -z "${DEBRAND_TOKENS}" ]; then
+            echo "::warning title=identity gate skipped::DEBRAND_TOKENS is not set for this run (fork pull requests cannot read repository secrets); the gate runs on pushes to this repository"
+            exit 0
+          fi
+          python scripts/debrand.py --src
 
   rust:
     name: rust

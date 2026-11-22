@@ -1,0 +1,77 @@
+name: Bug report
+description: A conversion, the wheel, or the window does something wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not attach files you cannot redistribute. A tiny synthetic
+        sample of the same format shows the bug just as well.
+
+        Security problems go through SECURITY.md, not this form.
+  - type: input
+    id: version
+    attributes:
+      label: ConvertMe version
+      description: Output of `convertme --version`
+      placeholder: convertme 0.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: Session type
+      options:
+        - X11
+        - Wayland
+        - Windows
+        - Headless / CLI only
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it happens
+      options:
+        - The wheel (drag or Preview wheel)
+        - A tool dialog
+        - The job queue / Activity
+        - The CLI
+        - Settings
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The observable result, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the chosen target or tool and any parameters.
+      placeholder: |
+        1. Drag photo.png
+        2. Shift → WebP
+        3. Set quality 80
+        4. Job fails with ...
+    validations:
+      required: true
+  - type: textarea
+    id: probe
+    attributes:
+      label: Installed converters
+      description: Output of `convertme probe`
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error text from Activity
+      description: The exact message, and the command line Activity recorded for the job.
+      render: text
+    validations:
+      required: false
