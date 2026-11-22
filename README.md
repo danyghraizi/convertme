@@ -16,6 +16,11 @@ new file next to it.
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
 </p>
 
+> **Status.** Linux jobs are green. The Windows jobs are red on two `convertme-core`
+> tests — the tree compiles there, the assertions fail — tracked in
+> [#1](https://github.com/danyghraizi/convertme/issues/1). Windows packages are not
+> published yet; `docs/RELEASE_READINESS.md` lists what that cell still requires.
+
 ## Install
 
 Prebuilt Linux packages for **0.1.1** — `.deb`, `.rpm` and an AppImage — are on the
