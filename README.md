@@ -16,10 +16,13 @@ new file next to it.
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
 </p>
 
-> **Status.** Linux jobs are green. The Windows jobs are red on two `convertme-core`
-> tests — the tree compiles there, the assertions fail — tracked in
-> [#1](https://github.com/danyghraizi/convertme/issues/1). Windows packages are not
-> published yet; `docs/RELEASE_READINESS.md` lists what that cell still requires.
+> **Status.** The source gates are green: `identity gate`, `rust` (fmt, clippy, tests)
+> and `ui`. Two cells are red on purpose, and neither is a Linux regression:
+> `package (linux)` stops because `bundle.sh` needs the locked offline Python
+> wheelhouse (`CONVERTME_PDF_WHEELHOUSE`), which is release input and not in the
+> repository — see `docs/RELEASE_READINESS.md`; `Windows x64` fails two
+> `convertme-core` tests — see [#1](https://github.com/danyghraizi/convertme/issues/1).
+> Packages for 0.1.1 were built from a machine that had those inputs, not from CI.
 
 ## Install
 
